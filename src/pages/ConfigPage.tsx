@@ -3,7 +3,8 @@ import { motion } from "framer-motion";
 import {
   Settings2, Save, Loader2, Plus, X, RotateCcw,
   MessageSquare, Mic, Film, FolderOutput, Bell,
-  Download, CheckCircle2, XCircle, RefreshCw, Cpu, Sparkles, Zap, Type, Youtube
+  Download, CheckCircle2, XCircle, RefreshCw, Cpu, Sparkles, Zap, Type, Youtube,
+  ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -230,7 +231,18 @@ export default function ConfigPage() {
 
   const [initialLoaded, setInitialLoaded] = useState(false);
   type TabId = "general" | "formatting" | "tts" | "video" | "captions" | "ai" | "publishing" | "output";
-  const [activeTab, setActiveTab] = useState<TabId>("general");
+  // Honor ?tab=X in the URL so the command palette can deep-link into a section.
+  const urlTabRaw = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("tab") : null;
+  const validTabs: TabId[] = ["general", "formatting", "tts", "video", "captions", "ai", "publishing", "output"];
+  const initialTab = (urlTabRaw && (validTabs as string[]).includes(urlTabRaw) ? urlTabRaw : "general") as TabId;
+  const [activeTab, setActiveTab] = useState<TabId>(initialTab);
+  // Sidebar collapse — persisted so the state doesn't jump on refresh.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem("rtr_config_sidebar_collapsed") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("rtr_config_sidebar_collapsed", sidebarCollapsed ? "1" : "0"); } catch {}
+  }, [sidebarCollapsed]);
 
   const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
     { id: "general",    label: "General",       icon: <Settings2 className="h-4 w-4" /> },
@@ -527,23 +539,37 @@ export default function ConfigPage() {
       </div>
 
       <div className="flex flex-col md:flex-row gap-5">
-        {/* Sidebar nav */}
-        <aside className="md:w-56 flex-shrink-0">
+        {/* Sidebar nav — collapsible to icons only */}
+        <aside className={`flex-shrink-0 transition-all duration-200 ${sidebarCollapsed ? "md:w-12" : "md:w-56"}`}>
           <nav className="flex md:flex-col gap-1 md:sticky md:top-4 overflow-x-auto md:overflow-visible">
+            {/* Collapse toggle — hidden on mobile (horizontal scroll is already compact) */}
+            <button
+              onClick={() => setSidebarCollapsed((v) => !v)}
+              className="hidden md:flex items-center justify-center gap-2 px-2 py-2 rounded-md text-[10px] text-muted-foreground hover:bg-secondary/60 mb-1 border border-dashed border-border"
+              title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {sidebarCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : (
+                <>
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                  <span>Collapse</span>
+                </>
+              )}
+            </button>
             {tabs.map((t) => {
               const active = activeTab === t.id;
               return (
                 <button
                   key={t.id}
                   onClick={() => setActiveTab(t.id)}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${
+                  title={sidebarCollapsed ? t.label : undefined}
+                  className={`flex items-center ${sidebarCollapsed ? "justify-center" : ""} gap-2 px-3 py-2 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${
                     active
                       ? "bg-primary/10 text-primary border border-primary/30"
                       : "text-muted-foreground hover:bg-secondary/60 border border-transparent"
                   }`}
                 >
                   {t.icon}
-                  <span>{t.label}</span>
+                  {!sidebarCollapsed && <span>{t.label}</span>}
                 </button>
               );
             })}

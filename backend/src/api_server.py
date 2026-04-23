@@ -555,6 +555,62 @@ async def health():
     return {"status": "online", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+@app.get("/api/system/status")
+async def system_status():
+    """
+    Supplemental status for the UI status bar:
+      - ollama_reachable: whether the configured Ollama URL is up right now
+      - disk_free_gb:     free bytes on the disk that holds videos/
+      - videos_dir_gb:    current size of videos/ so the user can tell if
+                          they're about to run out of room
+    """
+    # Ollama ping (configurable URL, fall back to localhost:11434)
+    cfg = _load_config()
+    ollama_url = (cfg.get("gemini", {}) or {}).get("ollama_url") or "http://localhost:11434"
+    ollama_ok = False
+    ollama_detail = "unreachable"
+    try:
+        import requests as _rq
+        r = _rq.get(f"{ollama_url.rstrip('/')}/api/tags", timeout=1.0)
+        if r.status_code == 200:
+            ollama_ok = True
+            tags = (r.json() or {}).get("models") or []
+            ollama_detail = f"{len(tags)} model(s) loaded"
+    except Exception as e:
+        ollama_detail = str(e)[:60]
+
+    # Disk free + videos/ size
+    disk_free_gb = None
+    videos_dir_gb = None
+    try:
+        import shutil as _sh
+        free = _sh.disk_usage(PROJECT_ROOT).free
+        disk_free_gb = round(free / (1024 ** 3), 1)
+    except Exception:
+        pass
+    try:
+        vd = os.path.join(PROJECT_ROOT, "videos")
+        if os.path.isdir(vd):
+            total = 0
+            for root, _, files in os.walk(vd):
+                for f in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, f))
+                    except OSError:
+                        pass
+            videos_dir_gb = round(total / (1024 ** 3), 2)
+    except Exception:
+        pass
+
+    return {
+        "ollama_reachable": ollama_ok,
+        "ollama_detail":    ollama_detail,
+        "ollama_url":       ollama_url,
+        "disk_free_gb":     disk_free_gb,
+        "videos_dir_gb":    videos_dir_gb,
+    }
+
+
 @app.get("/api/config")
 async def get_config():
     return _load_config()
@@ -2403,10 +2459,18 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
 
 
 def _set_step(step_id: str, status: str, detail: str = "", sub_steps: Optional[List[Dict]] = None):
+    now_iso = datetime.now(timezone.utc).isoformat()
     for step in pipeline_state["steps"]:
         if step["id"] == step_id:
+            # Stamp transitions so the UI can render per-step elapsed time.
+            prev = step.get("status")
             step["status"] = status
             step["detail"] = detail
+            if status == "running" and prev != "running":
+                step["started_at"] = now_iso
+                step["finished_at"] = None
+            elif status in ("done", "error") and prev == "running":
+                step["finished_at"] = now_iso
             if sub_steps is not None:
                 step["sub_steps"] = sub_steps
             break

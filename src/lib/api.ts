@@ -38,6 +38,8 @@ export interface PipelineStep {
   status: "idle" | "running" | "done" | "error";
   detail: string;
   sub_steps?: PipelineSubStep[];
+  started_at?: string | null;
+  finished_at?: string | null;
 }
 
 export interface PipelineState {
@@ -346,6 +348,16 @@ export const api = {
       voices: { voice_id: string; name: string; category?: string; description?: string; labels?: Record<string, string>; preview_url?: string }[];
       error?: string;
     }>("/api/tts/elevenlabs/voices"),
+
+  // System status (for the bottom status bar)
+  getSystemStatus: () =>
+    request<{
+      ollama_reachable: boolean;
+      ollama_detail: string;
+      ollama_url: string;
+      disk_free_gb: number | null;
+      videos_dir_gb: number | null;
+    }>("/api/system/status"),
 
   // Config — full config.json
   getConfig: () => request<FullConfig>("/api/config"),

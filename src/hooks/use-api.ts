@@ -11,6 +11,16 @@ export function useHealth() {
   });
 }
 
+// ── System status (poll every 20s for the status bar) ──────────────
+export function useSystemStatus() {
+  return useQuery({
+    queryKey: ["system-status"],
+    queryFn: api.getSystemStatus,
+    refetchInterval: 20_000,
+    retry: 1,
+  });
+}
+
 // ── Stats (poll every 15s) ──────────────────────────────────────────
 export function useStats() {
   return useQuery({

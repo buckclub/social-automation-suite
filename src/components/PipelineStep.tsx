@@ -1,7 +1,7 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { CheckCircle2, Circle, Loader2, AlertCircle, ChevronDown } from "lucide-react";
+import { CheckCircle2, Circle, Loader2, AlertCircle, ChevronDown, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { PipelineSubStep } from "@/lib/api";
 
 export type StepStatus = "idle" | "running" | "done" | "error";
@@ -14,6 +14,31 @@ interface PipelineStepProps {
   index: number;
   isLast?: boolean;
   subSteps?: PipelineSubStep[];
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 1) return "<1s";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}m ${s}s`;
+}
+
+function useElapsedTicker(startedAt?: string | null, finishedAt?: string | null, running?: boolean): number | null {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, [running]);
+
+  if (!startedAt) return null;
+  const start = new Date(startedAt).getTime();
+  if (isNaN(start)) return null;
+  const end = finishedAt ? new Date(finishedAt).getTime() : now;
+  return Math.max(0, (end - start) / 1000);
 }
 
 const statusConfig: Record<StepStatus, { color: string; StatusIcon: typeof Circle }> = {
@@ -30,10 +55,11 @@ const subStatusIcon: Record<string, React.ReactNode> = {
   error: <AlertCircle className="h-2.5 w-2.5 text-destructive" />,
 };
 
-export function PipelineStep({ title, description, icon, status, index, isLast, subSteps }: PipelineStepProps) {
+export function PipelineStep({ title, description, icon, status, index, isLast, subSteps, startedAt, finishedAt }: PipelineStepProps) {
   const { color, StatusIcon } = statusConfig[status];
   const hasSubSteps = subSteps && subSteps.length > 0;
   const [expanded, setExpanded] = useState(true);
+  const elapsed = useElapsedTicker(startedAt, finishedAt, status === "running");
 
   return (
     <motion.div
@@ -81,6 +107,20 @@ export function PipelineStep({ title, description, icon, status, index, isLast, 
             {title}
           </h3>
           <StatusIcon className={cn("h-3.5 w-3.5", color, status === "running" && "animate-spin")} />
+          {elapsed != null && (status === "running" || status === "done" || status === "error") && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-0.5 rounded border px-1.5 py-0 text-[9px] font-mono tabular-nums",
+                status === "running" && "border-primary/40 text-primary",
+                status === "done" && "border-success/30 text-success/90",
+                status === "error" && "border-destructive/40 text-destructive"
+              )}
+              title={startedAt ? `Started ${new Date(startedAt).toLocaleTimeString()}` : undefined}
+            >
+              <Clock className="h-2.5 w-2.5" />
+              {formatElapsed(elapsed)}
+            </span>
+          )}
           {hasSubSteps && (
             <button
               onClick={() => setExpanded(!expanded)}

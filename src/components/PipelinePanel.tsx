@@ -80,6 +80,8 @@ export function PipelinePanel() {
               index={i}
               isLast={i === steps.length - 1}
               subSteps={step.sub_steps}
+              startedAt={step.started_at}
+              finishedAt={step.finished_at}
             />
           ))}
         </div>

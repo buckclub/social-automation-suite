@@ -1,7 +1,10 @@
 import { NavLink } from "react-router-dom";
-import { Video, LayoutDashboard, Newspaper, Settings2, Film } from "lucide-react";
+import { Video, LayoutDashboard, Newspaper, Settings2, Film, Command } from "lucide-react";
 import { useHealth } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
+import { CommandPaletteProvider, useCommandPalette } from "@/components/CommandPalette";
+import { KeyboardShortcuts } from "@/components/KeyboardShortcuts";
+import { StatusBar } from "@/components/StatusBar";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -11,11 +14,22 @@ const navItems = [
 ];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <CommandPaletteProvider>
+      <KeyboardShortcuts />
+      <AppLayoutInner>{children}</AppLayoutInner>
+      <StatusBar />
+    </CommandPaletteProvider>
+  );
+}
+
+function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const { data: health } = useHealth();
   const isOnline = health?.status === "online";
+  const { toggle: toggleCommand } = useCommandPalette();
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background pb-8">
       <header className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-xl">
         <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 lg:px-6">
           <div className="flex items-center gap-6">
@@ -52,6 +66,15 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={toggleCommand}
+              title="Command palette (⌘K / Ctrl+K)"
+              className="hidden md:flex items-center gap-1.5 rounded-md border border-border bg-secondary/60 hover:bg-secondary px-2.5 py-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <Command className="h-3 w-3" />
+              <span>Jump to…</span>
+              <kbd className="ml-1 rounded bg-background/60 border border-border px-1 font-mono text-[9px]">⌘K</kbd>
+            </button>
             <div
               className={cn(
                 "flex items-center gap-1.5 rounded-full border px-3 py-1",

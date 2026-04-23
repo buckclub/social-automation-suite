@@ -7,6 +7,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { SocialCopyDialog } from "@/components/SocialCopyDialog";
 import { YouTubeUploadDialog } from "@/components/YouTubeUploadDialog";
+import { VideoBatchActionBar } from "@/components/VideoBatchActionBar";
 import { FullRedoDialog } from "@/components/FullRedoDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Card, CardContent } from "@/components/ui/card";
@@ -36,10 +37,12 @@ function formatFileSize(bytes?: number) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-function VideoCard({ video, index, onPreview, onDelete }: {
+function VideoCard({ video, index, onPreview, onDelete, selected, onSelectChange }: {
   video: VideoRecord; index: number;
   onPreview: (video: VideoRecord, part: number) => void;
   onDelete: (video: VideoRecord) => void;
+  selected?: boolean;
+  onSelectChange?: (checked: boolean) => void;
 }) {
   const partCount = video.part_files?.length || (video.parts ?? (video.has_video ? 1 : 0));
   const resumeMutation = useResumeVideo();
@@ -84,8 +87,22 @@ function VideoCard({ video, index, onPreview, onDelete }: {
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.03 }}
     >
-      <Card className="border-border bg-card hover:border-primary/30 transition-all overflow-hidden">
+      <Card className={`border-border bg-card hover:border-primary/30 transition-all overflow-hidden ${selected ? "ring-2 ring-primary border-primary/60" : ""}`}>
         <div className="relative h-36 bg-secondary flex items-center justify-center overflow-hidden">
+          {onSelectChange && (
+            <label
+              className={`absolute top-2 left-2 z-10 flex items-center justify-center h-5 w-5 rounded border cursor-pointer bg-background/80 backdrop-blur ${selected ? "border-primary bg-primary/20" : "border-border"}`}
+              onClick={(e) => e.stopPropagation()}
+              title={selected ? "Deselect" : "Select for batch actions"}
+            >
+              <input
+                type="checkbox"
+                checked={selected || false}
+                onChange={(e) => onSelectChange(e.target.checked)}
+                className="h-3 w-3 accent-primary"
+              />
+            </label>
+          )}
           {video.has_thumbnails ? (
             <img
               src={`${API_BASE}/api/videos/${video.id}/thumbnail?part=0&v=${encodeURIComponent(video.created_at || "")}`}
@@ -303,6 +320,16 @@ export default function VideosPage() {
   const [preview, setPreview] = useState<{ video: VideoRecord; part: number } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<VideoRecord | null>(null);
 
+  // Batch selection — drives the floating action bar.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const toggleSelection = (id: string, checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id); else next.delete(id);
+      return next;
+    });
+  };
+
   // "Clear all data" dialog state
   const qc = useQueryClient();
   const [clearOpen, setClearOpen]       = useState(false);
@@ -404,9 +431,18 @@ export default function VideosPage() {
             key={video.id} video={video} index={i}
             onPreview={(v, part) => setPreview({ video: v, part })}
             onDelete={setDeleteTarget}
+            selected={selectedIds.has(video.id)}
+            onSelectChange={(checked) => toggleSelection(video.id, checked)}
           />
         ))}
       </div>
+
+      <VideoBatchActionBar
+        videos={videos}
+        selectedIds={selectedIds}
+        onClear={() => setSelectedIds(new Set())}
+        onAllSelected={() => setSelectedIds(new Set(videos.filter((v) => v.has_video).map((v) => v.id)))}
+      />
 
       {usedPosts.length > 0 && (
         <div className="space-y-3 pt-4">

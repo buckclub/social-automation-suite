@@ -7,6 +7,8 @@ import { SecretInput } from "@/components/ui/secret-input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { AlertTriangle } from "lucide-react";
 
 interface QuotaSnapshot {
   today: string;
@@ -34,6 +36,7 @@ function QuotaWidget() {
   const [limitInput, setLimitInput] = useState<string>("");
   const [savingLimit, setSavingLimit] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
 
   const refresh = async () => {
     try {
@@ -68,7 +71,7 @@ function QuotaWidget() {
   };
 
   const doReset = async () => {
-    if (!confirm("Zero today's quota counter? Use this if the ledger drifted (e.g. Google issued a reset).")) return;
+    setResetConfirmOpen(false);
     setResetting(true);
     try {
       await api.youtubeQuotaReset();
@@ -158,11 +161,29 @@ function QuotaWidget() {
           {savingLimit ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
           Save
         </Button>
-        <Button size="sm" variant="outline" onClick={doReset} disabled={resetting} className="h-7 gap-1 text-[10px]" title="Zero today's counter (use after Google issues a manual reset)">
+        <Button size="sm" variant="outline" onClick={() => setResetConfirmOpen(true)} disabled={resetting} className="h-7 gap-1 text-[10px]" title="Zero today's counter (use after Google issues a manual reset)">
           {resetting ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
           Reset today
         </Button>
       </div>
+
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        onOpenChange={setResetConfirmOpen}
+        title="Reset today's quota counter?"
+        icon={<AlertTriangle className="h-4 w-4 text-warning" />}
+        description={
+          <>
+            Zeros the local ledger for today. Use this only if Google issued you
+            a manual quota reset, or the counter drifted from reality. Doesn't
+            affect your actual YouTube API quota — just what we think we've used.
+          </>
+        }
+        confirmLabel="Reset counter"
+        variant="warning"
+        onConfirm={doReset}
+        isLoading={resetting}
+      />
     </div>
   );
 }
@@ -182,6 +203,7 @@ export function YouTubePublishingPanel() {
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [savingCreds, setSavingCreds] = useState(false);
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
 
   const refresh = async () => {
     try {
@@ -250,7 +272,7 @@ export function YouTubePublishingPanel() {
   };
 
   const disconnect = async () => {
-    if (!confirm("Disconnect YouTube? You'll need to re-authorize to upload again.")) return;
+    setDisconnectOpen(false);
     try {
       await api.youtubeDisconnect();
       toast({ title: "YouTube disconnected" });
@@ -353,11 +375,28 @@ export function YouTubePublishingPanel() {
           >
             <ExternalLink className="h-3 w-3" /> Open channel
           </Button>
-          <Button size="sm" variant="outline" onClick={disconnect} className="gap-1 text-destructive hover:text-destructive">
+          <Button size="sm" variant="outline" onClick={() => setDisconnectOpen(true)} className="gap-1 text-destructive hover:text-destructive">
             <Unplug className="h-3 w-3" /> Disconnect
           </Button>
         </div>
       )}
+
+      <ConfirmDialog
+        open={disconnectOpen}
+        onOpenChange={setDisconnectOpen}
+        title="Disconnect YouTube?"
+        icon={<AlertTriangle className="h-4 w-4 text-warning" />}
+        description={
+          <>
+            Removes the stored refresh token. You'll need to go through the OAuth
+            flow again before you can upload more videos. Previously uploaded
+            videos on your channel are unaffected.
+          </>
+        }
+        confirmLabel="Disconnect"
+        variant="destructive"
+        onConfirm={disconnect}
+      />
     </div>
   );
 }
