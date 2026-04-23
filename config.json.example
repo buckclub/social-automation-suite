@@ -76,7 +76,9 @@
       "enabled": true,
       "expand_age_gender": true,
       "expand_tldr": true,
-      "expand_acronyms": true
+      "expand_acronyms": true,
+      "strip_title_echo": true,
+      "strip_adjacent_dupes": true
     },
 
     "elevenlabs_api_key": "",

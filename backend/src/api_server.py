@@ -1815,7 +1815,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                 pref_on = bool(pref_cfg.get("enabled", True))
                 if pref_on:
                     try:
-                        from tts_prefilter import apply_rules as _prefilter
+                        from tts_prefilter import apply_rules as _prefilter, clean_redundant as _clean_redundant
                         opts = dict(
                             expand_age_gender=bool(pref_cfg.get("expand_age_gender", True)),
                             expand_tldr=bool(pref_cfg.get("expand_tldr", True)),
@@ -1824,7 +1824,24 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                         title = _prefilter(title, **opts)
                         post_body = _prefilter(post_body, **opts)
                         comments = [{**c, "body": _prefilter(c.get("body", ""), **opts)} for c in comments]
-                        _log("Pre-TTS prefilter applied (age/sex, TL;DR, acronyms)")
+
+                        # Redundant-opener + consecutive-dupe stripping. Runs
+                        # after substitutions so the fuzzy-title match catches
+                        # "AITAH" after it's been expanded to "am I the asshole
+                        # here". Off by default for comments — they rarely echo
+                        # the title and removing a trailing one-word ack would
+                        # be rude. Only applies to the main post body.
+                        if bool(pref_cfg.get("strip_title_echo", True)):
+                            orig_lines = post_body.count("\n")
+                            post_body = _clean_redundant(
+                                post_body, title,
+                                strip_title_echo=True,
+                                strip_adjacent_dupes=bool(pref_cfg.get("strip_adjacent_dupes", True)),
+                            )
+                            dropped = orig_lines - post_body.count("\n")
+                            if dropped > 0:
+                                _log(f"Pre-TTS cleanup: stripped {dropped} redundant line(s) from body")
+                        _log("Pre-TTS prefilter applied (age/sex, TL;DR, acronyms, redundancy)")
                     except Exception as _e:
                         _log(f"Pre-TTS prefilter skipped: {_e}")
 
@@ -1869,10 +1886,18 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                 # them so TTS doesn't mispronounce and whisper doesn't choke.
                 if pref_on:
                     try:
-                        from tts_prefilter import apply_rules as _prefilter
+                        from tts_prefilter import apply_rules as _prefilter, clean_redundant as _clean_redundant
                         title = _prefilter(title, **opts)
                         post_body = _prefilter(post_body, **opts)
                         comments = [{**c, "body": _prefilter(c.get("body", ""), **opts)} for c in comments]
+                        # Safety: re-run redundancy stripper in case Ollama
+                        # re-inserted a paraphrase of the title in its output.
+                        if bool(pref_cfg.get("strip_title_echo", True)):
+                            post_body = _clean_redundant(
+                                post_body, title,
+                                strip_title_echo=True,
+                                strip_adjacent_dupes=bool(pref_cfg.get("strip_adjacent_dupes", True)),
+                            )
                     except Exception:
                         pass
 

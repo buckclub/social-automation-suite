@@ -12,9 +12,14 @@ Rules:
   * AITA / YTA / NTA / ESH / NAH -> spelled out readings common in r/AITA
     (these always show up in the content and sound like gibberish via TTS).
   * Various common Reddit acronyms -> plain English.
+  * Redundant title echoes at the start of the body (very common on
+    r/AITA where people paste the title again, then "AITAH", then the
+    real story).
+  * Adjacent duplicate paragraphs / lines.
 """
 from __future__ import annotations
 import re
+from difflib import SequenceMatcher
 
 # --- Number-to-words (0..120 covers all Reddit ages) -----------------------
 
@@ -134,4 +139,149 @@ def apply_rules(text: str, *,
             pattern = r"(?<!\w)" + re.escape(acronym) + r"(?!\w)"
             out = re.sub(pattern, expansion, out)
 
+    return out
+
+
+# --- Redundancy cleanup ----------------------------------------------------
+#
+# Reddit bodies frequently open by pasting the title verbatim, then a single-
+# word acronym ("AITAH", "UPDATE"), then the actual story. When narrated the
+# viewer hears the gist three times before the story even starts. These
+# helpers strip those runs without touching mid-body text.
+
+# Normalize for similarity comparison: lowercase, strip punctuation, collapse
+# whitespace. We want "AITA for wanting X" and "am I the asshole for wanting X"
+# to compare as similar strings after acronym expansion, so comparisons should
+# happen AFTER apply_rules() has run.
+_PUNCT = re.compile(r"[^\w\s]")
+_SPACE = re.compile(r"\s+")
+
+# Single-word fillers that add no information when repeated before the body.
+_FILLER_OPENERS = {
+    "aita", "aitah", "yta", "nta", "esh", "nah",
+    "tldr", "tldr;", "tl;dr", "tl:dr", "update", "edit",
+    "so", "ok", "okay", "alright", "hi", "hello",
+}
+
+# The prefilter's acronym expansions. We also check these so e.g. "AITAH"
+# expanded to "am I the asshole here" still counts as a filler opener.
+_FILLER_EXPANSIONS = {v.lower() for v in _ACRONYM_EXPANSIONS.values()}
+
+
+def _norm(s: str) -> str:
+    return _SPACE.sub(" ", _PUNCT.sub(" ", (s or "").lower())).strip()
+
+
+def _similar(a: str, b: str) -> float:
+    a, b = _norm(a), _norm(b)
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _is_filler_opener(line: str) -> bool:
+    """True if the line is just a short acronym / filler exclamation that
+    adds zero story context — e.g. 'AITAH', 'EDIT:', 'So,' on its own."""
+    n = _norm(line)
+    if not n:
+        return True
+    if len(n) <= 4 and n in _FILLER_OPENERS:
+        return True
+    # Full-phrase match against the filler list or any acronym expansion.
+    if n in _FILLER_OPENERS or n in _FILLER_EXPANSIONS:
+        return True
+    # "so" / "ok" by themselves with trailing punctuation.
+    if len(n.split()) == 1 and n in _FILLER_OPENERS:
+        return True
+    return False
+
+
+def remove_redundant_openers(body: str, title: str, *,
+                             similarity_threshold: float = 0.82,
+                             max_lines_to_strip: int = 4) -> str:
+    """
+    Drop leading paragraphs of `body` that are:
+      * an exact / fuzzy duplicate of the title (≥ similarity_threshold), OR
+      * a single-word filler opener (AITAH, EDIT, UPDATE, TLDR, etc.), OR
+      * one-sentence paraphrase of the title (fuzzy match on the first
+        sentence of the paragraph).
+
+    Only strips from the very start — never touches mid-body text. Caps at
+    `max_lines_to_strip` so a badly-similar body doesn't get gutted.
+    """
+    if not body:
+        return body
+    title_norm = _norm(title)
+    if not title_norm:
+        return body
+
+    # Split on blank lines first (paragraphs), then within each paragraph we
+    # also peek at the first line so a "AITA for X\nAITAH" paragraph gets
+    # both halves stripped.
+    paragraphs = re.split(r"\n\s*\n", body.strip())
+    cleaned_paragraphs: list[str] = []
+    stripped_count = 0
+    still_at_start = True
+
+    for p in paragraphs:
+        if still_at_start and stripped_count < max_lines_to_strip:
+            # Peel individual lines off the top of this paragraph.
+            lines = [ln for ln in p.splitlines()]
+            kept_lines: list[str] = []
+            in_prefix = True
+            for ln in lines:
+                if in_prefix and stripped_count < max_lines_to_strip:
+                    stripped = ln.strip()
+                    if not stripped:
+                        continue
+                    if _is_filler_opener(stripped):
+                        stripped_count += 1
+                        continue
+                    if _similar(stripped, title) >= similarity_threshold:
+                        stripped_count += 1
+                        continue
+                    in_prefix = False
+                kept_lines.append(ln)
+            remainder = "\n".join(kept_lines).strip()
+            if remainder:
+                cleaned_paragraphs.append(remainder)
+                still_at_start = False   # first non-empty paragraph kept
+            # else: whole paragraph was stripped, keep scanning
+        else:
+            cleaned_paragraphs.append(p)
+
+    return "\n\n".join(cleaned_paragraphs)
+
+
+def dedupe_adjacent_lines(text: str, *, similarity_threshold: float = 0.92) -> str:
+    """
+    Collapse consecutive duplicate (or near-duplicate) lines anywhere in
+    the text. Common when the user wrote the same sentence twice by
+    mistake, or Ollama normalization double-emitted a clause.
+    """
+    if not text:
+        return text
+    out_lines: list[str] = []
+    prev_norm: str = ""
+    for ln in text.splitlines():
+        n = _norm(ln)
+        if n and n == prev_norm:
+            continue
+        if n and prev_norm and _similar(ln, out_lines[-1] if out_lines else "") >= similarity_threshold:
+            continue
+        out_lines.append(ln)
+        if n:
+            prev_norm = n
+    return "\n".join(out_lines)
+
+
+def clean_redundant(body: str, title: str, *,
+                    strip_title_echo: bool = True,
+                    strip_adjacent_dupes: bool = True) -> str:
+    """Convenience: apply both redundancy cleaners in the right order."""
+    out = body
+    if strip_title_echo:
+        out = remove_redundant_openers(out, title)
+    if strip_adjacent_dupes:
+        out = dedupe_adjacent_lines(out)
     return out
