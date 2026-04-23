@@ -41,6 +41,11 @@ build/
 projects.json
 .cache/
 
+# Ad-hoc debug artifacts at repo root
+/frame_*.jpg
+/frame_*.png
+/*.debug.*
+
 # AI / editor sessions
 .claude/
 .cursor/
