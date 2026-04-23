@@ -316,13 +316,96 @@ def _load_videos_from_disk():
                 "video_paths": file_info["paths"],
             })
     _scan_loose_videos_dir()
+    _dedupe_slug_duplicates()
     # Snapshot anything discovered from disk scans (posts/, videos/ loose
     # files) back into projects.json so future restarts don't re-do this work.
     _persist_videos_db()
 
 
+def _dedupe_slug_duplicates():
+    """
+    Clean up duplicates where one row has the real post id (audio_only,
+    possibly also already-published) and another row has a filename-derived
+    id pointing at the same rendered mp4. Happens when an earlier render
+    succeeded but its videos_db persistence crashed — the loose-scanner
+    then created a second row with a slug id. Merges file paths into the
+    real post row and drops the slug-id row.
+    """
+    global videos_db
+    # Build a map: title-slug → entry with real post id
+    real_entries: dict[str, dict] = {}
+    for v in videos_db:
+        vid = v.get("id") or ""
+        title = v.get("title") or ""
+        slug = _title_to_filename_stem(title)
+        # A "real" post id looks like a reddit id: short, all alphanumeric,
+        # no long underscore-separated runs. Heuristic: id length <= 10 and
+        # id != slug (slug would be much longer from the title).
+        if slug and len(vid) <= 10 and vid != slug:
+            real_entries[slug] = v
+
+    if not real_entries:
+        return
+
+    to_drop: list[str] = []
+    for v in videos_db:
+        vid = v.get("id") or ""
+        # slug-id rows: id equals the slug of their own title, or id starts
+        # with a slug of a real entry's title.
+        for slug, real in real_entries.items():
+            if vid == real.get("id"):
+                continue
+            if vid.startswith(slug):
+                # Merge this row's file paths into the real entry.
+                for p in v.get("video_paths") or []:
+                    if p not in (real.get("video_paths") or []):
+                        real.setdefault("video_paths", []).append(p)
+                if v.get("has_video"):
+                    real["has_video"] = True
+                    real["status"] = "published"
+                real["file_size_bytes"] = v.get("file_size_bytes") or real.get("file_size_bytes")
+                if not real.get("created_at"):
+                    real["created_at"] = v.get("created_at")
+                to_drop.append(vid)
+                break
+
+    if to_drop:
+        videos_db = [v for v in videos_db if v.get("id") not in to_drop]
+
+
+def _title_to_filename_stem(title: str) -> str:
+    r"""Reverse-engineered match to the slug used by _run_pipeline_async when
+    writing final mp4s (safe_title = re.sub(r"[^\w\-_]", "_", title)[:50])."""
+    safe = re.sub(r"[^\w\-_]", "_", title or "")
+    safe = re.sub(r"_+", "_", safe)[:50].strip("_")
+    return safe
+
+
+def _find_matching_entry_for_orphan(filename_stem: str):
+    """
+    Given a filename stem like `27F_30M_Thinks_marriage_is_nothing_..._reel_20260423_161100`,
+    return the existing videos_db entry whose title, when slugified, is a
+    prefix of the stem. Catches the case where a render succeeded but the
+    persistence call crashed, leaving the registry with the audio_only row
+    and an orphan mp4 in videos/.
+    """
+    for v in videos_db:
+        t = v.get("title") or ""
+        if not t:
+            continue
+        slug = _title_to_filename_stem(t)
+        if not slug:
+            continue
+        if filename_stem.startswith(slug):
+            return v
+    return None
+
+
 def _scan_loose_videos_dir():
-    """Pick up video files in videos/ that the registry doesn't know about."""
+    """Pick up video files in videos/ that the registry doesn't know about.
+    When a loose mp4's filename matches an existing registry entry's title
+    (prefix-match on the slugified title), upgrade that entry's video_paths
+    instead of creating a duplicate row with a filename-derived id."""
     videos_dir = os.path.join(PROJECT_ROOT, "videos")
     if not os.path.exists(videos_dir):
         return
@@ -342,25 +425,43 @@ def _scan_loose_videos_dir():
         # 2a. Subdirectory containing mp4s (multi-part videos layout)
         if os.path.isdir(item_path):
             mp4s = [f for f in os.listdir(item_path) if f.endswith(".mp4")]
-            if mp4s and not any(v["id"] == item for v in videos_db):
-                video_paths = [os.path.join(item_path, f) for f in mp4s]
-                if all(os.path.normcase(os.path.abspath(vp)) in known_paths for vp in video_paths):
-                    continue
-                total_size = sum(os.path.getsize(vp) for vp in video_paths)
-                mtimes = [os.path.getmtime(vp) for vp in video_paths]
-                vid_created_at = datetime.fromtimestamp(max(mtimes), tz=timezone.utc).isoformat() if mtimes else ""
-                videos_db.append({
-                    "id": item,
-                    "title": item.replace("_", " "),
-                    "subreddit": "—",
-                    "score": 0, "num_comments": 0,
-                    "status": "published",
-                    "created_at": vid_created_at,
-                    "has_video": True, "has_audio": False,  # loose dir: no preserved audio
-                    "parts": len(mp4s) if len(mp4s) > 1 else None,
-                    "file_size_bytes": total_size or None,
-                    "video_paths": video_paths,
-                })
+            if not mp4s:
+                continue
+            video_paths = [os.path.join(item_path, f) for f in mp4s]
+            if all(os.path.normcase(os.path.abspath(vp)) in known_paths for vp in video_paths):
+                continue
+
+            total_size = sum(os.path.getsize(vp) for vp in video_paths)
+            mtimes = [os.path.getmtime(vp) for vp in video_paths]
+            vid_created_at = datetime.fromtimestamp(max(mtimes), tz=timezone.utc).isoformat() if mtimes else ""
+
+            # Try to attach these files to an existing audio_only / orphan
+            # registry entry rather than creating a new filename-ID row.
+            existing = _find_matching_entry_for_orphan(item)
+            if existing:
+                existing["video_paths"] = video_paths
+                existing["has_video"] = True
+                existing["status"] = "published"
+                existing["parts"] = len(mp4s) if len(mp4s) > 1 else existing.get("parts")
+                existing["file_size_bytes"] = total_size or existing.get("file_size_bytes")
+                if not existing.get("created_at"):
+                    existing["created_at"] = vid_created_at
+                continue
+
+            if any(v["id"] == item for v in videos_db):
+                continue
+            videos_db.append({
+                "id": item,
+                "title": item.replace("_", " "),
+                "subreddit": "—",
+                "score": 0, "num_comments": 0,
+                "status": "published",
+                "created_at": vid_created_at,
+                "has_video": True, "has_audio": False,  # loose dir: no preserved audio
+                "parts": len(mp4s) if len(mp4s) > 1 else None,
+                "file_size_bytes": total_size or None,
+                "video_paths": video_paths,
+            })
             continue
 
         # 2b. Loose single mp4 file (what auto_cleanup + regular renders leave behind)
@@ -368,12 +469,25 @@ def _scan_loose_videos_dir():
             abs_path = os.path.normcase(os.path.abspath(item_path))
             if abs_path in known_paths:
                 continue
-            # id = filename without extension
             loose_id = os.path.splitext(item)[0]
-            if any(v["id"] == loose_id for v in videos_db):
-                continue
             mtime = os.path.getmtime(item_path)
             created = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+
+            # If this mp4's filename matches an existing entry's title
+            # (e.g. an audio_only row whose render succeeded but whose
+            # persistence call crashed), attach the file to that entry.
+            existing = _find_matching_entry_for_orphan(loose_id)
+            if existing:
+                existing["video_paths"] = [item_path]
+                existing["has_video"] = True
+                existing["status"] = "published"
+                existing["file_size_bytes"] = os.path.getsize(item_path)
+                if not existing.get("created_at"):
+                    existing["created_at"] = created
+                continue
+
+            if any(v["id"] == loose_id for v in videos_db):
+                continue
             videos_db.append({
                 "id": loose_id,
                 "title": loose_id.replace("_", " "),
