@@ -208,8 +208,40 @@ def _get_video_file_info(post_id: str) -> dict:
 
 
 def _load_videos_from_disk():
+    # 1. Authoritative source: projects.json registry.
+    try:
+        from projects_db import load_registry
+        for p in load_registry(PROJECT_ROOT):
+            # Drop any file paths that are missing from disk now.
+            vpaths = [vp for vp in (p.get("video_paths") or []) if vp and os.path.exists(vp)]
+            if not vpaths:
+                # Project with no surviving video files — skip silently.
+                continue
+            entry = {
+                "id": p.get("id"),
+                "title": p.get("title", "Untitled"),
+                "subreddit": p.get("subreddit", "unknown"),
+                "score": int(p.get("score", 0) or 0),
+                "num_comments": int(p.get("num_comments", 0) or 0),
+                "status": p.get("status", "published"),
+                "created_at": p.get("created_at", ""),
+                "has_video": True,
+                "has_audio": bool(p.get("audio_dir") and os.path.isdir(p["audio_dir"])),
+                "parts": len(vpaths) if len(vpaths) > 1 else None,
+                "file_size_bytes": sum(os.path.getsize(vp) for vp in vpaths if os.path.exists(vp)) or None,
+                "video_paths": vpaths,
+                "render_time_s": p.get("render_time_s"),
+            }
+            # Avoid duplicating if somehow loaded twice.
+            if not any(v["id"] == entry["id"] for v in videos_db):
+                videos_db.append(entry)
+    except Exception as e:
+        _log(f"projects.json load failed: {e}")
+
     posts_dir = os.path.join(PROJECT_ROOT, "posts")
     if not os.path.exists(posts_dir):
+        # Still scan videos/ for loose mp4s
+        _scan_loose_videos_dir()
         return
     for post_id in os.listdir(posts_dir):
         post_dir = os.path.join(posts_dir, post_id)
@@ -249,32 +281,74 @@ def _load_videos_from_disk():
                 "file_size_bytes": file_info["total_size"] or None,
                 "video_paths": file_info["paths"],
             })
-    # Also check videos/ directory
-    videos_dir = os.path.join(PROJECT_ROOT, "videos")
-    if os.path.exists(videos_dir):
-        for item in os.listdir(videos_dir):
-            item_path = os.path.join(videos_dir, item)
-            if os.path.isdir(item_path):
-                mp4s = [f for f in os.listdir(item_path) if f.endswith(".mp4")]
-                if mp4s and not any(v["id"] == item for v in videos_db):
-                    total_size = sum(os.path.getsize(os.path.join(item_path, f)) for f in mp4s)
-                    video_paths = [os.path.join(item_path, f) for f in mp4s]
-                    # Use file mtime for created_at
-                    mtimes = [os.path.getmtime(os.path.join(item_path, f)) for f in mp4s]
-                    vid_created_at = datetime.fromtimestamp(max(mtimes), tz=timezone.utc).isoformat() if mtimes else ""
+    _scan_loose_videos_dir()
 
-                    videos_db.append({
-                        "id": item,
-                        "title": item.replace("_", " "),
-                        "subreddit": "—",
-                        "score": 0, "num_comments": 0,
-                        "status": "published",
-                        "created_at": vid_created_at,
-                        "has_video": True, "has_audio": True,
-                        "parts": len(mp4s) if len(mp4s) > 1 else None,
-                        "file_size_bytes": total_size or None,
-                        "video_paths": video_paths,
-                    })
+
+def _scan_loose_videos_dir():
+    """Pick up video files in videos/ that the registry doesn't know about."""
+    videos_dir = os.path.join(PROJECT_ROOT, "videos")
+    if not os.path.exists(videos_dir):
+        return
+
+    known_paths: set[str] = set()
+    for v in videos_db:
+        for p in v.get("video_paths") or []:
+            known_paths.add(os.path.normcase(os.path.abspath(p)))
+
+    for item in os.listdir(videos_dir):
+        item_path = os.path.join(videos_dir, item)
+
+        # Skip preserved project directories — they don't contain rendered videos.
+        if item.startswith("proj_"):
+            continue
+
+        # 2a. Subdirectory containing mp4s (multi-part videos layout)
+        if os.path.isdir(item_path):
+            mp4s = [f for f in os.listdir(item_path) if f.endswith(".mp4")]
+            if mp4s and not any(v["id"] == item for v in videos_db):
+                video_paths = [os.path.join(item_path, f) for f in mp4s]
+                if all(os.path.normcase(os.path.abspath(vp)) in known_paths for vp in video_paths):
+                    continue
+                total_size = sum(os.path.getsize(vp) for vp in video_paths)
+                mtimes = [os.path.getmtime(vp) for vp in video_paths]
+                vid_created_at = datetime.fromtimestamp(max(mtimes), tz=timezone.utc).isoformat() if mtimes else ""
+                videos_db.append({
+                    "id": item,
+                    "title": item.replace("_", " "),
+                    "subreddit": "—",
+                    "score": 0, "num_comments": 0,
+                    "status": "published",
+                    "created_at": vid_created_at,
+                    "has_video": True, "has_audio": False,  # loose dir: no preserved audio
+                    "parts": len(mp4s) if len(mp4s) > 1 else None,
+                    "file_size_bytes": total_size or None,
+                    "video_paths": video_paths,
+                })
+            continue
+
+        # 2b. Loose single mp4 file (what auto_cleanup + regular renders leave behind)
+        if item.lower().endswith(".mp4"):
+            abs_path = os.path.normcase(os.path.abspath(item_path))
+            if abs_path in known_paths:
+                continue
+            # id = filename without extension
+            loose_id = os.path.splitext(item)[0]
+            if any(v["id"] == loose_id for v in videos_db):
+                continue
+            mtime = os.path.getmtime(item_path)
+            created = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+            videos_db.append({
+                "id": loose_id,
+                "title": loose_id.replace("_", " "),
+                "subreddit": "—",
+                "score": 0, "num_comments": 0,
+                "status": "published",
+                "created_at": created,
+                "has_video": True, "has_audio": False,  # no preserved audio ⇒ Re-render won't work
+                "parts": None,
+                "file_size_bytes": os.path.getsize(item_path),
+                "video_paths": [item_path],
+            })
 
 
 def _load_used_posts() -> List[str]:
@@ -537,6 +611,8 @@ async def run_pipeline(req: dict = {}):
     post_id = req.get("post_id")
     selected_comments = req.get("selected_comments")  # optional list of indices
     max_comment_chars = req.get("max_comment_chars", 0)
+    narrator_gender  = req.get("narrator_gender")  # "auto" | "male" | "female" | None
+    voice_override   = req.get("voice_override")
     for step in pipeline_state["steps"]:
         step["status"] = "idle"
         step["detail"] = ""
@@ -549,7 +625,13 @@ async def run_pipeline(req: dict = {}):
     pipeline_state["started_at"] = datetime.now(timezone.utc).isoformat()
     pipeline_state["completed_at"] = None
     _log(f"Pipeline started" + (f" for post {post_id}" if post_id else ""))
-    asyncio.create_task(_run_pipeline_async(post_id, selected_comments=selected_comments, max_comment_chars=max_comment_chars))
+    asyncio.create_task(_run_pipeline_async(
+        post_id,
+        selected_comments=selected_comments,
+        max_comment_chars=max_comment_chars,
+        narrator_gender=narrator_gender,
+        voice_override=voice_override,
+    ))
     return {"started": True}
 
 
@@ -890,10 +972,40 @@ async def resume_video_from_audio(req: dict = {}):
     audio_dir = os.path.join(post_dir, "audio")
     summary_path = os.path.join(post_dir, "summary.json")
 
+    # Fall back to preserved project audio/timeline if auto_cleanup already
+    # removed the post_dir.
     if not os.path.isdir(audio_dir):
-        raise HTTPException(404, f"No audio directory found for post {post_id}")
+        try:
+            from projects_db import find as _reg_find
+            proj = _reg_find(PROJECT_ROOT, post_id)
+        except Exception:
+            proj = None
+        if proj and proj.get("audio_dir") and os.path.isdir(proj["audio_dir"]):
+            audio_dir = proj["audio_dir"]
+        else:
+            raise HTTPException(404, f"No audio directory found for post {post_id}")
     if not os.path.exists(summary_path):
-        raise HTTPException(404, f"No summary.json found for post {post_id}")
+        # Synthesize a minimal summary from the registry so the resume path works.
+        try:
+            from projects_db import find as _reg_find
+            proj = _reg_find(PROJECT_ROOT, post_id)
+        except Exception:
+            proj = None
+        if proj:
+            summary = {
+                "title": proj.get("title", post_id),
+                "subreddit": proj.get("subreddit", ""),
+                "score": proj.get("score", 0),
+                "author": "Anonymous",
+            }
+            try:
+                os.makedirs(post_dir, exist_ok=True)
+                with open(summary_path, "w", encoding="utf-8") as _sf:
+                    json.dump(summary, _sf, indent=2)
+            except Exception:
+                pass
+        else:
+            raise HTTPException(404, f"No summary.json found for post {post_id}")
 
     # Read summary
     with open(summary_path, "r", encoding="utf-8") as f:
@@ -904,6 +1016,15 @@ async def resume_video_from_audio(req: dict = {}):
     # Prefer the authoritative timeline.json saved when TTS ran — its text ↔ audio
     # mapping is guaranteed correct. Fall back to the old audio-file scan for older posts.
     timeline_path = os.path.join(post_dir, "timeline.json")
+    if not os.path.exists(timeline_path):
+        # Fall back to the project registry's preserved timeline (auto_cleanup case).
+        try:
+            from projects_db import find as _reg_find
+            _proj = _reg_find(PROJECT_ROOT, post_id)
+            if _proj and _proj.get("timeline_path") and os.path.isfile(_proj["timeline_path"]):
+                timeline_path = _proj["timeline_path"]
+        except Exception:
+            pass
     timeline: list = []
     if os.path.exists(timeline_path):
         try:
@@ -988,6 +1109,17 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
         video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}))
         output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
+        # Load post metadata for title card rendering during resume.
+        _summary_path = os.path.join(PROJECT_ROOT, "posts", post_id, "summary.json")
+        _resume_meta = {"title": title, "subreddit": "", "score": 0}
+        try:
+            with open(_summary_path, "r", encoding="utf-8") as _sf:
+                _s = json.load(_sf)
+                _resume_meta["subreddit"] = _s.get("subreddit", "")
+                _resume_meta["score"] = int(_s.get("score", 0) or 0)
+        except Exception:
+            pass
+
         if video_mode == "short_reel":
             from moviepy.editor import AudioFileClip
             split_duration = video_config.get("split_duration", 30.0)
@@ -1028,9 +1160,9 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
                 tail_text = outro_text_template.replace("{next_part}", str(idx + 1)) if idx < len(parts) else None
 
                 if engine == "ffmpeg":
-                    vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, part_segs, part_out, tail_text, tail_dur, branding)
+                    vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, part_segs, part_out, tail_text, tail_dur, branding, _resume_meta["title"], _resume_meta["subreddit"], _resume_meta["score"])
                 else:
-                    vp = await asyncio.to_thread(video_gen.generate_video, part_segs, part_out, tail_text, tail_dur, branding)
+                    vp = await asyncio.to_thread(video_gen.generate_video, part_segs, part_out, tail_text, tail_dur, branding, _resume_meta["title"], _resume_meta["subreddit"], _resume_meta["score"])
 
                 if vp:
                     generated_video_paths.append(vp)
@@ -1043,9 +1175,9 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
             video_sub_steps = [{"label": "Full video", "status": "running", "detail": f"{engine} engine"}]
             _set_step("video", "running", f"Rendering single video · engine: {engine}", video_sub_steps)
             if engine == "ffmpeg":
-                vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, timeline, output_video, None, 0.0, branding)
+                vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, timeline, output_video, None, 0.0, branding, _resume_meta["title"], _resume_meta["subreddit"], _resume_meta["score"])
             else:
-                vp = await asyncio.to_thread(video_gen.generate_video, timeline, output_video, None, 0.0, branding)
+                vp = await asyncio.to_thread(video_gen.generate_video, timeline, output_video, None, 0.0, branding, _resume_meta["title"], _resume_meta["subreddit"], _resume_meta["score"])
             if vp:
                 generated_video_paths.append(vp)
                 video_sub_steps[0]["status"] = "done"
@@ -1156,7 +1288,7 @@ def _check_cancelled():
         raise Exception("Pipeline cancelled by user")
 
 
-async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_comments: Optional[List[int]] = None, max_comment_chars: int = 0):
+async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_comments: Optional[List[int]] = None, max_comment_chars: int = 0, narrator_gender: Optional[str] = None, voice_override: Optional[str] = None):
     """Execute the full pipeline matching main.py run_pipeline() flow."""
     global _cancel_requested
     _cancel_requested = False
@@ -1289,6 +1421,8 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
             title = formatter.summary.get("title", "")
             selftext = formatter.summary.get("selftext", "")
             author = formatter.summary.get("author", "Anonymous")
+            post_subreddit = formatter.summary.get("subreddit", "")
+            post_score = int(formatter.summary.get("score", 0) or 0)
             _set_step("format", "done", "Story & Q&A text formatted")
             _log("Story formatted (story_mode.txt + qa_mode.txt)")
         except Exception as e:
@@ -1341,6 +1475,19 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
             else:
                 tts_config = config.get("tts", {})
                 main_voice = tts_config.get("main_voice", "Matthew")
+                # Resolve voice by narrator gender / override if supplied on run.
+                provider_for_resolve = tts_config.get("provider", "streamlabs_polly")
+                resolved_gender = narrator_gender
+                if narrator_gender == "auto" or not narrator_gender:
+                    try:
+                        from narrator_gender import detect_narrator_gender as _detect
+                        resolved_gender = _detect(title, selftext)
+                    except Exception:
+                        resolved_gender = None
+                _resolved = _resolve_voice(provider_for_resolve, config, resolved_gender, voice_override)
+                if _resolved and _resolved != main_voice:
+                    _log(f"Voice resolved: gender={resolved_gender or 'unknown'} → {_resolved} (was {main_voice})")
+                    main_voice = _resolved
                 multi_voice = tts_config.get("use_multiple_voices", True)
                 comment_voices = tts_config.get("comment_voices", [])
                 provider = tts_config.get("provider", "streamlabs_polly")
@@ -1498,6 +1645,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                         if hook_seg_list:
                             for s in hook_seg_list:
                                 s["author"] = author
+                                s["segment_role"] = "title"
                             hook_seg = hook_seg_list
                     else:
                         from tts_engine import StreamlabsTTS
@@ -1508,6 +1656,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                         if hook_seg_list:
                             for s in hook_seg_list:
                                 s["author"] = author
+                                s["segment_role"] = "title"
                             hook_seg = hook_seg_list
 
                     if hook_seg:
@@ -1519,6 +1668,57 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                         ss["status"] = "done"
                     _set_step("tts", "done", f"Generated {len(timeline)} audio segments", tts_sub_steps_live)
                     _log(f"TTS complete: {len(timeline)} segments")
+
+                    # Apply playback speed via atempo BEFORE whisper alignment so
+                    # word timestamps match the stretched audio and captions stay in sync.
+                    speed = float(tts_config.get("speed", 1.0) or 1.0)
+                    if abs(speed - 1.0) >= 0.01:
+                        try:
+                            from tts_speed import adjust_speed
+                            paths = [s.get("audio_path", "") for s in timeline if s.get("audio_path")]
+                            _log(f"Applying TTS playback speed ×{speed:.2f} to {len(paths)} clip(s)...")
+                            changed = await asyncio.to_thread(adjust_speed, paths, speed)
+                            _log(f"Speed adjusted: {changed} clip(s) stretched")
+                            # Invalidate any pre-existing whisper cache since durations changed.
+                            for p in paths:
+                                for suffix in (".whisper.json", ".whisper_v2.json"):
+                                    cache = p + suffix
+                                    if os.path.exists(cache):
+                                        try: os.remove(cache)
+                                        except Exception: pass
+                        except Exception as e:
+                            _log(f"TTS speed adjust failed: {e}")
+
+                    # Optional: whisper forced alignment for word-level caption sync.
+                    caption_cfg = config.get("captions", {}) or {}
+                    if caption_cfg.get("force_align", False):
+                        try:
+                            from whisper_align import is_available as _wh_ok, align_audio, install_hint
+                            if not _wh_ok():
+                                _log(f"Whisper alignment requested but not installed. Skipping. ({install_hint()})")
+                            else:
+                                model_size = caption_cfg.get("align_model_size", "base")
+                                _set_step("tts", "running", f"Aligning captions (whisper {model_size})...")
+                                _log(f"Whisper forced alignment starting (model={model_size})...")
+                                _t0 = time.time()
+                                aligned = 0
+                                for _seg in timeline:
+                                    if _check_cancelled():
+                                        pass  # just re-check for cancellation
+                                    if _seg.get("is_pause"):
+                                        continue
+                                    words = await asyncio.to_thread(
+                                        align_audio, _seg.get("audio_path", ""),
+                                        text_hint=_seg.get("text", ""),
+                                        model_size=model_size,
+                                    )
+                                    if words:
+                                        _seg["words"] = words
+                                        aligned += 1
+                                _log(f"Whisper alignment done: {aligned}/{len(timeline)} segments in {time.time() - _t0:.1f}s")
+                        except Exception as _e:
+                            _log(f"Whisper alignment error (continuing without): {_e}")
+
                     # Persist the authoritative timeline so Re-render can reuse exact caption text.
                     try:
                         tl_path = os.path.join(PROJECT_ROOT, "posts", post_id, "timeline.json")
@@ -1610,9 +1810,9 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                             tail_text = outro_text_template.replace("{next_part}", str(idx + 1))
 
                         if engine == "ffmpeg":
-                            vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, part_segs, part_out, tail_text, tail_dur, branding)
+                            vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, part_segs, part_out, tail_text, tail_dur, branding, title, post_subreddit, post_score)
                         else:
-                            vp = await asyncio.to_thread(video_gen.generate_video, part_segs, part_out, tail_text, tail_dur, branding)
+                            vp = await asyncio.to_thread(video_gen.generate_video, part_segs, part_out, tail_text, tail_dur, branding, title, post_subreddit, post_score)
 
                         if vp:
                             generated_video_paths.append(vp)
@@ -1628,9 +1828,9 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                     _set_step("video", "running", f"Rendering single video · engine: {engine}", video_sub_steps)
                     _log(f"Rendering single video ({engine} engine)...")
                     if engine == "ffmpeg":
-                        vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, timeline, output_video, None, 0.0, branding)
+                        vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, timeline, output_video, None, 0.0, branding, title, post_subreddit, post_score)
                     else:
-                        vp = await asyncio.to_thread(video_gen.generate_video, timeline, output_video, None, 0.0, branding)
+                        vp = await asyncio.to_thread(video_gen.generate_video, timeline, output_video, None, 0.0, branding, title, post_subreddit, post_score)
                     if vp:
                         generated_video_paths.append(vp)
                         video_sub_steps[0]["status"] = "done"
@@ -1668,6 +1868,62 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
 
                     _set_step("video", "done", f"Rendered {len(generated_video_paths)} video(s)")
                     _log(f"Video complete: {len(generated_video_paths)} file(s)")
+
+                    # Preserve audio + timeline under videos/proj_<id>/ so
+                    # Re-render keeps working after auto_cleanup nukes posts/<id>/.
+                    preserve_root = os.path.join(PROJECT_ROOT, "videos", f"proj_{post_id}")
+                    preserved_audio_dir = None
+                    preserved_timeline = None
+                    try:
+                        src_audio = os.path.join(PROJECT_ROOT, "posts", post_id, "audio")
+                        src_timeline = os.path.join(PROJECT_ROOT, "posts", post_id, "timeline.json")
+                        if os.path.isdir(src_audio):
+                            dest_audio = os.path.join(preserve_root, "audio")
+                            os.makedirs(preserve_root, exist_ok=True)
+                            if os.path.isdir(dest_audio):
+                                shutil.rmtree(dest_audio)
+                            shutil.copytree(src_audio, dest_audio)
+                            preserved_audio_dir = dest_audio
+                        if os.path.isfile(src_timeline):
+                            os.makedirs(preserve_root, exist_ok=True)
+                            dest_tl = os.path.join(preserve_root, "timeline.json")
+                            shutil.copyfile(src_timeline, dest_tl)
+                            preserved_timeline = dest_tl
+                            # Rewrite audio paths inside the copied timeline to
+                            # point at the preserved audio so Re-render resolves.
+                            if preserved_audio_dir:
+                                try:
+                                    with open(dest_tl, "r", encoding="utf-8") as _tf:
+                                        _tl = json.load(_tf)
+                                    for _seg in _tl:
+                                        ap = _seg.get("audio_path") or ""
+                                        if ap:
+                                            _seg["audio_path"] = os.path.join(preserved_audio_dir, os.path.basename(ap))
+                                    with open(dest_tl, "w", encoding="utf-8") as _tf:
+                                        json.dump(_tl, _tf, indent=2, ensure_ascii=False)
+                                except Exception as _e:
+                                    _log(f"Could not rewrite preserved timeline audio paths: {_e}")
+                    except Exception as e:
+                        _log(f"Audio/timeline preservation failed: {e}")
+
+                    # Upsert the project registry (survives server restarts).
+                    try:
+                        from projects_db import upsert as _reg_upsert
+                        _reg_upsert(PROJECT_ROOT, {
+                            "id": post_id,
+                            "title": title,
+                            "subreddit": post_subreddit,
+                            "score": post_score,
+                            "num_comments": len(comments) if isinstance(comments, list) else 0,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "video_paths": list(generated_video_paths),
+                            "audio_dir": preserved_audio_dir,
+                            "timeline_path": preserved_timeline,
+                            "render_time_s": None,
+                            "status": "published",
+                        })
+                    except Exception as e:
+                        _log(f"projects.json upsert failed: {e}")
 
                     # Auto cleanup
                     if auto_cleanup:
@@ -1866,6 +2122,7 @@ def _generate_local_tts_narrative(tts_instance, post_id, title, body, author, co
     title_segments = tts_instance.generate_segments(title, progress_callback=_make_progress("Title"), cancel_check=cancel_check)
     for seg in title_segments:
         seg["author"] = author
+        seg["segment_role"] = "title"
         timeline.append(seg)
 
     # Body
@@ -2014,35 +2271,80 @@ async def download_video(video_id: str, part: int = 0):
 
 
 @app.delete("/api/videos/{video_id}")
-async def delete_video(video_id: str):
-    # Remove from in-memory db
+async def delete_video(video_id: str, keep_files: bool = False):
+    """
+    Remove a video from the list. If keep_files is true, leaves files on disk.
+    Otherwise deletes:
+      - the exact mp4 paths recorded for this entry (plus its sibling thumbnail)
+      - its posts/<id>/ workspace when the id looks like a Reddit post id
+    Never substring-matches filenames — that previously caused sibling posts
+    with similar titles to be deleted together.
+    """
     global videos_db
+    entry = next((v for v in videos_db if v["id"] == video_id), None)
+    if not entry:
+        raise HTTPException(404, f"Video '{video_id}' not found in list")
+
+    # 1. Always drop from the in-memory list AND the persistent registry.
     videos_db = [v for v in videos_db if v["id"] != video_id]
+    try:
+        from projects_db import remove as _reg_remove
+        _reg_remove(PROJECT_ROOT, video_id)
+    except Exception as e:
+        _log(f"projects.json remove failed: {e}")
 
-    # Remove files from disk
-    deleted = False
-    post_dir = os.path.join(PROJECT_ROOT, "posts", video_id)
-    if os.path.isdir(post_dir):
-        shutil.rmtree(post_dir)
-        deleted = True
-        _log(f"Deleted post dir: {post_dir}")
+    if keep_files:
+        _log(f"Removed '{video_id}' from list (files kept on disk)")
+        return {"success": True, "files_deleted": 0, "paths": []}
 
-    videos_dir = os.path.join(PROJECT_ROOT, "videos")
-    if os.path.isdir(videos_dir):
-        for item in os.listdir(videos_dir):
-            item_path = os.path.join(videos_dir, item)
-            if video_id in item:
-                if os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
-                else:
-                    os.remove(item_path)
-                deleted = True
-                _log(f"Deleted video: {item_path}")
+    # 2. Delete exact files referenced by this entry.
+    deleted_paths = []
+    for p in entry.get("video_paths") or []:
+        try:
+            if p and os.path.isfile(p):
+                os.remove(p)
+                deleted_paths.append(p)
+                # Sibling thumbnail in videos/ dir (same basename + _thumbnail.png / .mp4 swap)
+                base = os.path.splitext(p)[0]
+                for tpath in (base + "_thumbnail.png", base + ".png"):
+                    if os.path.isfile(tpath):
+                        os.remove(tpath)
+                        deleted_paths.append(tpath)
+        except OSError as e:
+            _log(f"Could not delete {p}: {e}")
 
-    if not deleted:
-        _log(f"No files found for video {video_id}")
+    # 3. If the id looks like a Reddit post id (alphanumeric, ≤12 chars) and a
+    #    posts/<id>/ workspace exists, remove that too. This won't match
+    #    unrelated posts thanks to the exact folder-name check.
+    if video_id and video_id.isalnum() and len(video_id) <= 12:
+        post_dir = os.path.join(PROJECT_ROOT, "posts", video_id)
+        if os.path.isdir(post_dir):
+            try:
+                shutil.rmtree(post_dir)
+                deleted_paths.append(post_dir)
+            except OSError as e:
+                _log(f"Could not remove {post_dir}: {e}")
 
-    return {"success": True}
+        # Also remove a same-named dir under videos/ (multi-part series layout)
+        series_dir = os.path.join(PROJECT_ROOT, "videos", video_id)
+        if os.path.isdir(series_dir):
+            try:
+                shutil.rmtree(series_dir)
+                deleted_paths.append(series_dir)
+            except OSError as e:
+                _log(f"Could not remove {series_dir}: {e}")
+
+        # And the preserved project dir (videos/proj_<id>/ with audio + timeline).
+        proj_dir = os.path.join(PROJECT_ROOT, "videos", f"proj_{video_id}")
+        if os.path.isdir(proj_dir):
+            try:
+                shutil.rmtree(proj_dir)
+                deleted_paths.append(proj_dir)
+            except OSError as e:
+                _log(f"Could not remove {proj_dir}: {e}")
+
+    _log(f"Deleted '{video_id}': {len(deleted_paths)} path(s)")
+    return {"success": True, "files_deleted": len(deleted_paths), "paths": deleted_paths}
 
 
 @app.get("/api/used-posts")
@@ -2230,6 +2532,164 @@ Return JSON with exactly this shape:
         raise
     except Exception as e:
         raise HTTPException(500, f"Social copy generation failed: {e}")
+
+
+@app.post("/api/posts/score-viral")
+async def score_viral_batch(req: dict):
+    """
+    Score a batch of posts 0-100 for short-form virality using the configured
+    AI provider (gemini.*). Returns {scores: {id: {score, reason}, ...}}.
+
+    Each post dict in `req["posts"]` should contain: id, title, selftext, subreddit, score.
+    Missing / unparseable responses fall back to a heuristic score.
+    """
+    posts_in = req.get("posts") or []
+    if not posts_in:
+        return {"scores": {}}
+
+    config = _load_config()
+    g = config.get("gemini", {}) or {}
+    provider = g.get("provider", "gemini")
+    api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    from gemini_hooks import _call_ai  # type: ignore
+
+    def _heuristic(post: dict) -> dict:
+        # Fallback if the AI call fails or returns garbage.
+        score = 0
+        title = (post.get("title") or "").lower()
+        if any(k in title for k in ("aita", "update", "revenge", "cheating", "cheated")):
+            score += 20
+        if post.get("score", 0) > 2000:
+            score += 30
+        if len(post.get("selftext") or "") > 600:
+            score += 15
+        score += min(25, int((post.get("num_comments") or 0) / 50))
+        return {"score": min(100, score + 10), "reason": "heuristic fallback (no AI)", "source": "heuristic"}
+
+    out: dict[str, dict] = {}
+    cache_root = os.path.join(PROJECT_ROOT, "posts")
+
+    # Prompt model once per post. Keep them small & parallelize lightly via to_thread.
+    sem = asyncio.Semaphore(4)
+
+    system = (
+        "You rate Reddit posts for short-form video (TikTok/Shorts/Reels) virality. "
+        "Consider: hook strength, emotional pull, controversy, relatability, payoff, "
+        "and whether the story is self-contained. Return STRICT JSON only."
+    )
+
+    async def _score_one(post: dict):
+        pid = post.get("id") or ""
+        async with sem:
+            # Per-post cache keyed by (model, title, selftext hash)
+            cache_file = os.path.join(cache_root, pid, "viral_score.json") if pid else None
+            if cache_file and os.path.isfile(cache_file):
+                try:
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        cached = json.load(f)
+                    if cached.get("model") == model and cached.get("title") == post.get("title"):
+                        out[pid] = cached["result"]
+                        return
+                except Exception:
+                    pass
+
+            title = (post.get("title") or "")[:260]
+            body = (post.get("selftext") or "")[:1500]
+            prompt = (
+                f"Subreddit: r/{post.get('subreddit') or 'unknown'}\n"
+                f"Score: {post.get('score') or 0}, Comments: {post.get('num_comments') or 0}\n"
+                f"Title: {title}\n"
+                f"Body: {body}\n\n"
+                "Return JSON exactly: {\"score\": <0-100 integer>, \"reason\": \"<≤140 chars>\"}"
+            )
+            try:
+                raw = await asyncio.to_thread(_call_ai, provider, api_key, prompt, system, model, ollama_url)
+                if not raw:
+                    out[pid] = _heuristic(post); return
+                s = raw.strip()
+                if s.startswith("```"):
+                    s = s.split("```")[1]
+                    if s.startswith("json"):
+                        s = s[4:]
+                    s = s.strip("`").strip()
+                start = s.find("{"); end = s.rfind("}")
+                if start < 0 or end <= start:
+                    out[pid] = _heuristic(post); return
+                parsed = json.loads(s[start:end + 1])
+                sc = int(parsed.get("score", 0))
+                sc = max(0, min(100, sc))
+                reason = str(parsed.get("reason", ""))[:160]
+                result = {"score": sc, "reason": reason, "source": provider}
+                out[pid] = result
+                if cache_file:
+                    try:
+                        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+                        with open(cache_file, "w", encoding="utf-8") as f:
+                            json.dump({"model": model, "title": post.get("title"), "result": result}, f)
+                    except Exception:
+                        pass
+            except Exception as e:
+                _log(f"Viral score failed for {pid}: {e}")
+                out[pid] = _heuristic(post)
+
+    await asyncio.gather(*[_score_one(p) for p in posts_in[:40]])  # hard cap 40
+    return {"scores": out}
+
+
+@app.get("/api/posts/{post_id}/narrator-gender")
+async def get_narrator_gender(post_id: str):
+    """
+    Inspect a post (title + body) and guess the narrator's gender.
+    Returns { detected: 'male' | 'female' | null, source: 'title'|'body'|null }.
+    """
+    from narrator_gender import detect_narrator_gender as _detect
+    summary_path = os.path.join(PROJECT_ROOT, "posts", post_id, "summary.json")
+    title = ""
+    body = ""
+    if os.path.isfile(summary_path):
+        try:
+            with open(summary_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            title = data.get("title", "") or ""
+            body  = data.get("selftext", "") or ""
+        except Exception:
+            pass
+    else:
+        # Post hasn't been fetched yet — try live from Reddit via RedditStoryMaker.
+        try:
+            maker = RedditStoryMaker()
+            post = maker.fetch_post_by_id(post_id) if hasattr(maker, "fetch_post_by_id") else None
+            if post:
+                title = post.get("title", "") or ""
+                body  = post.get("selftext", "") or ""
+        except Exception:
+            pass
+    return {"detected": _detect(title, body), "title": title[:200]}
+
+
+def _resolve_voice(provider: str, config: dict, narrator_gender: Optional[str],
+                   voice_override: Optional[str]) -> str:
+    """
+    Resolve the main narrator voice to use for this run.
+    Priority: voice_override > gendered preset > tts.main_voice.
+    """
+    tts_cfg = config.get("tts", {}) or {}
+    if voice_override:
+        return voice_override
+    presets = tts_cfg.get("voice_presets", {}) or {}
+    provider_presets = presets.get(provider, {}) or {}
+    if narrator_gender in ("male", "female"):
+        v = provider_presets.get(narrator_gender)
+        if v:
+            return v
+    return tts_cfg.get("main_voice", "")
 
 
 @app.get("/api/fonts")

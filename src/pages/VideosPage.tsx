@@ -224,10 +224,18 @@ export default function VideosPage() {
   const published = videos.filter((v) => v.status === "published").length;
   const failed = videos.filter((v) => v.status === "failed").length;
 
-  const handleDelete = () => {
+  const handleDelete = (keepFiles: boolean) => {
     if (!deleteTarget) return;
-    deleteMutation.mutate(deleteTarget.id, {
-      onSuccess: () => { toast({ title: "Video deleted" }); setDeleteTarget(null); },
+    deleteMutation.mutate({ id: deleteTarget.id, keep_files: keepFiles }, {
+      onSuccess: (r) => {
+        toast({
+          title: keepFiles ? "Removed from list" : "Deleted",
+          description: keepFiles
+            ? "Files kept on disk."
+            : r.files_deleted ? `${r.files_deleted} path(s) removed.` : "No files found on disk.",
+        });
+        setDeleteTarget(null);
+      },
       onError: (e) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
     });
   };
@@ -339,16 +347,33 @@ export default function VideosPage() {
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Video</DialogTitle>
+            <DialogTitle>Delete "{deleteTarget?.title}"</DialogTitle>
             <DialogDescription className="text-xs">
-              This will permanently delete "{deleteTarget?.title}" and all associated files.
+              Choose what to remove. This only affects this single entry — sibling videos with
+              similar titles are not touched.
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter>
+          <div className="text-[11px] text-muted-foreground space-y-1 pb-1">
+            <p><strong className="text-foreground">Remove from list</strong> — leaves every file on disk (useful if you're reshuffling the list).</p>
+            <p><strong className="text-foreground">Delete files too</strong> — removes the .mp4(s), thumbnail, and <code>posts/&lt;id&gt;/</code> workspace. Irreversible.</p>
+          </div>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancel</Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={deleteMutation.isPending}>
+            <Button
+              variant="outline"
+              className="border-warning text-warning hover:bg-warning/10"
+              onClick={() => handleDelete(true)}
+              disabled={deleteMutation.isPending}
+            >
+              <Trash2 className="h-4 w-4 mr-1" /> List only
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => handleDelete(false)}
+              disabled={deleteMutation.isPending}
+            >
               {deleteMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1" />}
-              Delete
+              Delete files too
             </Button>
           </DialogFooter>
         </DialogContent>

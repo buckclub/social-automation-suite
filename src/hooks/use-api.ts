@@ -109,7 +109,8 @@ export function useCancelPipeline() {
 export function useDeleteVideo() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.deleteVideo(id),
+    mutationFn: (args: { id: string; keep_files?: boolean }) =>
+      api.deleteVideo(args.id, { keep_files: args.keep_files }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["videos"] }),
   });
 }

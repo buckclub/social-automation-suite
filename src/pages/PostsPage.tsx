@@ -1,15 +1,22 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Search, RefreshCw, Loader2, Play, Filter, ArrowUpDown, ExternalLink, CheckCircle2, XCircle, AlertTriangle, Flame, TrendingUp, Clock, Star, Trophy } from "lucide-react";
+import {
+  Search, RefreshCw, Loader2, Play, Filter, ArrowUpDown, ExternalLink,
+  CheckCircle2, XCircle, AlertTriangle, Flame, TrendingUp, Clock, Star,
+  Trophy, Sparkles, Save, X,
+} from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useDiscoverPosts } from "@/hooks/use-api";
 import { GenerateFromUrlDialog } from "@/components/GenerateFromUrlDialog";
 import { GenerateFromCustomDialog } from "@/components/GenerateFromCustomDialog";
 import { CommentSelectionDialog } from "@/components/CommentSelectionDialog";
+import { api } from "@/lib/api";
+import { useToast } from "@/hooks/use-toast";
 import type { RedditPost } from "@/lib/api";
 
 const REDDIT_SORTS = [
@@ -29,33 +36,170 @@ function formatAge(hours: number): string {
   return `${Math.round(hours / 24)}d`;
 }
 
+// --- Filter preset shape + localStorage helpers ----------------------------
+interface FilterPreset {
+  name: string;
+  search: string;
+  excludeKeywords: string;        // comma-separated, case-insensitive
+  mustContain: string;            // comma-separated
+  subredditDeny: string;          // comma-separated subreddit names (no r/)
+  eligibleOnly: boolean;
+  minScore: number;
+  minComments: number;
+  minViralPerHr: number;
+  maxDurationS: number;           // 0 = no cap
+  minAiScore: number;             // 0 = no threshold
+  dedupeWarn: boolean;            // hide near-duplicates of used posts
+}
+
+const EMPTY_PRESET: FilterPreset = {
+  name: "",
+  search: "",
+  excludeKeywords: "",
+  mustContain: "",
+  subredditDeny: "",
+  eligibleOnly: false,
+  minScore: 0,
+  minComments: 0,
+  minViralPerHr: 0,
+  maxDurationS: 0,
+  minAiScore: 0,
+  dedupeWarn: true,
+};
+
+const PRESETS_KEY = "rtr_filter_presets_v1";
+const ACTIVE_PRESET_KEY = "rtr_active_filter_preset";
+
+function loadPresets(): FilterPreset[] {
+  try { return JSON.parse(localStorage.getItem(PRESETS_KEY) || "[]") || []; } catch { return []; }
+}
+function savePresets(presets: FilterPreset[]) {
+  localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
+}
+function tokens(s: string): string[] {
+  return s.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+}
+
 export default function PostsPage() {
   const [redditSort, setRedditSort] = useState<RedditSort>("hot");
   const { data, refetch, isFetching, isError, error } = useDiscoverPosts(redditSort);
   const [selectedPost, setSelectedPost] = useState<RedditPost | null>(null);
-  const [search, setSearch] = useState("");
-  const [filterEligible, setFilterEligible] = useState(false);
-  const [sortBy, setSortBy] = useState<"score" | "comments" | "age" | "viral">("score");
+  const [sortBy, setSortBy] = useState<"score" | "comments" | "age" | "viral" | "ai">("score");
+  const { toast } = useToast();
+
+  // Filter state (flat so a preset can replace it wholesale)
+  const [f, setF] = useState<FilterPreset>(EMPTY_PRESET);
+  const update = <K extends keyof FilterPreset>(k: K, v: FilterPreset[K]) =>
+    setF((prev) => ({ ...prev, [k]: v }));
+
+  // Filter presets
+  const [presets, setPresets] = useState<FilterPreset[]>(loadPresets());
+  const [activePreset, setActivePreset] = useState<string>(
+    localStorage.getItem(ACTIVE_PRESET_KEY) || ""
+  );
+  useEffect(() => {
+    // Auto-apply active preset once on mount if one is saved
+    if (activePreset) {
+      const p = presets.find((x) => x.name === activePreset);
+      if (p) setF({ ...p, name: activePreset });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // AI score state keyed by post id
+  const [aiScores, setAiScores] = useState<Record<string, { score: number; reason: string }>>({});
+  const [aiLoading, setAiLoading] = useState(false);
 
   const posts = data?.posts ?? [];
 
-  const filtered = posts
-    .filter((p) => {
-      if (filterEligible && (!p.meets_filters || p.already_used)) return false;
-      if (search) {
-        const q = search.toLowerCase();
-        return p.title.toLowerCase().includes(q) || p.subreddit.toLowerCase().includes(q);
-      }
-      return true;
-    })
-    .sort((a, b) => {
-      if (sortBy === "score") return b.score - a.score;
-      if (sortBy === "comments") return b.num_comments - a.num_comments;
-      if (sortBy === "viral") return (b.viral_score ?? 0) - (a.viral_score ?? 0);
-      return a.age_hours - b.age_hours;
-    });
+  const filtered = useMemo(() => {
+    const excl = tokens(f.excludeKeywords);
+    const must = tokens(f.mustContain);
+    const denySubs = new Set(tokens(f.subredditDeny));
+    return posts
+      .filter((p) => {
+        if (f.eligibleOnly && (!p.meets_filters || p.already_used)) return false;
+        if (f.dedupeWarn && p.title_dupe_of) return false;
+        if (denySubs.size && denySubs.has(p.subreddit.toLowerCase())) return false;
+        if (f.minScore && p.score < f.minScore) return false;
+        if (f.minComments && p.num_comments < f.minComments) return false;
+        if (f.minViralPerHr && (p.viral_score ?? 0) < f.minViralPerHr) return false;
+        if (f.maxDurationS && (p.est_duration_s ?? 0) > f.maxDurationS) return false;
+        const ai = aiScores[p.id]?.score ?? 0;
+        if (f.minAiScore && ai < f.minAiScore) return false;
+        const hay = (p.title + " " + (p.selftext || "")).toLowerCase();
+        if (must.length && !must.every((t) => hay.includes(t))) return false;
+        if (excl.length && excl.some((t) => hay.includes(t))) return false;
+        if (f.search) {
+          const q = f.search.toLowerCase();
+          return p.title.toLowerCase().includes(q) || p.subreddit.toLowerCase().includes(q);
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (sortBy === "score") return b.score - a.score;
+        if (sortBy === "comments") return b.num_comments - a.num_comments;
+        if (sortBy === "viral") return (b.viral_score ?? 0) - (a.viral_score ?? 0);
+        if (sortBy === "ai") return (aiScores[b.id]?.score ?? 0) - (aiScores[a.id]?.score ?? 0);
+        return a.age_hours - b.age_hours;
+      });
+  }, [posts, f, aiScores, sortBy]);
 
   const eligible = posts.filter((p) => p.meets_filters && !p.already_used).length;
+
+  // --- Preset handlers ---
+  const saveAsPreset = () => {
+    const name = prompt("Preset name?");
+    if (!name) return;
+    const updated = [...presets.filter((p) => p.name !== name), { ...f, name }];
+    setPresets(updated);
+    savePresets(updated);
+    setActivePreset(name);
+    localStorage.setItem(ACTIVE_PRESET_KEY, name);
+    toast({ title: "Preset saved", description: name });
+  };
+  const loadPreset = (name: string) => {
+    if (name === "__none__") {
+      setF({ ...EMPTY_PRESET });
+      setActivePreset("");
+      localStorage.removeItem(ACTIVE_PRESET_KEY);
+      return;
+    }
+    const p = presets.find((x) => x.name === name);
+    if (!p) return;
+    setF(p);
+    setActivePreset(name);
+    localStorage.setItem(ACTIVE_PRESET_KEY, name);
+  };
+  const deletePreset = () => {
+    if (!activePreset) return;
+    const updated = presets.filter((p) => p.name !== activePreset);
+    setPresets(updated);
+    savePresets(updated);
+    setActivePreset("");
+    localStorage.removeItem(ACTIVE_PRESET_KEY);
+  };
+
+  // --- AI scoring ---
+  const runAiScore = async () => {
+    const visible = filtered.slice(0, 40);
+    if (!visible.length) return;
+    setAiLoading(true);
+    try {
+      const r = await api.scoreViralBatch(
+        visible.map((p) => ({
+          id: p.id, title: p.title, selftext: p.selftext,
+          subreddit: p.subreddit, score: p.score, num_comments: p.num_comments,
+        }))
+      );
+      setAiScores((prev) => ({ ...prev, ...r.scores }));
+      toast({ title: `AI scored ${Object.keys(r.scores).length} posts` });
+    } catch (e: any) {
+      toast({ title: "AI scoring failed", description: e.message, variant: "destructive" });
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5">
@@ -100,8 +244,8 @@ export default function PostsPage() {
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={f.search}
+            onChange={(e) => update("search", e.target.value)}
             placeholder="Search by title or subreddit..."
             className="h-9 pl-8 text-xs bg-secondary border-border"
           />
@@ -109,21 +253,114 @@ export default function PostsPage() {
         <div className="flex items-center gap-2">
           <Filter className="h-3.5 w-3.5 text-muted-foreground" />
           <label className="text-xs text-muted-foreground">Eligible only</label>
-          <Switch checked={filterEligible} onCheckedChange={setFilterEligible} />
+          <Switch checked={f.eligibleOnly} onCheckedChange={(v) => update("eligibleOnly", v)} />
         </div>
         <div className="flex items-center gap-1.5">
           <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
-          {(["score", "comments", "age", "viral"] as const).map((s) => (
+          {(["score", "comments", "age", "viral", "ai"] as const).map((s) => (
             <Button
               key={s}
               size="sm"
               variant={sortBy === s ? "default" : "outline"}
               onClick={() => setSortBy(s)}
               className="h-7 px-2 text-xs capitalize"
+              title={s === "ai" ? "AI virality score — run 'Score with AI' first" : undefined}
             >
               {s}
             </Button>
           ))}
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs gap-1"
+          onClick={runAiScore}
+          disabled={aiLoading || filtered.length === 0}
+          title="Score visible posts 0–100 for short-form virality using your configured AI provider"
+        >
+          {aiLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+          Score with AI ({Math.min(filtered.length, 40)})
+        </Button>
+      </div>
+
+      {/* Advanced filters + presets */}
+      <div className="rounded-md border border-border bg-card/50 p-3 space-y-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Preset</span>
+          <Select value={activePreset || "__none__"} onValueChange={loadPreset}>
+            <SelectTrigger className="h-7 w-[180px] text-xs bg-secondary border-border">
+              <SelectValue placeholder="No preset" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">— none —</SelectItem>
+              {presets.map((p) => <SelectItem key={p.name} value={p.name}>{p.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Button size="sm" variant="outline" className="h-7 text-[10px] gap-1" onClick={saveAsPreset}>
+            <Save className="h-3 w-3" /> Save as…
+          </Button>
+          {activePreset && (
+            <Button size="sm" variant="ghost" className="h-7 text-[10px] gap-1 text-destructive"
+              onClick={deletePreset}>
+              <X className="h-3 w-3" /> Delete "{activePreset}"
+            </Button>
+          )}
+          <div className="flex-1" />
+          <Button size="sm" variant="ghost" className="h-7 text-[10px]"
+            onClick={() => setF({ ...EMPTY_PRESET })}>Reset filters</Button>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+          <div className="space-y-0.5">
+            <label className="text-[10px] text-muted-foreground">Exclude keywords (comma-sep)</label>
+            <Input value={f.excludeKeywords} onChange={(e) => update("excludeKeywords", e.target.value)}
+              placeholder="nsfw, drama, politics" className="h-7 text-[11px] bg-secondary border-border" />
+          </div>
+          <div className="space-y-0.5">
+            <label className="text-[10px] text-muted-foreground">Must contain (comma-sep, all)</label>
+            <Input value={f.mustContain} onChange={(e) => update("mustContain", e.target.value)}
+              placeholder="revenge, update" className="h-7 text-[11px] bg-secondary border-border" />
+          </div>
+          <div className="space-y-0.5">
+            <label className="text-[10px] text-muted-foreground">Deny subreddits</label>
+            <Input value={f.subredditDeny} onChange={(e) => update("subredditDeny", e.target.value)}
+              placeholder="askreddit, funny" className="h-7 text-[11px] bg-secondary border-border" />
+          </div>
+          <div className="space-y-0.5">
+            <label className="text-[10px] text-muted-foreground">Min AI score (0–100)</label>
+            <Input type="number" min={0} max={100} value={f.minAiScore || ""}
+              onChange={(e) => update("minAiScore", +e.target.value || 0)}
+              placeholder="0" className="h-7 text-[11px] bg-secondary border-border" />
+          </div>
+          <div className="space-y-0.5">
+            <label className="text-[10px] text-muted-foreground">Min upvotes</label>
+            <Input type="number" min={0} value={f.minScore || ""}
+              onChange={(e) => update("minScore", +e.target.value || 0)}
+              placeholder="0" className="h-7 text-[11px] bg-secondary border-border" />
+          </div>
+          <div className="space-y-0.5">
+            <label className="text-[10px] text-muted-foreground">Min comments</label>
+            <Input type="number" min={0} value={f.minComments || ""}
+              onChange={(e) => update("minComments", +e.target.value || 0)}
+              placeholder="0" className="h-7 text-[11px] bg-secondary border-border" />
+          </div>
+          <div className="space-y-0.5">
+            <label className="text-[10px] text-muted-foreground">Min viral (▲/hr)</label>
+            <Input type="number" min={0} value={f.minViralPerHr || ""}
+              onChange={(e) => update("minViralPerHr", +e.target.value || 0)}
+              placeholder="0" className="h-7 text-[11px] bg-secondary border-border" />
+          </div>
+          <div className="space-y-0.5">
+            <label className="text-[10px] text-muted-foreground">Max est. duration (s)</label>
+            <Input type="number" min={0} value={f.maxDurationS || ""}
+              onChange={(e) => update("maxDurationS", +e.target.value || 0)}
+              placeholder="0 = no cap" className="h-7 text-[11px] bg-secondary border-border" />
+          </div>
+        </div>
+        <div className="flex items-center gap-3 text-[11px]">
+          <label className="flex items-center gap-2 text-muted-foreground">
+            <Switch checked={f.dedupeWarn} onCheckedChange={(v) => update("dedupeWarn", v)} />
+            Hide near-duplicates of used posts
+          </label>
         </div>
       </div>
 
@@ -195,6 +432,18 @@ export default function PostsPage() {
                     {post.est_duration_s !== undefined && post.est_duration_s > 0 && (
                       <span title="Estimated narration length at ~155 wpm">
                         ~{post.est_duration_s}s
+                      </span>
+                    )}
+                    {aiScores[post.id] && (
+                      <span
+                        title={aiScores[post.id].reason}
+                        className={`flex items-center gap-0.5 font-medium ${
+                          aiScores[post.id].score >= 70 ? "text-success" :
+                          aiScores[post.id].score >= 40 ? "text-warning" : "text-muted-foreground"
+                        }`}
+                      >
+                        <Sparkles className="h-3 w-3" />
+                        AI {aiScores[post.id].score}
                       </span>
                     )}
                     {post.over_18 && <Badge variant="destructive" className="text-[9px] px-1 py-0">NSFW</Badge>}

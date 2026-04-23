@@ -208,6 +208,12 @@ export interface FullConfig {
     animation_duration: number;
     pop_overshoot: number;
     pop_start_scale: number;
+    force_align?: boolean;
+    align_model_size?: string;
+    highlight_word?: boolean;
+    highlight_color?: string;
+    highlight_scale?: number;
+    highlight_stroke_color?: string;
   };
   [key: string]: unknown;
 }
@@ -220,6 +226,17 @@ export const api = {
 
   // System fonts
   listFonts: () => request<{ fonts: { family: string; style: string; file: string; path: string }[] }>("/api/fonts"),
+
+  // Narrator gender detection
+  getNarratorGender: (postId: string) =>
+    request<{ detected: "male" | "female" | null; title?: string }>(`/api/posts/${postId}/narrator-gender`),
+
+  // AI virality scorer
+  scoreViralBatch: (posts: { id: string; title: string; selftext?: string; subreddit?: string; score?: number; num_comments?: number }[]) =>
+    request<{ scores: Record<string, { score: number; reason: string; source: string }> }>("/api/posts/score-viral", {
+      method: "POST",
+      body: JSON.stringify({ posts }),
+    }),
 
   // Social copy (YouTube / TikTok / Instagram)
   getSocialCopy: (postId: string) =>
@@ -269,7 +286,13 @@ export const api = {
 
   // Pipeline
   getPipelineStatus: () => request<PipelineState>("/api/pipeline/status"),
-  runPipeline: (params?: { post_id?: string; selected_comments?: number[]; max_comment_chars?: number }) =>
+  runPipeline: (params?: {
+    post_id?: string;
+    selected_comments?: number[];
+    max_comment_chars?: number;
+    narrator_gender?: "auto" | "male" | "female";
+    voice_override?: string;
+  }) =>
     request<{ started: boolean }>("/api/pipeline/run", {
       method: "POST",
       body: JSON.stringify(params || {}),
@@ -303,8 +326,11 @@ export const api = {
   getLogs: () => request<{ logs: string[] }>("/api/logs"),
 
   // Video actions
-  deleteVideo: (id: string) =>
-    request<{ success: boolean }>(`/api/videos/${id}`, { method: "DELETE" }),
+  deleteVideo: (id: string, opts?: { keep_files?: boolean }) =>
+    request<{ success: boolean; files_deleted?: number; paths?: string[] }>(
+      `/api/videos/${id}${opts?.keep_files ? "?keep_files=true" : ""}`,
+      { method: "DELETE" }
+    ),
 
   // TTS Provider management
   getTtsProviders: () =>

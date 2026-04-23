@@ -16,3 +16,7 @@ numpy>=1.24.0
 
 # Optional terminal UI for cli_app.py (graceful fallback if missing)
 rich>=13.0.0
+
+# Optional: local word-level caption alignment (captions.force_align)
+# Pulls ctranslate2 + tokenizers as deps; CUDA automatically used if available.
+faster-whisper>=1.0.0

@@ -21,6 +21,10 @@ export interface CaptionsPreviewProps {
   animationDuration: number;
   popOvershoot: number;
   popStartScale: number;
+  highlightWord?: boolean;
+  highlightColor?: string;
+  highlightScale?: number;
+  highlightStrokeColor?: string;
 }
 
 const SAMPLE =
@@ -88,12 +92,22 @@ export function CaptionsPreview(props: CaptionsPreviewProps) {
     [props.wordsPerCaption]
   );
   const [idx, setIdx] = useState(0);
+  const [wordIdx, setWordIdx] = useState(0);
 
   useEffect(() => {
     if (!props.enabled || chunks.length <= 1) return;
     const iv = setInterval(() => setIdx((i) => (i + 1) % chunks.length), 1400);
     return () => clearInterval(iv);
   }, [chunks.length, props.enabled]);
+
+  // Cycle the highlighted word inside the current chunk every ~300ms.
+  useEffect(() => {
+    if (!props.enabled || !props.highlightWord) return;
+    const iv = setInterval(() => setWordIdx((i) => i + 1), 350);
+    return () => clearInterval(iv);
+  }, [props.enabled, props.highlightWord, idx]);
+
+  useEffect(() => { setWordIdx(0); }, [idx, props.wordsPerCaption]);
 
   // Reset index if chunk count drops.
   useEffect(() => {
@@ -102,6 +116,10 @@ export function CaptionsPreview(props: CaptionsPreviewProps) {
 
   const displayText = chunks[idx] ?? "";
   const shownText = props.uppercase ? displayText.toUpperCase() : displayText;
+  const words = shownText.split(/\s+/).filter(Boolean);
+  const activeWordIndex = props.highlightWord && words.length > 0
+    ? wordIdx % words.length
+    : -1;
 
   // Scale font size and stroke to preview.
   const scaledFont = Math.max(6, Math.round(props.fontSize * SCALE));
@@ -209,7 +227,7 @@ export function CaptionsPreview(props: CaptionsPreviewProps) {
                 style={{
                   fontFamily: fontFamilyFromPath(props.fontPath),
                   fontSize: scaledFont,
-                  lineHeight: 1.15,
+                  lineHeight: 1.25,
                   color: props.color,
                   textAlign: "center",
                   textShadow: strokeShadow,
@@ -217,7 +235,27 @@ export function CaptionsPreview(props: CaptionsPreviewProps) {
                   fontWeight: 700,
                 }}
               >
-                {shownText}
+                {words.map((w, i) => {
+                  const isActive = i === activeWordIndex;
+                  const style: React.CSSProperties = isActive
+                    ? {
+                        color: props.highlightColor || props.color,
+                        textShadow: props.highlightStrokeColor
+                          ? strokeShadow.replace(new RegExp(props.strokeColor, "g"), props.highlightStrokeColor)
+                          : strokeShadow,
+                        display: "inline-block",
+                        transform: `scale(${props.highlightScale ?? 1})`,
+                        transformOrigin: "center bottom",
+                        transition: "transform 80ms ease-out, color 80ms",
+                      }
+                    : { display: "inline-block", transition: "transform 80ms ease-out" };
+                  return (
+                    <span key={i}>
+                      <span style={style}>{w}</span>
+                      {i < words.length - 1 ? " " : ""}
+                    </span>
+                  );
+                })}
               </div>
             </div>
           </div>

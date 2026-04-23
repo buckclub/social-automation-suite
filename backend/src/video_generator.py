@@ -103,6 +103,14 @@ class VideoGenerator:
             'animation_duration': float(cfg.get('animation_duration', 0.15)),
             'pop_overshoot':   float(cfg.get('pop_overshoot', 1.12)),
             'pop_start_scale': float(cfg.get('pop_start_scale', 0.7)),
+            # Per-word highlight (requires whisper alignment).
+            'highlight_word':  bool(cfg.get('highlight_word', False)),
+            'highlight_color': cfg.get('highlight_color', '#FFD93D'),   # yellow
+            'highlight_scale': float(cfg.get('highlight_scale', 1.0)),  # 1.0 = no scale
+            'highlight_stroke_color': cfg.get('highlight_stroke_color', cfg.get('stroke_color', 'black')),
+            # Safety rails against runaway captions when whisper has gaps in the audio.
+            'max_chunk_duration': float(cfg.get('max_chunk_duration', 2.5)),  # seconds per chunk
+            'lead_in_grace':      float(cfg.get('lead_in_grace', 1.0)),       # seconds of lead before first word
         }
 
     def _caption_xy(self, w: int, h: int) -> tuple:
@@ -117,31 +125,144 @@ class VideoGenerator:
             y = (self.height - h) // 2 + p['position_offset']
         return x, y
 
-    @staticmethod
-    def _chunk_segment(text: str, duration: float, words_per_caption: int):
+    def _chunk_segment(self, segment_or_text, duration: float, words_per_caption: int):
         """
-        Split a segment text into chunks of N words, assigning each chunk a
-        duration proportional to its character count. Returns [(text, dur), ...].
-        When words_per_caption <= 0, returns a single chunk with the whole text.
+        Produce a list of caption chunks covering `duration` seconds.
+
+        If `segment_or_text` is a segment dict containing `words` (from whisper
+        alignment), each chunk is anchored to real word timestamps — an empty
+        ("", dur) tuple fills silent gaps. Otherwise chunks are spaced evenly
+        by character count across the segment duration.
+
+        Returns [(text_or_empty, dur), ...].
         """
-        text = text.strip()
+        if isinstance(segment_or_text, dict):
+            segment = segment_or_text
+            text = (segment.get("text") or "").strip()
+            words = segment.get("words") or []
+        else:
+            segment = None
+            text = (segment_or_text or "").strip()
+            words = []
+
+        # --- Aligned path: we have whisper word timestamps ---
+        if words and words_per_caption > 0:
+            highlight = bool(self.captions.get('highlight_word'))
+            # Cap how long a single caption chunk stays on screen. If the next
+            # word-group is far away (long pause, whisper gap, leading silence)
+            # we show the caption for this long then blank until the next word.
+            max_chunk_dur = float(self.captions.get('max_chunk_duration', 2.5))
+            # First-chunk grace: if the first spoken word is 5s in, we still
+            # want a caption up for a short lead-in, not the whole gap.
+            lead_grace   = float(self.captions.get('lead_in_grace', 1.0))
+
+            # Build groups with their anchored start (first word's whisper start).
+            groups = []
+            for i in range(0, len(words), words_per_caption):
+                grp = words[i:i + words_per_caption]
+                chunk_text = " ".join((w.get("word") or "").strip() for w in grp).strip()
+                grp_start = max(0.0, float(grp[0].get("start", 0.0)))
+                groups.append((chunk_text, grp_start, grp))
+
+            out = []
+            cursor = 0.0
+            for i, (chunk_text, grp_start, grp) in enumerate(groups):
+                # When should this chunk become visible?
+                if i == 0:
+                    # First chunk: cover leading silence up to `lead_grace` seconds.
+                    chunk_start = max(0.0, min(cursor, grp_start))
+                    if grp_start - chunk_start > lead_grace:
+                        chunk_start = max(0.0, grp_start - lead_grace)
+                else:
+                    chunk_start = max(cursor, grp_start)
+
+                # When should the next chunk take over?
+                if i + 1 < len(groups):
+                    next_start = min(duration, max(chunk_start + 0.05, groups[i + 1][1]))
+                else:
+                    next_start = duration
+
+                # Leading blank (after last chunk ended but before this one starts)
+                if chunk_start > cursor:
+                    out.append({"text": "", "duration": chunk_start - cursor,
+                                "words": [], "active_index": -1})
+                    cursor = chunk_start
+
+                available = max(0.05, next_start - chunk_start)
+
+                if not highlight or len(grp) <= 1:
+                    # Single-frame chunk, capped.
+                    visible = min(available, max_chunk_dur)
+                    out.append({"text": chunk_text, "duration": visible,
+                                "words": [(w.get("word") or "").strip() for w in grp],
+                                "active_index": -1})
+                    cursor = chunk_start + visible
+                    # Blank tail if the gap exceeds the cap
+                    if available > visible + 0.01:
+                        out.append({"text": "", "duration": available - visible,
+                                    "words": [], "active_index": -1})
+                        cursor = next_start
+                    else:
+                        cursor = next_start
+                    continue
+
+                # Per-word highlight frames for the group.
+                word_list = [(w.get("word") or "").strip() for w in grp]
+                # Determine per-word end times from the next word's start (or group end).
+                word_ends = []
+                for j, w in enumerate(grp):
+                    if j + 1 < len(grp):
+                        nxt = max(chunk_start + (j + 1) * 0.04, float(grp[j + 1].get("start", 0.0)))
+                        nxt = min(nxt, next_start)
+                    else:
+                        nxt = next_start
+                    word_ends.append(nxt)
+
+                # Scale: how much of `available` does "real speech" cover?
+                # Last word's timestamp-end or group_end — whichever comes first.
+                last_word_end = float(grp[-1].get("end", word_ends[-1]))
+                real_end = min(last_word_end, next_start)
+                real_end = max(real_end, chunk_start + 0.05)
+
+                # Draw each word, clamped to max_chunk_dur per word (rarely triggers)
+                word_cursor = chunk_start
+                for j, _w in enumerate(grp):
+                    end_time = min(word_ends[j], real_end)
+                    dur = max(0.04, end_time - word_cursor)
+                    dur = min(dur, max_chunk_dur)
+                    out.append({"text": chunk_text, "duration": dur,
+                                "words": word_list, "active_index": j})
+                    word_cursor += dur
+
+                cursor = word_cursor
+                # Trailing silence within this group's window -> blank
+                if next_start > cursor + 0.01:
+                    out.append({"text": "", "duration": next_start - cursor,
+                                "words": [], "active_index": -1})
+                    cursor = next_start
+
+            # Drop zero-duration slivers
+            out = [f for f in out if f["duration"] > 0.001]
+            return out if out else [{"text": text, "duration": duration, "words": [text], "active_index": -1}]
+
+        # --- Fallback: even char-weighted chunking ---
         if words_per_caption <= 0 or not text:
-            return [(text, duration)]
-        words = text.split()
-        if not words:
-            return [(text, duration)]
-        chunks = [' '.join(words[i:i + words_per_caption])
-                  for i in range(0, len(words), words_per_caption)]
+            return [{"text": text, "duration": duration, "words": text.split() if text else [], "active_index": -1}]
+        tok = text.split()
+        if not tok:
+            return [{"text": text, "duration": duration, "words": [], "active_index": -1}]
+        chunks = [' '.join(tok[i:i + words_per_caption])
+                  for i in range(0, len(tok), words_per_caption)]
         total_chars = sum(len(c) for c in chunks) or 1
         out = []
         allocated = 0.0
         for i, c in enumerate(chunks):
             if i == len(chunks) - 1:
-                dur = max(0.0, duration - allocated)  # absorb rounding
+                dur = max(0.0, duration - allocated)
             else:
                 dur = duration * (len(c) / total_chars)
                 allocated += dur
-            out.append((c, dur))
+            out.append({"text": c, "duration": dur, "words": c.split(), "active_index": -1})
         return out
 
     def _animate_clip(self, clip, chunk_dur: float):
@@ -322,6 +443,152 @@ class VideoGenerator:
         
         return temp_file.name
 
+    def _render_caption_image_frame(self, frame: dict) -> str:
+        """
+        Render one caption frame. Routes through the per-word layout so any
+        single word that's wider than the caption budget can be shrunk
+        independently — avoids the frame-clipping problem when a long word
+        (e.g. URLs, run-on names) exceeds max_width_pct.
+        """
+        words_list = frame.get("words") or []
+        active_idx = int(frame.get("active_index", -1))
+        if words_list:
+            return self._render_highlighted_caption(words_list, active_idx)
+        # No word list (e.g. empty chunk / tail text) — use the simple path.
+        return self._render_caption_image(frame.get("text") or "")
+
+    def _load_font(self, path, size):
+        try:
+            return ImageFont.truetype(path or 'arial.ttf', size)
+        except OSError:
+            try:
+                return ImageFont.truetype('arial.ttf', size)
+            except OSError:
+                return ImageFont.load_default()
+
+    def _render_highlighted_caption(self, words: list, active_idx: int) -> str:
+        """
+        Manual per-word layout so one word can differ in color and optionally
+        size from the rest. Returns a PNG path that sits on a transparent
+        background (or a pill if bg_color is configured).
+        """
+        import tempfile
+        p = self.captions
+        base_size  = p['font_size']
+        hi_scale   = max(0.5, float(p.get('highlight_scale') or 1.0))
+        font_normal = self._load_font(p['font_path'], base_size)
+        font_hi     = self._load_font(p['font_path'], int(round(base_size * hi_scale)))
+        color       = p['color']
+        stroke      = p['stroke_color']
+        stroke_w    = p['stroke_width'] or 0
+        hi_color    = p.get('highlight_color') or color
+        hi_stroke   = p.get('highlight_stroke_color') or stroke
+        padding     = p['padding']
+        max_width   = int(self.width * p['max_width_pct'])
+        use_bg      = bool(p['bg_color'])
+
+        if p['uppercase']:
+            words = [w.upper() for w in words]
+
+        # Measure space widths for layout gaps; use normal font so spacing is stable.
+        space_w = int(font_normal.getlength(' '))
+        budget  = max(1, max_width - 2 * padding - 2 * stroke_w)
+
+        # Wrap words into lines. Track each token's geometry + whether it's active.
+        # If a single word is wider than `budget` at its base font, shrink
+        # JUST THAT WORD so it fits — other words stay at normal/highlight size.
+        lines: list[list[dict]] = [[]]
+        cur_w = 0
+        for i, word in enumerate(words):
+            is_active = (i == active_idx)
+            base_font = font_hi if is_active else font_normal
+            base_size_for_word = int(base_font.size)
+            f = base_font
+            ww = int(f.getlength(word))
+            # Shrink if oversized. 0.97 safety factor to avoid 1-pixel overflow
+            # from rounding in glyph advance widths.
+            if ww > budget:
+                scale = (budget / ww) * 0.97
+                new_size = max(10, int(round(base_size_for_word * scale)))
+                f = self._load_font(p['font_path'], new_size)
+                ww = int(f.getlength(word))
+                # Corner case: even at min size 10px still wider — cap at 10.
+                if ww > budget:
+                    # Last resort: hard clamp.
+                    ww = budget
+            gap = space_w if lines[-1] else 0
+            if lines[-1] and cur_w + gap + ww > budget:
+                lines.append([])
+                cur_w = 0
+                gap = 0
+            lines[-1].append({"word": word, "active": is_active, "font": f, "w": ww})
+            cur_w += gap + ww
+
+        # Compute line heights from the actual fonts used on that line (each
+        # word may have its own size now), so line spacing is correct even when
+        # one word got shrunk a lot.
+        line_heights = []
+        line_widths = []
+        for line in lines:
+            asc = max(tok["font"].getmetrics()[0] for tok in line) if line else 0
+            dsc = max(tok["font"].getmetrics()[1] for tok in line) if line else 0
+            line_heights.append(asc + dsc)
+            w_total = sum(tok["w"] for tok in line) + space_w * max(0, len(line) - 1)
+            line_widths.append(w_total)
+
+        total_w = max(line_widths) if line_widths else 1
+        total_h = sum(line_heights) + max(0, len(lines) - 1) * int(base_size * 0.15)
+
+        img_w = total_w + padding * 2 + stroke_w * 2
+        img_h = total_h + padding * 2 + stroke_w * 2
+
+        img = Image.new('RGBA', (img_w, img_h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        if use_bg:
+            bg_color = p['bg_color']
+            bg_opacity = p['bg_opacity']
+            if bg_color.startswith('#'):
+                h = bg_color.lstrip('#')
+                rgb = tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+                box_color = rgb + (bg_opacity,)
+            elif bg_color.lower() == 'black':
+                box_color = (0, 0, 0, bg_opacity)
+            elif bg_color.lower() == 'white':
+                box_color = (255, 255, 255, bg_opacity)
+            else:
+                box_color = (0, 0, 0, bg_opacity)
+            draw.rounded_rectangle([(0, 0), (img_w, img_h)], radius=p['corner_radius'], fill=box_color)
+
+        # Draw each line centered horizontally. Baseline-align mixed-size words
+        # within a line so a shrunk word sits nicely next to full-size ones.
+        cur_y = padding + stroke_w
+        for line, lw, lh in zip(lines, line_widths, line_heights):
+            if not line:
+                cur_y += lh + int(base_size * 0.15)
+                continue
+            line_ascent = max(tok["font"].getmetrics()[0] for tok in line)
+            cur_x = (img_w - lw) // 2
+            for tok in line:
+                f = tok["font"]
+                # Anchor each word to the line's shared baseline.
+                tok_ascent = f.getmetrics()[0]
+                word_y = cur_y + (line_ascent - tok_ascent)
+                txt_color  = hi_color  if tok["active"] else color
+                stroke_col = hi_stroke if tok["active"] else stroke
+                draw.text(
+                    (cur_x, word_y), tok["word"],
+                    font=f, fill=txt_color,
+                    stroke_width=stroke_w, stroke_fill=stroke_col,
+                )
+                cur_x += tok["w"] + space_w
+            cur_y += lh + int(base_size * 0.15)
+
+        tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+        img.save(tmp.name)
+        tmp.close()
+        return tmp.name
+
     def _render_caption_image(self, text: str) -> str:
         """Render a single caption PNG using the normalized caption config."""
         p = self.captions
@@ -397,7 +664,7 @@ class VideoGenerator:
             print(f"❌ Error loading background {bg_path}: {e}")
             return ColorClip(size=(self.width, self.height), color=(20, 20, 30), duration=duration)
 
-    def generate_video(self, audio_segments: List[dict], output_path: str, tail_text: Optional[str] = None, tail_duration: float = 0.0, branding: str = ""):
+    def generate_video(self, audio_segments: List[dict], output_path: str, tail_text: Optional[str] = None, tail_duration: float = 0.0, branding: str = "", post_title: str = "", post_subreddit: str = "", post_score: int = 0):
         """
         Generate final video from audio segments.
         audio_segments: List of dicts {'text': str, 'audio_path': str, 'author': str (opt)}
@@ -425,15 +692,23 @@ class VideoGenerator:
         # 2. Prepare Background
         background_clip = self.get_random_background(total_duration)
         
+        # Pre-render title card if any title segments exist.
+        self._title_card_path = None
+        if any(s.get('segment_role') == 'title' for s in audio_segments) and post_title:
+            card = self._ensure_title_card(post_title, post_subreddit, post_score, branding)
+            if card:
+                temp_images.append(card)
+
         # 3. Create Subtitles & Attribution
         subtitle_clips = []
         attribution_clips = []
+        title_card_clips = []
         current_time = 0
         current_author = None
-        
+
         total_segments = len(audio_segments)
         print(f"   Composing {total_segments} segments...")
-        
+
         for i, segment in enumerate(audio_segments):
             # Print progress every 10 segments or for first/last
             if i % 10 == 0 or i == total_segments - 1:
@@ -441,21 +716,34 @@ class VideoGenerator:
             segment_duration = audio_clips[i].duration
             author = segment.get('author', 'Anonymous')
 
+            # Title-role segments: show the title card full-frame, no captions.
+            if segment.get('segment_role') == 'title' and self._title_card_path:
+                tc = (ImageClip(self._title_card_path)
+                      .set_start(current_time)
+                      .set_duration(segment_duration)
+                      .set_position((0, 0)))
+                title_card_clips.append(tc)
+                current_time += segment_duration
+                continue
+
             if not self.captions['enabled']:
                 current_time += segment_duration
                 continue
 
-            # Split segment text into word-chunks with proportional durations
+            # Split segment text into word-chunks. If whisper alignment is
+            # present on the segment, chunk timings match real spoken words.
             chunks = self._chunk_segment(
-                segment['text'], segment_duration, self.captions['words_per_caption']
+                segment, segment_duration, self.captions['words_per_caption']
             )
             chunk_start = current_time
             first_chunk_xy = None
-            for chunk_text, chunk_dur in chunks:
+            for frame in chunks:
+                chunk_text = frame["text"]
+                chunk_dur = frame["duration"]
                 if not chunk_text:
                     chunk_start += chunk_dur
                     continue
-                text_img_path = self._render_caption_image(chunk_text)
+                text_img_path = self._render_caption_image_frame(frame)
                 temp_images.append(text_img_path)
                 txt_clip_tmp = ImageClip(text_img_path)
                 cw, ch = txt_clip_tmp.size
@@ -531,7 +819,10 @@ class VideoGenerator:
             branding_clips.append(brand_clip)
 
         # 5. Composite
-        final_video = CompositeVideoClip([background_clip] + subtitle_clips + attribution_clips + branding_clips)
+        # Title cards sit over the background but under captions; captions and
+        # branding shouldn't render during title segments since title_card_clips
+        # cover that time range fullscreen.
+        final_video = CompositeVideoClip([background_clip] + title_card_clips + subtitle_clips + attribution_clips + branding_clips)
         final_video = final_video.set_audio(final_audio)
         
         # 5. Write file
@@ -608,10 +899,43 @@ class VideoGenerator:
         """
         import tempfile
 
+        # Diagnostic: title-role without a prepared card means the pipeline
+        # didn't populate post_title or the thumbnail render failed.
+        if segment.get('segment_role') == 'title' and not getattr(self, '_title_card_path', None):
+            print("   ⚠️  title-role segment but no title card prepared — falling back to captions")
+
+        # Title-role segments: overlay the Reddit-style card widget on top of
+        # the running background video (card has transparent surrounds). No
+        # captions during the title.
+        if segment.get('segment_role') == 'title' and getattr(self, '_title_card_path', None):
+            card_img = Image.open(self._title_card_path).convert("RGBA")
+            if card_img.size != (self.width, self.height):
+                card_img = card_img.resize((self.width, self.height), Image.LANCZOS)
+            canvas = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
+            canvas.alpha_composite(card_img, (0, 0))
+            # Also paint the watermark so branding is visible during the title.
+            if branding and branding.strip():
+                brand_path = self.create_text_image(
+                    branding.strip(),
+                    fontsize=30, color='white',
+                    max_width=int(self.width * 0.4),
+                    use_bg_box=True, bg_color='black',
+                    bg_opacity=120, padding=12,
+                )
+                brand_img = Image.open(brand_path).convert("RGBA")
+                bw, bh = brand_img.size
+                canvas.alpha_composite(brand_img, (self.width - bw - 20, self.height - bh - 20))
+                try: os.remove(brand_path)
+                except: pass
+            tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+            canvas.save(tmp.name)
+            tmp.close()
+            return [(tmp.name, duration)]
+
         captions_on = self.captions['enabled']
         if captions_on:
             chunks = self._chunk_segment(
-                segment.get('text', ''), duration, self.captions['words_per_caption']
+                segment, duration, self.captions['words_per_caption']
             )
         else:
             # One empty "chunk" so the segment still holds its time slot.
@@ -620,11 +944,13 @@ class VideoGenerator:
         include_brand = bool(branding and branding.strip())
 
         out = []
-        for idx, (chunk_text, chunk_dur) in enumerate(chunks):
+        for idx, frame in enumerate(chunks):
+            chunk_text = frame.get("text", "")
+            chunk_dur  = frame.get("duration", 0.0)
             canvas = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
 
             if chunk_text:
-                sub_path = self._render_caption_image(chunk_text)
+                sub_path = self._render_caption_image_frame(frame)
                 sub_img = Image.open(sub_path).convert("RGBA")
                 sw, sh = sub_img.size
                 sx, sy = self._caption_xy(sw, sh)
@@ -678,37 +1004,45 @@ class VideoGenerator:
 
     def generate_thumbnail(self, title: str, subreddit: str, part_number: int = 1,
                            total_parts: int = 1, output_path: str = "thumbnail.png",
-                           score: int = 0, branding: str = "", title_override: str = None) -> Optional[str]:
+                           score: int = 0, branding: str = "", title_override: str = None,
+                           transparent_bg: bool = False) -> Optional[str]:
         """
         Generate a Reddit-style thumbnail for a video part.
         Card size adapts to content. Includes optional branding watermark.
+
+        transparent_bg=True produces the same card widget on a fully transparent
+        canvas (no blurred video frame behind it), so it can be overlaid on top
+        of a running background video as a title-card animation.
         """
-        print(f"   🖼️  Generating thumbnail for Part {part_number}...")
+        print(f"   🖼️  Generating thumbnail for Part {part_number}{' (transparent)' if transparent_bg else ''}...")
         try:
             w, h = self.width, self.height
 
-            # 1. Background — grab a frame from a random background video or use solid
             bg_img = None
-            video_files = [f for f in os.listdir(self.backgrounds_dir)
-                          if f.lower().endswith(('.mp4', '.mov', '.avi'))]
-            if video_files:
-                bg_path = os.path.join(self.backgrounds_dir, random.choice(video_files))
-                try:
-                    clip = VideoFileClip(bg_path)
-                    t = random.uniform(0, max(clip.duration - 1, 0))
-                    frame = clip.get_frame(t)
-                    clip.close()
-                    bg_img = Image.fromarray(frame).resize((w, h), Image.LANCZOS)
-                    from PIL import ImageFilter
-                    bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=12))
-                    overlay = Image.new('RGBA', (w, h), (0, 0, 0, 80))
-                    bg_img = bg_img.convert('RGBA')
-                    bg_img = Image.alpha_composite(bg_img, overlay)
-                except Exception as e:
-                    print(f"   ⚠️  Could not extract background frame: {e}")
-
-            if bg_img is None:
-                bg_img = Image.new('RGBA', (w, h), (20, 20, 30, 255))
+            if not transparent_bg:
+                # 1. Background — grab a frame from a random background video or use solid
+                video_files = [f for f in os.listdir(self.backgrounds_dir)
+                              if f.lower().endswith(('.mp4', '.mov', '.avi'))]
+                if video_files:
+                    bg_path = os.path.join(self.backgrounds_dir, random.choice(video_files))
+                    try:
+                        clip = VideoFileClip(bg_path)
+                        t = random.uniform(0, max(clip.duration - 1, 0))
+                        frame = clip.get_frame(t)
+                        clip.close()
+                        bg_img = Image.fromarray(frame).resize((w, h), Image.LANCZOS)
+                        from PIL import ImageFilter
+                        bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=12))
+                        overlay = Image.new('RGBA', (w, h), (0, 0, 0, 80))
+                        bg_img = bg_img.convert('RGBA')
+                        bg_img = Image.alpha_composite(bg_img, overlay)
+                    except Exception as e:
+                        print(f"   ⚠️  Could not extract background frame: {e}")
+                if bg_img is None:
+                    bg_img = Image.new('RGBA', (w, h), (20, 20, 30, 255))
+            else:
+                # Transparent canvas — only the card itself will be drawn.
+                bg_img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
 
             draw = ImageDraw.Draw(bg_img)
 
@@ -814,8 +1148,10 @@ class VideoGenerator:
             draw.text((card_x + inner_pad, bottom_y), f"{heart} {score_text}", fill=(120, 120, 120), font=font_meta)
             draw.text((card_x + card_w - 180, bottom_y), share_text, fill=(120, 120, 120), font=font_meta)
 
-            # 9. Branding watermark (bottom-right corner of image)
-            if branding and branding.strip():
+            # 9. Branding watermark (bottom-right corner of image) — skipped when
+            # producing a transparent overlay, since the render pipeline paints
+            # its own watermark per-frame.
+            if not transparent_bg and branding and branding.strip():
                 brand_text = branding.strip()
                 brand_bbox = draw.textbbox((0, 0), brand_text, font=font_brand)
                 brand_tw = brand_bbox[2] - brand_bbox[0]
@@ -842,19 +1178,58 @@ class VideoGenerator:
             traceback.print_exc()
             return None
 
-    def generate_video_ffmpeg(self, audio_segments: List[dict], output_path: str, tail_text: Optional[str] = None, tail_duration: float = 0.0, branding: str = ""):
+    def _ensure_title_card(self, post_title: str, post_subreddit: str, post_score: int, branding: str) -> Optional[str]:
+        """
+        Render a full-frame title card using generate_thumbnail and cache it on
+        the instance. Returns the path to a PNG sized self.width × self.height.
+        """
+        if getattr(self, "_title_card_path", None):
+            return self._title_card_path
+        if not post_title:
+            return None
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp.close()
+        try:
+            result = self.generate_thumbnail(
+                title=post_title,
+                subreddit=post_subreddit or "",
+                part_number=1, total_parts=1,
+                output_path=tmp.name,
+                score=post_score or 0,
+                branding=branding or "",
+                transparent_bg=True,   # card only; real background video shows through
+            )
+            if result and os.path.exists(result):
+                self._title_card_path = result
+                return result
+        except Exception as e:
+            print(f"⚠️  Title card render failed: {e}")
+        return None
+
+    def generate_video_ffmpeg(self, audio_segments: List[dict], output_path: str, tail_text: Optional[str] = None, tail_duration: float = 0.0, branding: str = "", post_title: str = "", post_subreddit: str = "", post_score: int = 0):
         """
         Generate video using direct FFmpeg commands (Beta Engine).
         Significantly faster compositing but requires FFmpeg installed.
         """
         print(f"\n🎬 Generating video (FFMPEG Beta Engine)...")
         import subprocess
-        
+
         temp_files = [] # Track for cleanup
 
         if self.captions['animation'] != 'none':
             print(f"⚠️  Caption animation '{self.captions['animation']}' is ignored by the FFmpeg engine. "
                   f"Set video.engine = 'moviepy' in config.json to enable animations.")
+
+        # Pre-render the title card if any segment is tagged as 'title'.
+        self._title_card_path = None
+        if any(s.get('segment_role') == 'title' for s in audio_segments) and post_title:
+            card = self._ensure_title_card(post_title, post_subreddit, post_score, branding)
+            if card:
+                temp_files.append(card)
+                print(f"   Title card ready: {card}")
+            else:
+                print("   ⚠️  Title card could not be rendered; title segments will show captions.")
 
         # Resolve FFmpeg executable
         try:

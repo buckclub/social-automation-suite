@@ -19,6 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import type { FullConfig, TtsProvider } from "@/lib/api";
 import { CaptionsPreview } from "@/components/CaptionsPreview";
+import { ColorInput } from "@/components/ColorInput";
 
 function TestAiButton({ provider, model, apiKey, ollamaUrl }: { provider: string; model: string; apiKey: string; ollamaUrl?: string }) {
   const [testing, setTesting] = useState(false);
@@ -125,6 +126,10 @@ export default function ConfigPage() {
   const [ttsSpeed, setTtsSpeed] = useState(0.5);
   const [ttsPreNormalize, setTtsPreNormalize] = useState(true);
 
+  // Voice presets: per-provider male / female defaults used when
+  // the pipeline picks a gendered narrator.
+  const [votePresets, setVotePresets] = useState<Record<string, { male: string; female: string }>>({});
+
   // ElevenLabs-specific
   const [elevenApiKey, setElevenApiKey] = useState("");
   const [elevenModel, setElevenModel] = useState("eleven_multilingual_v2");
@@ -166,6 +171,12 @@ export default function ConfigPage() {
   const [capAnimationDuration, setCapAnimationDuration] = useState(0.15);
   const [capPopOvershoot, setCapPopOvershoot] = useState(1.12);
   const [capPopStartScale, setCapPopStartScale] = useState(0.7);
+  const [capForceAlign, setCapForceAlign] = useState(false);
+  const [capAlignModelSize, setCapAlignModelSize] = useState("base");
+  const [capHighlightWord, setCapHighlightWord] = useState(false);
+  const [capHighlightColor, setCapHighlightColor] = useState("#FFD93D");
+  const [capHighlightScale, setCapHighlightScale] = useState(1.1);
+  const [capHighlightStrokeColor, setCapHighlightStrokeColor] = useState("#000000");
 
   // Output
   const [postsDir, setPostsDir] = useState("posts");
@@ -253,6 +264,7 @@ export default function ConfigPage() {
     setTtsFormat(t.output_format ?? "mp3");
     setTtsSpeed(t.speed ?? 0.5);
     setTtsPreNormalize((t as any).pre_normalize ?? true);
+    setVotePresets(((t as any).voice_presets ?? {}) as Record<string, { male: string; female: string }>);
 
     const el = ((t as any).elevenlabs as Record<string, unknown>) ?? {};
     setElevenApiKey((t as any).elevenlabs_api_key ?? el.api_key ?? "");
@@ -294,6 +306,12 @@ export default function ConfigPage() {
     setCapAnimationDuration(cap.animation_duration ?? 0.15);
     setCapPopOvershoot(cap.pop_overshoot ?? 1.12);
     setCapPopStartScale(cap.pop_start_scale ?? 0.7);
+    setCapForceAlign((cap as any).force_align ?? false);
+    setCapAlignModelSize((cap as any).align_model_size ?? "base");
+    setCapHighlightWord((cap as any).highlight_word ?? false);
+    setCapHighlightColor((cap as any).highlight_color ?? "#FFD93D");
+    setCapHighlightScale((cap as any).highlight_scale ?? 1.1);
+    setCapHighlightStrokeColor((cap as any).highlight_stroke_color ?? (cap.stroke_color ?? "#000000"));
 
     const o = c.output ?? {} as FullConfig["output"];
     setPostsDir(o.posts_directory ?? "posts");
@@ -373,6 +391,7 @@ export default function ConfigPage() {
           output_format: ttsFormat,
           speed: ttsSpeed,
           pre_normalize: ttsPreNormalize,
+          voice_presets: votePresets,
           elevenlabs_api_key: elevenApiKey,
           elevenlabs_model_id: elevenModel,
           elevenlabs: {
@@ -416,6 +435,12 @@ export default function ConfigPage() {
           animation_duration: capAnimationDuration,
           pop_overshoot: capPopOvershoot,
           pop_start_scale: capPopStartScale,
+          force_align: capForceAlign,
+          align_model_size: capAlignModelSize,
+          highlight_word: capHighlightWord,
+          highlight_color: capHighlightColor,
+          highlight_scale: capHighlightScale,
+          highlight_stroke_color: capHighlightStrokeColor,
         },
         output: {
           posts_directory: postsDir,
@@ -847,6 +872,67 @@ export default function ConfigPage() {
                 })()}
               </div>
 
+              {/* Per-provider Male / Female presets */}
+              <div className="rounded-md border border-border bg-secondary/30 p-3 space-y-2">
+                <div>
+                  <label className="text-xs font-medium text-foreground">Gender Presets</label>
+                  <p className="text-[10px] text-muted-foreground leading-snug">
+                    Used when the Run dialog selects a narrator gender (auto-detected from the post or forced).
+                    Falls back to Main Narrator Voice if left blank.
+                  </p>
+                </div>
+                {(() => {
+                  const currentProvider = providers.find((p) => p.id === ttsProvider);
+                  let voiceList: { id: string; label: string }[] = [];
+                  if (ttsProvider === "elevenlabs") {
+                    const ev = elevenVoicesQuery.data?.voices ?? [];
+                    voiceList = ev.map((v) => ({ id: v.voice_id, label: `${v.name}${v.category ? ` — ${v.category}` : ""}` }));
+                  } else {
+                    const detailed = currentProvider?.voices_detailed ?? [];
+                    const raw = currentProvider?.voices ?? STREAMLABS_VOICES;
+                    voiceList = raw.map((v) => {
+                      const d = detailed.find((x: any) => x.id === v);
+                      return { id: v, label: d ? `${d.name} (${d.lang}, ${d.gender})` : v };
+                    });
+                  }
+                  const preset = votePresets[ttsProvider] ?? { male: "", female: "" };
+                  const set = (g: "male" | "female", v: string) => {
+                    setVotePresets({
+                      ...votePresets,
+                      [ttsProvider]: { ...preset, [g]: v },
+                    });
+                  };
+                  return (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-muted-foreground">Male preset</Label>
+                        <Select value={preset.male || "__none__"} onValueChange={(v) => set("male", v === "__none__" ? "" : v)}>
+                          <SelectTrigger className="h-8 text-xs bg-secondary border-border"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">— none —</SelectItem>
+                            {voiceList.map((v) => (
+                              <SelectItem key={v.id} value={v.id}>{v.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-muted-foreground">Female preset</Label>
+                        <Select value={preset.female || "__none__"} onValueChange={(v) => set("female", v === "__none__" ? "" : v)}>
+                          <SelectTrigger className="h-8 text-xs bg-secondary border-border"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">— none —</SelectItem>
+                            {voiceList.map((v) => (
+                              <SelectItem key={v.id} value={v.id}>{v.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
               {ttsProvider === "elevenlabs" && (
                 <div className="rounded-lg border border-border p-3 space-y-3 bg-primary/5">
                   <div className="flex items-center gap-2">
@@ -1134,11 +1220,11 @@ export default function ConfigPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">Text Color</Label>
-                  <Input value={capColor} onChange={(e) => setCapColor(e.target.value)} placeholder="white or #ffffff" className="h-8 text-xs bg-secondary border-border" />
+                  <ColorInput value={capColor} onChange={setCapColor} placeholder="#ffffff" />
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">Stroke Color</Label>
-                  <Input value={capStrokeColor} onChange={(e) => setCapStrokeColor(e.target.value)} placeholder="black or #000000" className="h-8 text-xs bg-secondary border-border" />
+                  <ColorInput value={capStrokeColor} onChange={setCapStrokeColor} placeholder="#000000" />
                 </div>
               </div>
               <div className="space-y-1">
@@ -1160,7 +1246,7 @@ export default function ConfigPage() {
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <Label className="text-xs text-muted-foreground">BG Color</Label>
-                      <Input value={capBgColor} onChange={(e) => setCapBgColor(e.target.value)} placeholder="black or #000000" className="h-8 text-xs bg-secondary border-border" />
+                      <ColorInput value={capBgColor} onChange={setCapBgColor} placeholder="#000000" />
                     </div>
                     <div className="space-y-1">
                       <Label className="text-xs text-muted-foreground">Corner Radius ({capCornerRadius}px)</Label>
@@ -1241,6 +1327,75 @@ export default function ConfigPage() {
               )}
 
               <Separator />
+              <div className="rounded-md border border-border bg-secondary/30 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs text-muted-foreground font-medium">Highlight Spoken Word</label>
+                    <p className="text-[10px] text-muted-foreground leading-snug mt-0.5">
+                      Currently-spoken word gets a different color (and optionally scales up).
+                      Requires <strong>Forced Alignment</strong> below to be enabled — otherwise there's
+                      no per-word timing data to drive it.
+                    </p>
+                  </div>
+                  <Switch checked={capHighlightWord} onCheckedChange={setCapHighlightWord} />
+                </div>
+                {capHighlightWord && (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Highlight Color</Label>
+                        <ColorInput value={capHighlightColor} onChange={setCapHighlightColor} placeholder="#FFD93D" />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Highlight Stroke</Label>
+                        <ColorInput value={capHighlightStrokeColor} onChange={setCapHighlightStrokeColor} placeholder="#000000" />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">
+                        Active-word Scale ({capHighlightScale.toFixed(2)}×)
+                      </Label>
+                      <Slider value={[Math.round(capHighlightScale * 100)]} onValueChange={([v]) => setCapHighlightScale(v / 100)} min={100} max={150} step={1} />
+                      <p className="text-[10px] text-muted-foreground">1.00× = no scale-up. 1.10× is classic TikTok pop. Above 1.20× may cause line-height jumps.</p>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <Separator />
+              <div className="rounded-md border border-border bg-secondary/30 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs text-muted-foreground font-medium">Forced Alignment (Whisper)</label>
+                    <p className="text-[10px] text-muted-foreground leading-snug mt-0.5">
+                      Runs local faster-whisper on each TTS clip to get per-word timestamps, then
+                      syncs caption chunks to the actual spoken words. Results cached per-file
+                      so Re-render is free. Silently skipped if <code>faster-whisper</code> isn't installed.
+                    </p>
+                  </div>
+                  <Switch checked={capForceAlign} onCheckedChange={setCapForceAlign} />
+                </div>
+                {capForceAlign && (
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Whisper Model Size</Label>
+                    <Select value={capAlignModelSize} onValueChange={setCapAlignModelSize}>
+                      <SelectTrigger className="h-8 text-xs bg-secondary border-border"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="tiny">tiny (~75 MB, fastest, less accurate)</SelectItem>
+                        <SelectItem value="base">base (~145 MB, recommended)</SelectItem>
+                        <SelectItem value="small">small (~500 MB, more accurate)</SelectItem>
+                        <SelectItem value="medium">medium (~1.5 GB, slow, best for noisy voices)</SelectItem>
+                        <SelectItem value="large-v3">large-v3 (~3 GB, best quality, needs GPU)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[10px] text-muted-foreground">
+                      Auto-detects CUDA. First run downloads the model (one-time).
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <Separator />
               <div className="flex items-center justify-between">
                 <div>
                   <label className="text-xs text-muted-foreground">Show Attribution</label>
@@ -1274,6 +1429,10 @@ export default function ConfigPage() {
             animationDuration={capAnimationDuration}
             popOvershoot={capPopOvershoot}
             popStartScale={capPopStartScale}
+            highlightWord={capHighlightWord}
+            highlightColor={capHighlightColor}
+            highlightScale={capHighlightScale}
+            highlightStrokeColor={capHighlightStrokeColor}
           />
         </div>
         </div>

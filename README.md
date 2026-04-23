@@ -10,38 +10,75 @@ This is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/r
 
 ## Fork additions
 
-**New features on top of upstream:**
+### TTS
 
-- **ElevenLabs TTS provider** — full integration with live voice fetching from `/v2/voices` (no more stale hardcoded IDs), stability / similarity / style / speaker-boost sliders, model selection (Multilingual v2 / Turbo v2.5 / Monolingual v1).
-- **Pre-TTS cleanup with local Ollama** — expands Reddit shorthand (`tho`→`though`, `cuz`→`because`, etc.) and fixes typos before sending to paid TTS. Cached per-post. Skips silently if Ollama is offline. Saves money and improves ElevenLabs output quality.
-- **Configurable captions** — UI control over font, size, color, stroke, background box, position, words-per-caption chunking, uppercase, attribution. Pixel-accurate wrapping so wide display fonts don't overflow the frame.
-- **Caption animations (MoviePy engine)** — fade, pop (scale-in with overshoot), or both combined. With tunable duration and pop parameters. FFmpeg engine logs a warning and renders statically.
-- **Live caption preview** — 1080×1920 scaled mock frame on the Captions tab that updates as you drag sliders. Chunk cycling shows how multi-word splitting will look.
-- **System font dropdown** — enumerates installed `.ttf`/`.otf`/`.ttc` on the server and lets you pick from a searchable list, with each entry rendered in its own font.
-- **Tabbed config page** — sidebar navigation (General / Formatting / TTS / Video / Captions / AI Hooks / Output) instead of one long scroll.
-- **Social copy generator** — per-video button that uses your configured AI provider to generate YouTube Shorts titles (3 variants) + description + tags, TikTok caption + hashtags, Instagram caption + hashtags. Saved to `posts/<id>/social.json`.
-- **Re-render button** — re-runs just the video step on an existing post using the saved audio. Picks up new caption/video settings without spending TTS credits. Backed by a persisted `timeline.json` so caption text lines up exactly with the original audio segments.
-- **Post discovery upgrades** — virality score (upvotes/hour), duration estimate (~155 wpm), per-subreddit cap, fuzzy dedupe against previously-used post titles. New "Viral" sort.
-- **Cache-busting on preview** — video/thumbnail URLs include a `v=<mtime>` query string, and the stream endpoint sets `Cache-Control: no-cache`, so Re-render output shows up immediately in the preview.
-- **`start.ps1` dev loop** — wraps the server with Ctrl+C-restarts-server behavior (double-tap within 2s to exit).
-- **`run_server.py`** — single-entry dev launcher that mounts the built frontend and runs uvicorn.
-- **Upstream bug fix: `PROJECT_ROOT`** — every module in `backend/src/` computed this one `dirname` short of the repo root, which made the stock server silently read a stale `backend/config.json`. Fixed across all 13 modules.
-- **Upstream bug fix: caption overflow** — the original used a `fontsize * 0.5` estimate for wrap width; wide display fonts overflowed the frame. Rewrote with `font.getlength()` pixel-accurate wrapping and stroke-aware canvas sizing.
+- **ElevenLabs provider** — live voice fetching from `/v2/voices` (no stale hardcoded IDs); stability / similarity / style / speaker-boost sliders; model selection (Multilingual v2 / Turbo v2.5 / Monolingual v1); configs that stored a name instead of a voice_id self-heal on next run.
+- **Gendered voice presets** — per-provider male/female defaults in the TTS tab. The Run dialog auto-detects narrator gender from the post title/body (regex on `(M32)` / `28f` / `as a 24F` / `my wife|husband`) and picks the matching preset. Can be overridden per-run.
+- **Pre-TTS cleanup with local Ollama** — expands Reddit shorthand (`tho`→`though`, `cuz`→`because`) and fixes typos before sending to paid TTS. Cached per-post. Silently skipped if Ollama is offline.
+- **Playback speed is actually applied now** — the speed slider was cosmetic upstream; I pipe each synthesized clip through FFmpeg `atempo` (handles 0.25×–4× via chaining). Whisper alignment then runs on the stretched audio so captions stay in sync.
 
-**Config changes:**
+### Captions
 
-Copy `config.json.example` to `config.json` on first run. New keys (all optional, sane defaults):
+- **Fully configurable** — font (server-side font picker enumerating installed TTFs), size, color, stroke color/width, uppercase, background box, position (center/top/bottom), offset, max width %, words-per-chunk.
+- **Color picker** — native swatch + hex input combo for text, stroke, BG, and highlight colors.
+- **Animations** (MoviePy engine): fade, pop, fade+pop with tunable duration, overshoot, start-scale.
+- **Whisper forced alignment** — optional local `faster-whisper` (GPU-aware: `cuda` + `float16` when available, else `cpu` + `int8`) produces word-level timestamps so captions snap to the actual spoken words. Cached per audio file.
+- **Per-word highlight** — current spoken word rendered in a configurable color, optionally scaled up 100–150% for a TikTok-style bounce. Requires alignment.
+- **Per-word shrink-to-fit** — if one word would overflow the caption width, just that word is scaled down (baseline-aligned with its neighbors); the rest stay at normal size.
+- **Runaway-caption cap** — `max_chunk_duration` prevents a single chunk from staying on screen for 15+ seconds when whisper leaves a gap. `lead_in_grace` covers brief TTS leading silence.
+- **Title card over live background** — during the hook + title TTS segments, the Reddit-style card widget is overlaid on top of the running background video (transparent surrounds, so the background keeps moving). Captions start once the body begins.
+- **Live caption preview** — 9:16 mock frame on the Captions tab that reflects every setting in real time, including cycling active-word highlight.
+
+### Post discovery
+
+- **AI virality scorer** — a "Score with AI" button scores up to 40 visible posts 0–100 using your configured LLM (Ollama / Gemini / OpenRouter / NVIDIA NIM). Results cached per-post. New "AI" sort.
+- **Virality (upvotes/hour), duration estimate (~155 wpm), per-subreddit cap**, and **fuzzy dedupe** of titles against previously-used posts.
+- **Expanded filter bar** — exclude keywords, must-contain, deny-subreddit list, min upvotes, min comments, min viral/hr, max duration, min AI score, hide near-duplicates.
+- **Filter presets** — save/load/delete named filter bundles (persisted per browser).
+
+### Publishing / output
+
+- **Social copy generator** — per-video "Social Copy" button generates YouTube Shorts titles (3 variants) + description + tags, TikTok caption + hashtags, Instagram caption + hashtags, via your configured AI provider. Saved to `posts/<id>/social.json` with per-field copy buttons.
+- **Project registry** — every rendered video is tracked in `projects.json` at the repo root. Audio + `timeline.json` are preserved under `videos/proj_<id>/` even when `auto_cleanup` nukes `posts/<id>/`, so the Videos page survives server restarts and Re-render keeps working indefinitely.
+- **Re-render** — re-runs just the video step using the persisted audio and aligned timeline, so caption/video settings can be tweaked without re-spending TTS credits. Preview URLs include `?v=<mtime>` + no-cache headers so the new render shows immediately.
+- **Delete dialog** — two options: "List only" (keeps files) and "Delete files too" (removes the .mp4s, thumbnail, and preserved workspace). Exact-path matching — deleting one video no longer wipes siblings with similar titles.
+
+### Dev experience
+
+- **Tabbed config page** — sidebar navigation (General / Formatting / TTS / Video / Captions / AI Hooks / Output & Discord) instead of one long scrolling page.
+- **`start.ps1` dev loop** — wraps the server with Ctrl+C-restarts-server behavior (double-tap Ctrl+C within 2s to exit).
+- **`run_server.py`** — single-entry dev launcher that mounts the built frontend and runs uvicorn with the backend path correctly resolved.
+
+### Upstream bug fixes shipped
+
+- **`PROJECT_ROOT` off-by-one** — every module in `backend/src/` computed this one `dirname` short of the repo root, which made the stock server silently read a stale `backend/config.json`. Fixed across all 13 modules.
+- **Caption overflow on wide fonts** — upstream used a `fontsize * 0.5` estimate for wrap width; display fonts like Gotham Ultra overflowed the frame. Rewrote with `font.getlength()` pixel-accurate wrapping and stroke-aware canvas sizing.
+- **Title card appearing too late and then vanishing** — title/hook segments now carry a `segment_role: "title"` tag so the card shows for the whole hook block and captions only engage once the body begins.
+- **Delete endpoint substring-match** — previously `if video_id in filename:` deleted all posts with overlapping characters. Replaced with exact-path matching.
+
+### Config changes
+
+Copy `config.json.example` to `config.json` on first run. All new keys have defaults.
 
 ```jsonc
-"reddit": { "max_per_subreddit_per_run": 10 },
-"captions": { /* see example */ },
+"reddit":   { "max_per_subreddit_per_run": 10 },
 "tts": {
+  "speed": 1.0,
   "pre_normalize": true,
   "elevenlabs_api_key": "",
   "elevenlabs_model_id": "eleven_turbo_v2_5",
-  "elevenlabs": {
-    "stability": 0.5, "similarity_boost": 0.75, "style": 0.0, "use_speaker_boost": true
+  "elevenlabs": { "stability": 0.5, "similarity_boost": 0.75, "style": 0.0, "use_speaker_boost": true },
+  "voice_presets": {
+    "elevenlabs":       { "male": "<voice_id>", "female": "<voice_id>" },
+    "streamlabs_polly": { "male": "Brian",      "female": "Joanna" }
   }
+},
+"captions": {
+  "words_per_caption": 3, "uppercase": true, "position": "bottom",
+  "animation": "none",
+  "force_align": false, "align_model_size": "base",
+  "highlight_word": false, "highlight_color": "#FFD93D", "highlight_scale": 1.1,
+  "max_chunk_duration": 2.5, "lead_in_grace": 1.0
 }
 ```
 

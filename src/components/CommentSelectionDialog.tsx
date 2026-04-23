@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
@@ -9,8 +9,9 @@ import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import {
-  Loader2, Play, Filter, CheckSquare, Square, MessageSquare, ExternalLink,
+  Loader2, Play, Filter, CheckSquare, Square, MessageSquare, ExternalLink, Mic,
 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { useRunPipeline } from "@/hooks/use-api";
@@ -53,6 +54,21 @@ export function CommentSelectionDialog({
   const [loadingComments, setLoadingComments] = useState(false);
   const [commentsLoaded, setCommentsLoaded] = useState(false);
 
+  // Narrator voice selection
+  const [narratorMode, setNarratorMode] = useState<"auto" | "male" | "female">("auto");
+  const [detectedGender, setDetectedGender] = useState<"male" | "female" | null>(null);
+
+  // Fetch narrator-gender hint whenever a post is opened
+  useEffect(() => {
+    if (!open || !post) return;
+    let cancelled = false;
+    setDetectedGender(null);
+    api.getNarratorGender(post.id).then((r) => {
+      if (!cancelled) setDetectedGender(r.detected);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [open, post]);
+
   const runPipeline = useRunPipeline();
   const { toast } = useToast();
 
@@ -86,8 +102,9 @@ export function CommentSelectionDialog({
 
   const handleRun = () => {
     if (!post) return;
-    const params: { post_id: string; selected_comments?: number[]; max_comment_chars?: number } = {
+    const params: Parameters<typeof runPipeline.mutate>[0] = {
       post_id: post.id,
+      narrator_gender: narratorMode,
     };
     if (selectComments) {
       params.selected_comments = selectedComments;
@@ -111,6 +128,8 @@ export function CommentSelectionDialog({
       setSelectedComments([]);
       setMaxCharLimit(0);
       setCommentsLoaded(false);
+      setNarratorMode("auto");
+      setDetectedGender(null);
     }, 200);
   };
 
@@ -131,6 +150,32 @@ export function CommentSelectionDialog({
             {post.selftext}
           </div>
         )}
+
+        {/* Narrator Voice */}
+        <div className="flex items-center justify-between gap-3 p-3 rounded-lg border border-border bg-secondary/50">
+          <div className="flex items-center gap-2 min-w-0">
+            <Mic className="h-4 w-4 text-primary shrink-0" />
+            <div className="min-w-0">
+              <p className="text-xs font-medium">Narrator Voice</p>
+              <p className="text-[10px] text-muted-foreground truncate">
+                {detectedGender === null ? "No gender hint detected" : `Detected narrator: ${detectedGender}`}
+                {narratorMode === "auto" && detectedGender
+                  ? ` → using ${detectedGender} preset`
+                  : narratorMode !== "auto" ? ` → forced ${narratorMode}` : " → using main voice"}
+              </p>
+            </div>
+          </div>
+          <Select value={narratorMode} onValueChange={(v) => setNarratorMode(v as "auto" | "male" | "female")}>
+            <SelectTrigger className="h-7 w-[120px] text-[11px] bg-secondary border-border shrink-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">Auto-detect</SelectItem>
+              <SelectItem value="male">Male preset</SelectItem>
+              <SelectItem value="female">Female preset</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
 
         {/* Comment Selection Toggle */}
         <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-secondary/50">

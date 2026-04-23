@@ -80,6 +80,14 @@
       "similarity_boost": 0.75,
       "style": 0.0,
       "use_speaker_boost": true
+    },
+
+    "voice_presets": {
+      "streamlabs_polly": { "male": "Brian",  "female": "Joanna" },
+      "elevenlabs":       { "male": "",       "female": "" },
+      "lazypy_tiktok":    { "male": "en_us_006", "female": "en_us_001" },
+      "vibevoice":        { "male": "default", "female": "default" },
+      "qwen3_tts":        { "male": "default", "female": "default" }
     }
   },
 
@@ -103,7 +111,12 @@
     "animation_duration": 0.15,
     "pop_overshoot": 1.12,
     "pop_start_scale": 0.7,
-    "enabled": true
+    "enabled": true,
+    "force_align": false,
+    "align_model_size": "base",
+
+    "max_chunk_duration": 2.5,
+    "lead_in_grace": 1.0
   },
 
   "output": {

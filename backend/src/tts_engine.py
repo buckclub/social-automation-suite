@@ -1109,6 +1109,7 @@ class TTSManager:
         title_segments = tts.generate_segments(post_title, progress_callback=_make_seg_progress("Title"), cancel_check=cancel_check)
         for seg in title_segments:
             seg['author'] = post_author
+            seg['segment_role'] = 'title'
             full_timeline.append(seg)
             
         # 2. Post Body
