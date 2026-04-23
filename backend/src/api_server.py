@@ -3061,8 +3061,12 @@ async def score_viral_batch(req: dict):
 
     from gemini_hooks import _call_ai  # type: ignore
 
+    # Bumped when the result schema changes — old caches are ignored.
+    CACHE_VERSION = 2
+
     def _heuristic(post: dict) -> dict:
-        # Fallback if the AI call fails or returns garbage.
+        """Fallback when the AI call fails. Produces the full v2 shape with
+        AI-only fields left null/empty so the UI still renders cleanly."""
         score = 0
         title = (post.get("title") or "").lower()
         if any(k in title for k in ("aita", "update", "revenge", "cheating", "cheated")):
@@ -3072,7 +3076,19 @@ async def score_viral_batch(req: dict):
         if len(post.get("selftext") or "") > 600:
             score += 15
         score += min(25, int((post.get("num_comments") or 0) / 50))
-        return {"score": min(100, score + 10), "reason": "heuristic fallback (no AI)", "source": "heuristic"}
+        return {
+            "score":            min(100, score + 10),
+            "hook_strength":    None,
+            "payoff_strength":  None,
+            "emotion":          None,
+            "target_audience":  None,
+            "recommended_mode": None,
+            "suggested_hook":   None,
+            "pitfalls":         [],
+            "content_warnings":[],
+            "reason":           "heuristic fallback (no AI)",
+            "source":           "heuristic",
+        }
 
     out: dict[str, dict] = {}
     cache_root = os.path.join(PROJECT_ROOT, "posts")
@@ -3081,21 +3097,30 @@ async def score_viral_batch(req: dict):
     sem = asyncio.Semaphore(4)
 
     system = (
-        "You rate Reddit posts for short-form video (TikTok/Shorts/Reels) virality. "
-        "Consider: hook strength, emotional pull, controversy, relatability, payoff, "
-        "and whether the story is self-contained. Return STRICT JSON only."
+        "You are a TikTok/Shorts/Reels editor evaluating Reddit posts for "
+        "short-form video. Be ruthless — most posts are not worth making. "
+        "Score realistically: 70+ only for posts with a clear hook, strong "
+        "emotional arc, and satisfying payoff. Return STRICT minified JSON only, "
+        "no markdown, no commentary."
     )
+
+    allowed_emotions = (
+        "anger, outrage, shock, schadenfreude, sympathy, heartbreak, amusement, "
+        "curiosity, vindication, disgust, awe, fear"
+    )
+    allowed_modes = "story, qa, hottake, interactive"
 
     async def _score_one(post: dict):
         pid = post.get("id") or ""
         async with sem:
-            # Per-post cache keyed by (model, title, selftext hash)
             cache_file = os.path.join(cache_root, pid, "viral_score.json") if pid else None
             if cache_file and os.path.isfile(cache_file):
                 try:
                     with open(cache_file, "r", encoding="utf-8") as f:
                         cached = json.load(f)
-                    if cached.get("model") == model and cached.get("title") == post.get("title"):
+                    if (cached.get("v") == CACHE_VERSION
+                            and cached.get("model") == model
+                            and cached.get("title") == post.get("title")):
                         out[pid] = cached["result"]
                         return
                 except Exception:
@@ -3105,10 +3130,23 @@ async def score_viral_batch(req: dict):
             body = (post.get("selftext") or "")[:1500]
             prompt = (
                 f"Subreddit: r/{post.get('subreddit') or 'unknown'}\n"
-                f"Score: {post.get('score') or 0}, Comments: {post.get('num_comments') or 0}\n"
+                f"Upvotes: {post.get('score') or 0}, Comments: {post.get('num_comments') or 0}\n"
                 f"Title: {title}\n"
                 f"Body: {body}\n\n"
-                "Return JSON exactly: {\"score\": <0-100 integer>, \"reason\": \"<≤140 chars>\"}"
+                "Evaluate this post for a 30-90 second vertical video. "
+                "Return JSON EXACTLY matching this shape (no extra keys):\n"
+                "{\n"
+                '  "score": <0-100 overall virality>,\n'
+                '  "hook_strength": <0-100, how well the first 3 seconds grab viewers>,\n'
+                '  "payoff_strength": <0-100, is there a satisfying twist/resolution>,\n'
+                f'  "emotion": "<one of: {allowed_emotions}>",\n'
+                '  "target_audience": "<short label, e.g. women 25-34 OR men 18-24 OR general>",\n'
+                f'  "recommended_mode": "<one of: {allowed_modes}>",\n'
+                '  "suggested_hook": "<≤90 chars, a spoken opening line that would hook viewers>",\n'
+                '  "pitfalls": ["<≤40 char risk like \'too long\' or \'no clear villain\'>", ...0-3 items],\n'
+                '  "content_warnings": ["<short tag like \'violence\' or \'sexual themes\'>", ...0-3 items],\n'
+                '  "reason": "<≤140 char one-line verdict>"\n'
+                "}"
             )
             try:
                 raw = await asyncio.to_thread(_call_ai, provider, api_key, prompt, system, model, ollama_url)
@@ -3124,16 +3162,46 @@ async def score_viral_batch(req: dict):
                 if start < 0 or end <= start:
                     out[pid] = _heuristic(post); return
                 parsed = json.loads(s[start:end + 1])
-                sc = int(parsed.get("score", 0))
-                sc = max(0, min(100, sc))
-                reason = str(parsed.get("reason", ""))[:160]
-                result = {"score": sc, "reason": reason, "source": provider}
+
+                def _clip_int(v, default=None):
+                    try:
+                        n = int(v)
+                        return max(0, min(100, n))
+                    except (TypeError, ValueError):
+                        return default
+
+                def _clip_str(v, n=160):
+                    return (str(v)[:n] if v is not None else "") or ""
+
+                def _clip_list(v, n=3, maxlen=40):
+                    if not isinstance(v, list):
+                        return []
+                    return [str(x)[:maxlen] for x in v[:n] if x]
+
+                result = {
+                    "score":            _clip_int(parsed.get("score"), 0) or 0,
+                    "hook_strength":    _clip_int(parsed.get("hook_strength")),
+                    "payoff_strength":  _clip_int(parsed.get("payoff_strength")),
+                    "emotion":          _clip_str(parsed.get("emotion"), 30).lower() or None,
+                    "target_audience":  _clip_str(parsed.get("target_audience"), 40) or None,
+                    "recommended_mode": _clip_str(parsed.get("recommended_mode"), 20).lower() or None,
+                    "suggested_hook":   _clip_str(parsed.get("suggested_hook"), 120) or None,
+                    "pitfalls":         _clip_list(parsed.get("pitfalls")),
+                    "content_warnings": _clip_list(parsed.get("content_warnings")),
+                    "reason":           _clip_str(parsed.get("reason"), 160),
+                    "source":           provider,
+                }
                 out[pid] = result
                 if cache_file:
                     try:
                         os.makedirs(os.path.dirname(cache_file), exist_ok=True)
                         with open(cache_file, "w", encoding="utf-8") as f:
-                            json.dump({"model": model, "title": post.get("title"), "result": result}, f)
+                            json.dump({
+                                "v": CACHE_VERSION,
+                                "model": model,
+                                "title": post.get("title"),
+                                "result": result,
+                            }, f)
                     except Exception:
                         pass
             except Exception as e:

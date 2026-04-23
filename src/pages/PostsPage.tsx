@@ -11,13 +11,14 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { useDiscoverPosts } from "@/hooks/use-api";
 import { GenerateFromUrlDialog } from "@/components/GenerateFromUrlDialog";
 import { GenerateFromCustomDialog } from "@/components/GenerateFromCustomDialog";
 import { CommentSelectionDialog } from "@/components/CommentSelectionDialog";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
-import type { RedditPost } from "@/lib/api";
+import type { RedditPost, AiScore } from "@/lib/api";
 
 const REDDIT_SORTS = [
   { id: "hot", label: "Hot", icon: Flame },
@@ -107,7 +108,7 @@ export default function PostsPage() {
   }, []);
 
   // AI score state keyed by post id
-  const [aiScores, setAiScores] = useState<Record<string, { score: number; reason: string }>>({});
+  const [aiScores, setAiScores] = useState<Record<string, AiScore>>({});
   const [aiLoading, setAiLoading] = useState(false);
 
   const posts = data?.posts ?? [];
@@ -435,17 +436,19 @@ export default function PostsPage() {
                       </span>
                     )}
                     {aiScores[post.id] && (
-                      <span
-                        title={aiScores[post.id].reason}
-                        className={`flex items-center gap-0.5 font-medium ${
-                          aiScores[post.id].score >= 70 ? "text-success" :
-                          aiScores[post.id].score >= 40 ? "text-warning" : "text-muted-foreground"
-                        }`}
-                      >
-                        <Sparkles className="h-3 w-3" />
-                        AI {aiScores[post.id].score}
+                      <AiScoreChip score={aiScores[post.id]} />
+                    )}
+                    {aiScores[post.id]?.emotion && (
+                      <span className="flex items-center gap-0.5" title={`Primary emotion: ${aiScores[post.id].emotion}`}>
+                        {emotionEmoji(aiScores[post.id].emotion)}
                       </span>
                     )}
+                    {aiScores[post.id]?.content_warnings?.length ? (
+                      <span className="flex items-center gap-0.5 text-destructive" title={`Content warnings: ${aiScores[post.id].content_warnings.join(", ")}`}>
+                        <AlertTriangle className="h-3 w-3" />
+                        CW
+                      </span>
+                    ) : null}
                     {post.over_18 && <Badge variant="destructive" className="text-[9px] px-1 py-0">NSFW</Badge>}
                   </div>
 
@@ -496,5 +499,137 @@ export default function PostsPage() {
         actionLabel="Use This Post"
       />
     </motion.div>
+  );
+}
+
+// ── AI Score UI helpers ─────────────────────────────────────────────────────
+
+function emotionEmoji(emotion: string | null | undefined): string {
+  if (!emotion) return "";
+  const e = emotion.toLowerCase();
+  const map: Record<string, string> = {
+    anger: "😡", outrage: "🤬", shock: "😱",
+    schadenfreude: "😈", sympathy: "🥺", heartbreak: "💔",
+    amusement: "😂", curiosity: "🤔", vindication: "✊",
+    disgust: "🤢", awe: "🤯", fear: "😰",
+  };
+  return map[e] || "✨";
+}
+
+function scoreColor(n: number | null | undefined): string {
+  if (n == null) return "text-muted-foreground";
+  if (n >= 70) return "text-success";
+  if (n >= 40) return "text-warning";
+  return "text-muted-foreground";
+}
+
+function Bar({ value, label }: { value: number | null; label: string }) {
+  if (value == null) return null;
+  const color =
+    value >= 70 ? "bg-success" : value >= 40 ? "bg-warning" : "bg-muted-foreground/50";
+  return (
+    <div className="space-y-0.5">
+      <div className="flex justify-between text-[10px]">
+        <span className="text-muted-foreground">{label}</span>
+        <span className={scoreColor(value)}>{value}</span>
+      </div>
+      <div className="h-1 w-full rounded-full bg-secondary overflow-hidden">
+        <div className={`h-full ${color} transition-all`} style={{ width: `${value}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function AiScoreChip({ score }: { score: AiScore }) {
+  const color = scoreColor(score.score);
+  return (
+    <HoverCard openDelay={120} closeDelay={100}>
+      <HoverCardTrigger asChild>
+        <span
+          className={`flex items-center gap-0.5 font-medium cursor-help ${color}`}
+        >
+          <Sparkles className="h-3 w-3" />
+          AI {score.score}
+        </span>
+      </HoverCardTrigger>
+      <HoverCardContent className="w-80 p-3 space-y-2.5 text-xs" side="top" align="start">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-primary" />
+            <span className="font-semibold">AI Analysis</span>
+          </div>
+          <span className={`font-mono text-sm ${color}`}>{score.score}/100</span>
+        </div>
+
+        {score.reason && (
+          <p className="text-[11px] text-muted-foreground leading-snug italic">
+            "{score.reason}"
+          </p>
+        )}
+
+        <div className="space-y-1.5">
+          <Bar value={score.hook_strength} label="Hook strength" />
+          <Bar value={score.payoff_strength} label="Payoff" />
+        </div>
+
+        {score.suggested_hook && (
+          <div className="space-y-0.5 rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5">
+            <p className="text-[9px] uppercase tracking-wide text-primary font-semibold">Suggested opening line</p>
+            <p className="text-[11px] leading-snug">"{score.suggested_hook}"</p>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+          {score.emotion && (
+            <div>
+              <p className="text-muted-foreground">Emotion</p>
+              <p className="font-medium">{emotionEmoji(score.emotion)} {score.emotion}</p>
+            </div>
+          )}
+          {score.recommended_mode && (
+            <div>
+              <p className="text-muted-foreground">Best mode</p>
+              <p className="font-medium capitalize">{score.recommended_mode}</p>
+            </div>
+          )}
+          {score.target_audience && (
+            <div className="col-span-2">
+              <p className="text-muted-foreground">Target audience</p>
+              <p className="font-medium">{score.target_audience}</p>
+            </div>
+          )}
+        </div>
+
+        {score.pitfalls?.length > 0 && (
+          <div className="space-y-0.5">
+            <p className="text-[9px] uppercase tracking-wide text-warning font-semibold">Watch out for</p>
+            <div className="flex flex-wrap gap-1">
+              {score.pitfalls.map((p, i) => (
+                <Badge key={i} variant="outline" className="text-[9px] border-warning/40 text-warning px-1.5 py-0">
+                  {p}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {score.content_warnings?.length > 0 && (
+          <div className="space-y-0.5">
+            <p className="text-[9px] uppercase tracking-wide text-destructive font-semibold">Content warnings</p>
+            <div className="flex flex-wrap gap-1">
+              {score.content_warnings.map((c, i) => (
+                <Badge key={i} variant="outline" className="text-[9px] border-destructive/40 text-destructive px-1.5 py-0">
+                  {c}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <p className="text-[9px] text-muted-foreground text-right pt-1 border-t border-border/40">
+          via {score.source}
+        </p>
+      </HoverCardContent>
+    </HoverCard>
   );
 }

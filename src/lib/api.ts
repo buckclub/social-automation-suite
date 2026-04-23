@@ -152,6 +152,20 @@ export interface SocialCopy {
   }>;
 }
 
+export interface AiScore {
+  score: number;                       // 0-100 overall
+  hook_strength: number | null;        // 0-100
+  payoff_strength: number | null;      // 0-100
+  emotion: string | null;              // e.g. "outrage", "schadenfreude"
+  target_audience: string | null;      // e.g. "women 25-34"
+  recommended_mode: string | null;     // story | qa | hottake | interactive
+  suggested_hook: string | null;       // opening line suggestion
+  pitfalls: string[];                  // short risk tags
+  content_warnings: string[];          // e.g. ["violence"]
+  reason: string;                      // one-line verdict
+  source: string;                      // "gemini" | "openrouter" | "ollama" | "nvidia_nim" | "heuristic"
+}
+
 export interface FullConfig {
   subreddits: string[];
   request_delay: number;
@@ -258,7 +272,7 @@ export const api = {
 
   // AI virality scorer
   scoreViralBatch: (posts: { id: string; title: string; selftext?: string; subreddit?: string; score?: number; num_comments?: number }[]) =>
-    request<{ scores: Record<string, { score: number; reason: string; source: string }> }>("/api/posts/score-viral", {
+    request<{ scores: Record<string, AiScore> }>("/api/posts/score-viral", {
       method: "POST",
       body: JSON.stringify({ posts }),
     }),
