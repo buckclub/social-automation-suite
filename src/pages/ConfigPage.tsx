@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import {
   Settings2, Save, Loader2, Plus, X, RotateCcw,
@@ -367,6 +367,74 @@ export default function ConfigPage() {
     setInitialLoaded(true);
   }, [config, initialLoaded]);
 
+  // Dirty-state detection — compare a signature of the current editable
+  // state to the last saved snapshot. Prevents the user from silently
+  // losing a subreddit add or filter tweak by navigating away.
+  const savedSignature = useRef<string>("");
+  const currentSignature = useMemo(() => JSON.stringify({
+    subreddits,
+    requestDelay,
+    redditFetchLimit, redditKeepPerSub,
+    minUpvotes, minComments, maxComments, minAgeHours, maxAgeHours,
+    allowNsfw, requireSelftext,
+    fmtMode, fmtMaxComments, fmtMinScore,
+    ttsEnabled, ttsProvider, ttsModelSize, ttsMainVoice, ttsMultiVoice,
+    ttsCommentVoices, ttsFormat, ttsSpeed, ttsPreNormalize, elevenApiKey,
+    elevenModel, votePresets,
+    postsDir, usedPostsFile,
+    discordEnabled, webhookUrl, uploadMedia,
+    geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
+    geminiModel, geminiHook, geminiThumbnail, geminiModels, openrouterModels,
+    ollamaUrl, ollamaModels, nvidiaNimModels,
+    youtubeApiKey,
+    capEnabled, capFontPath, capFontSize, capColor, capStrokeColor, capStrokeWidth,
+    capBgEnabled, capBgColor, capBgOpacity, capPadding, capCornerRadius,
+    capMaxWidthPct, capPosition, capPositionOffset, capWordsPerCaption,
+    capUppercase, capAttribution, capAnimation, capAnimationDuration,
+    capPopOvershoot, capPopStartScale, capForceAlign, capAlignModelSize,
+    capHighlightWord, capHighlightColor, capHighlightScale, capHighlightStrokeColor,
+    videoMode, hwAccel, engine, splitDuration, outroText,
+    branding, threads, autoCleanup,
+  }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      subreddits, requestDelay, redditFetchLimit, redditKeepPerSub,
+      minUpvotes, minComments, maxComments, minAgeHours, maxAgeHours,
+      allowNsfw, requireSelftext, fmtMode, fmtMaxComments, fmtMinScore,
+      ttsEnabled, ttsProvider, ttsModelSize, ttsMainVoice, ttsMultiVoice,
+      ttsCommentVoices, ttsFormat, ttsSpeed, ttsPreNormalize, elevenApiKey,
+      elevenModel, votePresets, postsDir, usedPostsFile,
+      discordEnabled, webhookUrl, uploadMedia,
+      geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
+      geminiModel, geminiHook, geminiThumbnail, geminiModels, openrouterModels,
+      ollamaUrl, ollamaModels, nvidiaNimModels, youtubeApiKey,
+      capEnabled, capFontPath, capFontSize, capColor, capStrokeColor, capStrokeWidth,
+      capBgEnabled, capBgColor, capBgOpacity, capPadding, capCornerRadius,
+      capMaxWidthPct, capPosition, capPositionOffset, capWordsPerCaption,
+      capUppercase, capAttribution, capAnimation, capAnimationDuration,
+      capPopOvershoot, capPopStartScale, capForceAlign, capAlignModelSize,
+      capHighlightWord, capHighlightColor, capHighlightScale, capHighlightStrokeColor,
+      videoMode, hwAccel, engine, splitDuration, outroText,
+      branding, threads, autoCleanup,
+    ]
+  );
+  // Seed the saved snapshot on the first load (after the loader effect ran).
+  useEffect(() => {
+    if (initialLoaded && !savedSignature.current) {
+      savedSignature.current = currentSignature;
+    }
+  }, [initialLoaded, currentSignature]);
+  const isDirty = initialLoaded && currentSignature !== savedSignature.current;
+
+  // Warn on tab close / refresh with unsaved edits.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirty) { e.preventDefault(); e.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDirty]);
+
   // Auto-set default model size when provider changes
   useEffect(() => {
     const currentProvider = providers.find((p) => p.id === ttsProvider);
@@ -502,7 +570,10 @@ export default function ConfigPage() {
         },
       },
       {
-        onSuccess: () => toast({ title: "Configuration saved" }),
+        onSuccess: () => {
+          savedSignature.current = currentSignature;
+          toast({ title: "Configuration saved" });
+        },
         onError: (e) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
       }
     );
@@ -532,10 +603,21 @@ export default function ConfigPage() {
           <h2 className="text-xl font-bold">Configuration</h2>
           <p className="text-xs text-muted-foreground mt-1">Manage your pipeline settings — all sections of config.json</p>
         </div>
-        <Button onClick={handleSave} disabled={updateMutation.isPending} className="glow-primary gap-2">
-          {updateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          Save All
-        </Button>
+        <div className="flex items-center gap-2">
+          {isDirty && (
+            <span className="text-[10px] text-warning bg-warning/10 border border-warning/40 rounded-full px-2 py-0.5">
+              Unsaved
+            </span>
+          )}
+          <Button
+            onClick={handleSave}
+            disabled={updateMutation.isPending}
+            className={`gap-2 ${isDirty ? "glow-primary" : ""}`}
+          >
+            {updateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Save All
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-col md:flex-row gap-5">
@@ -605,6 +687,12 @@ export default function ConfigPage() {
                 <Plus className="h-3.5 w-3.5" />
               </Button>
             </div>
+            {isDirty && (
+              <p className="text-[10px] text-warning mt-1 flex items-center gap-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-warning animate-pulse" />
+                You have unsaved changes — click <strong>Save All</strong> (top right) or the sticky save button at the bottom.
+              </p>
+            )}
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1">
@@ -1822,9 +1910,19 @@ export default function ConfigPage() {
         </div>
       </div>
 
-      {/* Floating save bar */}
-      <div className="sticky bottom-4 flex justify-end">
-        <Button onClick={handleSave} disabled={updateMutation.isPending} size="lg" className="glow-primary gap-2 shadow-xl">
+      {/* Floating save bar — sits above the 32px system status bar. */}
+      <div className="sticky bottom-12 flex justify-end items-center gap-3 z-30">
+        {isDirty && (
+          <span className="text-[11px] text-warning bg-warning/10 border border-warning/40 rounded-full px-3 py-1 shadow">
+            Unsaved changes
+          </span>
+        )}
+        <Button
+          onClick={handleSave}
+          disabled={updateMutation.isPending}
+          size="lg"
+          className={`gap-2 shadow-xl ${isDirty ? "glow-primary" : ""}`}
+        >
           {updateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           Save Configuration
         </Button>
