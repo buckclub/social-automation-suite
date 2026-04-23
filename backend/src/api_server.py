@@ -2623,13 +2623,32 @@ async def generate_social_copy(post_id: str):
     """
     post_dir = os.path.join(PROJECT_ROOT, "posts", post_id)
     summary_path = os.path.join(post_dir, "summary.json")
-    if not os.path.isfile(summary_path):
-        raise HTTPException(404, f"summary.json not found for {post_id}")
 
-    with open(summary_path, "r", encoding="utf-8") as f:
-        summary = json.load(f)
-    title = summary.get("title", "")
-    subreddit = summary.get("subreddit", "")
+    title = ""
+    subreddit = ""
+    summary: dict = {}
+    if os.path.isfile(summary_path):
+        with open(summary_path, "r", encoding="utf-8") as f:
+            summary = json.load(f)
+        title = summary.get("title", "")
+        subreddit = summary.get("subreddit", "")
+    else:
+        # auto_cleanup wiped posts/<id>/ — fall back to the preserved
+        # project registry entry (survives cleanup for exactly this reason).
+        try:
+            from projects_db import find as _reg_find
+            proj = _reg_find(PROJECT_ROOT, post_id) or {}
+        except Exception:
+            proj = {}
+        title = proj.get("title", "")
+        subreddit = proj.get("subreddit", "")
+        if not title:
+            raise HTTPException(
+                404,
+                f"No metadata for {post_id} — posts/<id>/summary.json is gone and "
+                "projects.json has no matching entry. Re-render from the Videos "
+                "page or run a fresh pipeline to recreate the post workspace.",
+            )
 
     # Prefer the rendered/story text so the AI has actual narration context.
     story_text = ""
@@ -2639,8 +2658,23 @@ async def generate_social_copy(post_id: str):
             with open(p, "r", encoding="utf-8") as f:
                 story_text = f.read()[:2000]
             break
+    # Fallback 1: original reddit selftext if we still have the summary.
     if not story_text:
-        story_text = summary.get("selftext", "")[:2000]
+        story_text = (summary.get("selftext") or "")[:2000]
+    # Fallback 2: reconstruct narration from the preserved timeline.json.
+    if not story_text:
+        try:
+            from projects_db import find as _reg_find
+            proj = _reg_find(PROJECT_ROOT, post_id) or {}
+            tl_path = proj.get("timeline_path")
+            if tl_path and os.path.isfile(tl_path):
+                with open(tl_path, "r", encoding="utf-8") as f:
+                    tl = json.load(f)
+                story_text = " ".join(
+                    (seg.get("text") or "").strip() for seg in tl if seg.get("text")
+                )[:2000]
+        except Exception:
+            pass
 
     # Pick AI provider from config.gemini (same dispatcher used for hooks).
     config = _load_config()
