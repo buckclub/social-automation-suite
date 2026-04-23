@@ -1205,6 +1205,7 @@ async def resume_video_from_audio(req: dict = {}):
 
 async def _resume_video_async(post_id: str, title: str, timeline: list):
     """Resume pipeline from video step using existing audio timeline."""
+    global videos_db
     start_time = time.time()
     config = _load_config()
     generated_video_paths = []
