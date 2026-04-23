@@ -2705,10 +2705,24 @@ async def generate_social_copy(post_id: str):
             _log(f"YouTube benchmarks failed: {e}")
 
     system = (
-        "You are a viral short-form video strategist. Return ONLY valid minified JSON — "
-        "no markdown, no commentary. Keep titles punchy, hooks-driven, curiosity-loaded. "
-        "When benchmark videos are provided, EMULATE their style patterns (tone, hashtag "
-        "density, hook phrasing) WITHOUT copying text verbatim."
+        "You are a viral short-form video strategist writing for YouTube Shorts, "
+        "TikTok, and Instagram Reels — NOT long-form YouTube. Return ONLY valid "
+        "minified JSON, no markdown, no commentary. "
+        "Titles must be short, bait-y, and hook the viewer in <2 seconds — they are "
+        "SHORTS titles, not full-video titles. Avoid colons unless the second half "
+        "is a punchline. Prefer ALL-CAPS fragments, questions, cliffhangers, POV "
+        "setups, and direct 'Reddit' callouts. Examples of good shape:\n"
+        "  - 'SHE WAS CAUGHT CHEATING AND STILL DENIED IT 😳'\n"
+        "  - 'POV: your wife is caught red-handed…'\n"
+        "  - 'Wait until you hear what she said next'\n"
+        "  - 'Caught cheating then BLAMED HIM for it?!'\n"
+        "  - 'My wife cheated. What she did next is unreal.'\n"
+        "Hashtags must include the high-volume Reddit-storytime tags viewers follow: "
+        "#reddit, #redditstories, #redditstorytime, plus the subreddit-specific one "
+        "(e.g. r/relationship_advice → #relationshipadvice, r/AmItheAsshole → #AITA, "
+        "#aitah, r/tifu → #tifu). Then 3-5 topical tags drawn from the story. "
+        "When benchmark videos are provided, MATCH their hashtag density and "
+        "hook phrasing — without copying text verbatim."
     )
 
     # Build a benchmarks block that the LLM can pattern-match against.
@@ -2730,7 +2744,32 @@ async def generate_social_copy(post_id: str):
               "Do NOT copy any title or description verbatim.\n"
         )
 
-    prompt = f"""Generate social copy for a vertical short video based on this Reddit story.
+    # Map the subreddit to its canonical hashtag form — it's the single most
+    # important discovery tag and the LLM keeps missing it.
+    sub_tag_map = {
+        "amitheasshole": "#AITA",
+        "aita": "#AITA",
+        "relationship_advice": "#relationshipadvice",
+        "relationships": "#relationships",
+        "tifu": "#tifu",
+        "maliciouscompliance": "#maliciouscompliance",
+        "pettyrevenge": "#pettyrevenge",
+        "prorevenge": "#prorevenge",
+        "nuclearrevenge": "#nuclearrevenge",
+        "entitledparents": "#entitledparents",
+        "choosingbeggars": "#choosingbeggars",
+        "askreddit": "#askreddit",
+        "confessions": "#confessions",
+        "truoffmychest": "#offmychest",
+        "offmychest": "#offmychest",
+        "bestofredditorupdates": "#redditupdates",
+    }
+    sub_hashtag = sub_tag_map.get((subreddit or "").lower().replace("-", "_"), "")
+    required_tags_str = "#reddit, #redditstories, #redditstorytime"
+    if sub_hashtag:
+        required_tags_str += f", {sub_hashtag}"
+
+    prompt = f"""Generate SHORT-FORM social copy (YouTube Shorts + TikTok + Reels) for this Reddit story.
 
 Subreddit: r/{subreddit}
 Original title: {title}
@@ -2738,20 +2777,26 @@ Original title: {title}
 Story excerpt:
 {story_text[:1500]}
 {benchmarks_block}
+HARD REQUIREMENTS:
+- Titles are for SHORTS — ≤55 chars, bait-y, one-line hooks. NO long descriptive colons.
+- Each hashtag list MUST include these exact tags somewhere: {required_tags_str}.
+- Then add 3-6 story-specific tags (people, emotions, topic nouns). No generic filler like #viral #fyp unless the benchmark videos also use them.
+- Don't reuse the same title across platforms — give each platform its own hook.
+
 Return JSON with exactly this shape:
 {{
   "youtube": {{
-    "titles": ["<variant 1, ≤70 chars, curiosity hook>", "<variant 2>", "<variant 3>"],
-    "description": "<2-3 lines, first line is a hook, end with 5-8 hashtags>",
-    "tags": ["<tag>", ...up to 12]
+    "titles": ["<≤55 chars, curiosity/shock hook, Shorts-style>", "<variant 2, different angle>", "<variant 3, POV or question format>"],
+    "description": "<1-2 lines setting up the story, then a blank line, then 6-10 hashtags including the required ones>",
+    "tags": ["reddit", "redditstories", "redditstorytime", "<sub-specific>", "<topic tags>", ...up to 12, NO leading #]
   }},
   "tiktok": {{
-    "caption": "<≤140 chars, 1-2 emojis, 5-8 hashtags inline>",
-    "hashtags": ["#reddit", "<topic>", ...up to 10]
+    "caption": "<≤140 chars, punchy hook + 1-2 emojis + 5-8 inline hashtags including the required ones>",
+    "hashtags": ["#reddit", "#redditstories", "#redditstorytime", "<sub-specific>", "<topic>", ...up to 10]
   }},
   "instagram": {{
-    "caption": "<1-3 lines hook, then 10-20 hashtags on a new paragraph>",
-    "hashtags": ["<tag>", ...up to 20]
+    "caption": "<1-3 line hook, then blank line, then 12-20 hashtags in one block — include the required tags>",
+    "hashtags": ["<tag>", ...up to 20, MUST include the required ones]
   }}
 }}
 """
