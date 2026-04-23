@@ -116,39 +116,49 @@ class RedditStoryMaker:
         
         return True, "All filters passed"
     
-    def fetch_subreddit_posts(self, subreddit: str = None, limit: int = 25, sort: str = "hot") -> List[Dict]:
+    def fetch_subreddit_posts(self, subreddit: str = None, limit: int = 25, sort: str = "hot",
+                              after: str = None) -> List[Dict]:
         """
         Fetch posts from the configured subreddit.
         Returns list of post data dictionaries.
         sort: one of 'best', 'hot', 'new', 'rising', 'top'
+        after: Reddit pagination token (post fullname like 't3_abcdef')
+        """
+        posts, _ = self.fetch_subreddit_page(subreddit=subreddit, limit=limit, sort=sort, after=after)
+        return posts
+
+    def fetch_subreddit_page(self, subreddit: str = None, limit: int = 25, sort: str = "hot",
+                              after: str = None) -> Tuple[List[Dict], Optional[str]]:
+        """
+        Fetch one page of posts plus Reddit's `after` cursor so the caller
+        can paginate. Returns (posts, next_after or None at end-of-listing).
         """
         if not subreddit:
-            # Fallback for backward compatibility or default
             subreddit = self.config.get('subreddit', 'AskReddit')
-        
+
         valid_sorts = ["best", "hot", "new", "rising", "top"]
         if sort not in valid_sorts:
             sort = "hot"
-            
+
         url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?limit={limit}"
         if sort == "top":
             url += "&t=week"
-        
-        print(f"\nFetching posts from r/{subreddit}...")
+        if after:
+            url += f"&after={after}"
+
+        print(f"\nFetching posts from r/{subreddit}{' (page after ' + after + ')' if after else ''}...")
         data = self._fetch_json(url)
-        
         if not data:
-            return []
-        
+            return [], None
+
+        data_block = data.get('data', {}) or {}
         posts = []
-        children = data.get('data', {}).get('children', [])
-        
-        for child in children:
-            if child.get('kind') == 't3':  # t3 = post
+        for child in data_block.get('children', []):
+            if child.get('kind') == 't3':
                 posts.append(child.get('data', {}))
-        
-        print(f"✓ Retrieved {len(posts)} posts from subreddit")
-        return posts
+        next_after = data_block.get('after')
+        print(f"✓ Retrieved {len(posts)} posts from subreddit (next_after={'yes' if next_after else 'end'})")
+        return posts, next_after
     
     def find_suitable_post(self) -> Optional[Dict]:
         """

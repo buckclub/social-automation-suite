@@ -35,7 +35,8 @@
     "max_length": 4000,
     "nsfw": false,
     "fetch_limit": 25,
-    "max_per_subreddit_per_run": 10
+    "max_per_subreddit_per_run": 10,
+    "max_fetch_pages": 4
   },
 
   "publishers": {

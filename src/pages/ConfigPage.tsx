@@ -106,6 +106,7 @@ export default function ConfigPage() {
   const [requestDelay, setRequestDelay] = useState(2);
   const [redditFetchLimit, setRedditFetchLimit] = useState(25);
   const [redditKeepPerSub, setRedditKeepPerSub] = useState(10);
+  const [redditMaxPages, setRedditMaxPages] = useState(4);
 
   // Filters
   const [minUpvotes, setMinUpvotes] = useState(500);
@@ -263,6 +264,7 @@ export default function ConfigPage() {
     const rcfg = ((c as any).reddit ?? {}) as Record<string, any>;
     setRedditFetchLimit(rcfg.fetch_limit ?? 25);
     setRedditKeepPerSub(rcfg.max_per_subreddit_per_run ?? 10);
+    setRedditMaxPages(rcfg.max_fetch_pages ?? 4);
 
     const f = c.filters ?? {} as FullConfig["filters"];
     setMinUpvotes(f.min_upvotes ?? 500);
@@ -374,7 +376,7 @@ export default function ConfigPage() {
   const currentSignature = useMemo(() => JSON.stringify({
     subreddits,
     requestDelay,
-    redditFetchLimit, redditKeepPerSub,
+    redditFetchLimit, redditKeepPerSub, redditMaxPages,
     minUpvotes, minComments, maxComments, minAgeHours, maxAgeHours,
     allowNsfw, requireSelftext,
     fmtMode, fmtMaxComments, fmtMinScore,
@@ -465,6 +467,7 @@ export default function ConfigPage() {
         reddit: {
           fetch_limit: redditFetchLimit,
           max_per_subreddit_per_run: redditKeepPerSub,
+          max_fetch_pages: redditMaxPages,
         },
         filters: {
           min_upvotes: minUpvotes,
@@ -694,28 +697,37 @@ export default function ConfigPage() {
               </p>
             )}
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-3">
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">Request Delay (s)</Label>
               <Input type="number" value={requestDelay} onChange={(e) => setRequestDelay(+e.target.value)} className="h-8 text-xs bg-secondary border-border" step={0.5} min={0} />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground" title="How many posts to request from Reddit per subreddit listing (max 100). Higher = more candidates survive filtering.">
-                Fetch per sub
+              <Label className="text-xs text-muted-foreground" title="Posts per Reddit listing page (max 100). Higher = each page has more candidates.">
+                Page size
               </Label>
               <Input type="number" value={redditFetchLimit} onChange={(e) => setRedditFetchLimit(+e.target.value)} className="h-8 text-xs bg-secondary border-border" step={5} min={5} max={100} />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground" title="Max posts to keep per subreddit after filtering. Must be <= Fetch per sub.">
-                Keep per sub
+              <Label className="text-xs text-muted-foreground" title="Target number of *eligible* posts to keep per subreddit. The scanner keeps paginating until it hits this many or runs out of pages.">
+                Keep eligible
               </Label>
               <Input type="number" value={redditKeepPerSub} onChange={(e) => setRedditKeepPerSub(+e.target.value)} className="h-8 text-xs bg-secondary border-border" step={1} min={1} max={100} />
             </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground" title="Max Reddit listing pages to chain per subreddit if filters reject too many. Higher = more patient but slower and more API calls.">
+                Max pages
+              </Label>
+              <Input type="number" value={redditMaxPages} onChange={(e) => setRedditMaxPages(+e.target.value)} className="h-8 text-xs bg-secondary border-border" step={1} min={1} max={8} />
+            </div>
           </div>
           <p className="text-[10px] text-muted-foreground leading-snug">
-            The scanner pulls <b>{redditFetchLimit}</b> posts per subreddit, applies
-            your filters, then keeps at most <b>{redditKeepPerSub}</b>. If good posts
-            get filtered out, bump Fetch higher (not Keep).
+            The scanner pulls <b>{redditFetchLimit}</b> posts at a time and keeps
+            paginating up to <b>{redditMaxPages}</b> pages until it collects
+            {" "}<b>{redditKeepPerSub}</b> posts that pass your filters. NSFW-rejected
+            posts are kept in the results so you can toggle "Allow NSFW" and pick
+            them up; other rejects are trimmed heavily (a few are shown for
+            context so you can see why filters are too strict).
           </p>
         </Section>
 

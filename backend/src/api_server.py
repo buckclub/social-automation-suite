@@ -699,43 +699,100 @@ async def discover_posts(sort: str = "hot"):
                     return used
             return None
 
+        # Pagination cap — how many Reddit listing requests we're willing
+        # to chain per subreddit in pursuit of enough eligible posts.
+        # 4 pages × 100 posts = 400 candidates max per subreddit.
+        max_pages = int(reddit_cfg.get("max_fetch_pages", 4))
+        max_pages = max(1, min(8, max_pages))
+        # How many non-eligible (excluding NSFW-rejected ones, which we keep
+        # around so the user can toggle allow_nsfw) posts we retain per
+        # subreddit purely for context — otherwise the response is silent
+        # about _why_ we couldn't find more.
+        keep_rejected_context = 3
+
         all_posts = []
         for subreddit in subreddits:
-            fetched = maker.fetch_subreddit_posts(subreddit=subreddit, limit=fetch_limit, sort=reddit_sort)
-            sub_count = 0
-            for post in fetched:
-                meets, reason = maker._meets_filters(post)
-                created_utc = post.get("created_utc", 0)
-                age_hours = max(0.1, (time.time() - created_utc) / 3600)
-                score = post.get("score", 0)
-                viral_score = round(score / age_hours, 2)
-                text = (post.get("title", "") + " " + (post.get("selftext", "") or "")).strip()
-                word_count = len(text.split())
-                # ~155 wpm average across Polly/ElevenLabs Turbo
-                est_duration_s = int(round(word_count / 155 * 60)) if word_count else 0
-                dup_of = _title_dup(post.get("title", ""))
-                all_posts.append({
-                    "id": post.get("id"), "title": post.get("title", ""),
-                    "subreddit": post.get("subreddit", ""), "score": score,
-                    "num_comments": post.get("num_comments", 0),
-                    "selftext": (post.get("selftext", "") or "")[:300],
-                    "url": post.get("url", ""), "permalink": post.get("permalink", ""),
-                    "age_hours": round(age_hours, 1), "over_18": post.get("over_18", False),
-                    "viral_score": viral_score,
-                    "est_duration_s": est_duration_s,
-                    "word_count": word_count,
-                    "meets_filters": meets,
-                    "filter_reason": reason if not meets else None,
-                    "already_used": post.get("id") in maker.used_posts,
-                    "title_dupe_of": dup_of,
-                })
-                sub_count += 1
-                if sub_count >= per_sub_cap:
+            eligible_kept = 0
+            rejected_kept = 0
+            nsfw_kept = 0
+            after_tok = None
+            pages_fetched = 0
+
+            # Request delay between pages to be polite to Reddit's rate limits.
+            # Reddit's unauth'd limit is 60/min — we're well under that.
+            while (eligible_kept < per_sub_cap and pages_fetched < max_pages):
+                posts_page, next_after = maker.fetch_subreddit_page(
+                    subreddit=subreddit, limit=fetch_limit,
+                    sort=reddit_sort, after=after_tok,
+                )
+                pages_fetched += 1
+                if not posts_page:
                     break
+
+                for post in posts_page:
+                    meets, reason = maker._meets_filters(post)
+                    is_nsfw_reject = (not meets) and reason == "Post is NSFW"
+
+                    # Decide whether to keep this post in the response:
+                    # - eligible: always, up to per_sub_cap
+                    # - NSFW-rejected: always (user might toggle allow_nsfw)
+                    # - other rejects: keep a small handful for context
+                    if meets:
+                        if eligible_kept >= per_sub_cap:
+                            continue
+                        eligible_kept += 1
+                    elif is_nsfw_reject:
+                        # NSFW — always include so toggling allow_nsfw works.
+                        nsfw_kept += 1
+                    else:
+                        if rejected_kept >= keep_rejected_context:
+                            continue
+                        rejected_kept += 1
+
+                    created_utc = post.get("created_utc", 0)
+                    age_hours = max(0.1, (time.time() - created_utc) / 3600)
+                    score = post.get("score", 0)
+                    viral_score = round(score / age_hours, 2)
+                    text = (post.get("title", "") + " " + (post.get("selftext", "") or "")).strip()
+                    word_count = len(text.split())
+                    # ~155 wpm average across Polly/ElevenLabs Turbo
+                    est_duration_s = int(round(word_count / 155 * 60)) if word_count else 0
+                    dup_of = _title_dup(post.get("title", ""))
+                    all_posts.append({
+                        "id": post.get("id"), "title": post.get("title", ""),
+                        "subreddit": post.get("subreddit", ""), "score": score,
+                        "num_comments": post.get("num_comments", 0),
+                        "selftext": (post.get("selftext", "") or "")[:300],
+                        "url": post.get("url", ""), "permalink": post.get("permalink", ""),
+                        "age_hours": round(age_hours, 1), "over_18": post.get("over_18", False),
+                        "viral_score": viral_score,
+                        "est_duration_s": est_duration_s,
+                        "word_count": word_count,
+                        "meets_filters": meets,
+                        "filter_reason": reason if not meets else None,
+                        "already_used": post.get("id") in maker.used_posts,
+                        "title_dupe_of": dup_of,
+                    })
+
+                if not next_after:
+                    break  # end of listing
+                after_tok = next_after
+                # Light delay between pagination calls per subreddit.
+                if pages_fetched < max_pages and eligible_kept < per_sub_cap:
+                    await asyncio.sleep(0.5)
+
+            _log(
+                f"r/{subreddit}: {eligible_kept} eligible + {nsfw_kept} NSFW (kept) + "
+                f"{rejected_kept} other-reject (context) from {pages_fetched} page(s)"
+            )
+
         if sort == "viral":
             all_posts.sort(key=lambda p: p["viral_score"], reverse=True)
         stats["posts_scanned"] += len(all_posts)
-        _log(f"Discovered {len(all_posts)} posts from {len(subreddits)} subreddits (sort={sort}, fetch={fetch_limit}/sub, keep<={per_sub_cap}/sub)")
+        _log(
+            f"Discovered {len(all_posts)} posts from {len(subreddits)} subreddit(s) "
+            f"(sort={sort}, fetch={fetch_limit}/page, up to {max_pages} pages/sub, target={per_sub_cap} eligible/sub)"
+        )
         return {"posts": all_posts, "total": len(all_posts)}
     except Exception as e:
         _log(f"Discover error: {e}")
