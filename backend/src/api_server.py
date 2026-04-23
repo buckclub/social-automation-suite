@@ -3093,9 +3093,6 @@ async def score_viral_batch(req: dict):
     out: dict[str, dict] = {}
     cache_root = os.path.join(PROJECT_ROOT, "posts")
 
-    # Prompt model once per post. Keep them small & parallelize lightly via to_thread.
-    sem = asyncio.Semaphore(4)
-
     system = (
         "You are a TikTok/Shorts/Reels editor evaluating Reddit posts for "
         "short-form video. Be ruthless — most posts are not worth making. "
@@ -3110,48 +3107,131 @@ async def score_viral_batch(req: dict):
     )
     allowed_modes = "story, qa, hottake, interactive"
 
-    async def _score_one(post: dict):
-        pid = post.get("id") or ""
-        async with sem:
-            cache_file = os.path.join(cache_root, pid, "viral_score.json") if pid else None
-            if cache_file and os.path.isfile(cache_file):
-                try:
-                    with open(cache_file, "r", encoding="utf-8") as f:
-                        cached = json.load(f)
-                    if (cached.get("v") == CACHE_VERSION
-                            and cached.get("model") == model
-                            and cached.get("title") == post.get("title")):
-                        out[pid] = cached["result"]
-                        return
-                except Exception:
-                    pass
+    def _clip_int(v, default=None):
+        try:
+            n = int(v)
+            return max(0, min(100, n))
+        except (TypeError, ValueError):
+            return default
 
-            title = (post.get("title") or "")[:260]
-            body = (post.get("selftext") or "")[:1500]
-            prompt = (
-                f"Subreddit: r/{post.get('subreddit') or 'unknown'}\n"
-                f"Upvotes: {post.get('score') or 0}, Comments: {post.get('num_comments') or 0}\n"
-                f"Title: {title}\n"
-                f"Body: {body}\n\n"
-                "Evaluate this post for a 30-90 second vertical video. "
-                "Return JSON EXACTLY matching this shape (no extra keys):\n"
-                "{\n"
-                '  "score": <0-100 overall virality>,\n'
-                '  "hook_strength": <0-100, how well the first 3 seconds grab viewers>,\n'
-                '  "payoff_strength": <0-100, is there a satisfying twist/resolution>,\n'
-                f'  "emotion": "<one of: {allowed_emotions}>",\n'
-                '  "target_audience": "<short label, e.g. women 25-34 OR men 18-24 OR general>",\n'
-                f'  "recommended_mode": "<one of: {allowed_modes}>",\n'
-                '  "suggested_hook": "<≤90 chars, a spoken opening line that would hook viewers>",\n'
-                '  "pitfalls": ["<≤40 char risk like \'too long\' or \'no clear villain\'>", ...0-3 items],\n'
-                '  "content_warnings": ["<short tag like \'violence\' or \'sexual themes\'>", ...0-3 items],\n'
-                '  "reason": "<≤140 char one-line verdict>"\n'
-                "}"
+    def _clip_str(v, n=160):
+        return (str(v)[:n] if v is not None else "") or ""
+
+    def _clip_list(v, n=3, maxlen=40):
+        if not isinstance(v, list):
+            return []
+        return [str(x)[:maxlen] for x in v[:n] if x]
+
+    def _normalize_result(parsed: dict) -> dict:
+        return {
+            "score":            _clip_int(parsed.get("score"), 0) or 0,
+            "hook_strength":    _clip_int(parsed.get("hook_strength")),
+            "payoff_strength":  _clip_int(parsed.get("payoff_strength")),
+            "emotion":          _clip_str(parsed.get("emotion"), 30).lower() or None,
+            "target_audience":  _clip_str(parsed.get("target_audience"), 40) or None,
+            "recommended_mode": _clip_str(parsed.get("recommended_mode"), 20).lower() or None,
+            "suggested_hook":   _clip_str(parsed.get("suggested_hook"), 120) or None,
+            "pitfalls":         _clip_list(parsed.get("pitfalls")),
+            "content_warnings": _clip_list(parsed.get("content_warnings")),
+            "reason":           _clip_str(parsed.get("reason"), 160),
+            "source":           provider,
+        }
+
+    def _persist_cache(pid: str, post: dict, result: dict):
+        if not pid:
+            return
+        cache_file = os.path.join(cache_root, pid, "viral_score.json")
+        try:
+            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "v": CACHE_VERSION,
+                    "model": model,
+                    "title": post.get("title"),
+                    "result": result,
+                }, f)
+        except Exception:
+            pass
+
+    # ── Cache pass ──────────────────────────────────────────────────────
+    to_score: list[dict] = []
+    for post in posts_in[:40]:
+        pid = post.get("id") or ""
+        cache_file = os.path.join(cache_root, pid, "viral_score.json") if pid else None
+        if cache_file and os.path.isfile(cache_file):
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+                if (cached.get("v") == CACHE_VERSION
+                        and cached.get("model") == model
+                        and cached.get("title") == post.get("title")):
+                    out[pid] = cached["result"]
+                    continue
+            except Exception:
+                pass
+        to_score.append(post)
+
+    if not to_score:
+        return {"scores": out}
+
+    # ── Batch size / concurrency tuned per provider ─────────────────────
+    # Ollama serializes requests at its default num_parallel=1, so calling
+    # 4 in flight turns into a 4-deep queue that compounds wall time. Keep
+    # Ollama single-threaded but batch many posts per call; remote APIs
+    # are fine with low-concurrency N-in-flight requests.
+    if provider == "ollama":
+        batch_size = 6      # 6 posts per prompt — one call yields all results
+        concurrency = 1
+    elif provider == "openrouter":
+        batch_size = 4
+        concurrency = 3
+    else:                   # gemini / nvidia_nim — fast APIs, small batches
+        batch_size = 3
+        concurrency = 4
+
+    def _build_batch_prompt(posts: list[dict]) -> str:
+        items = []
+        for i, p in enumerate(posts, 1):
+            items.append(
+                f"--- POST {i} (id: {p.get('id')}) ---\n"
+                f"Subreddit: r/{p.get('subreddit') or 'unknown'}\n"
+                f"Upvotes: {p.get('score') or 0}, Comments: {p.get('num_comments') or 0}\n"
+                f"Title: {(p.get('title') or '')[:220]}\n"
+                f"Body: {(p.get('selftext') or '')[:900]}"
             )
+        return (
+            "Evaluate each of the following Reddit posts for a 30-90 second "
+            "vertical video. Return a JSON object with a single key 'results' "
+            "whose value is an array — one object per post, IN THE SAME ORDER "
+            "AS INPUT, each with this exact shape:\n"
+            "{\n"
+            '  "id": "<echo the input post id>",\n'
+            '  "score": <0-100 overall>,\n'
+            '  "hook_strength": <0-100>,\n'
+            '  "payoff_strength": <0-100>,\n'
+            f'  "emotion": "<one of: {allowed_emotions}>",\n'
+            '  "target_audience": "<short label>",\n'
+            f'  "recommended_mode": "<one of: {allowed_modes}>",\n'
+            '  "suggested_hook": "<≤90 chars spoken opening line>",\n'
+            '  "pitfalls": ["<≤40 char>", ...0-3],\n'
+            '  "content_warnings": ["<tag>", ...0-3],\n'
+            '  "reason": "<≤140 char verdict>"\n'
+            "}\n\n"
+            + "\n\n".join(items)
+            + "\n\nReturn ONLY the JSON object, no markdown."
+        )
+
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _score_batch(batch: list[dict]):
+        async with sem:
+            prompt = _build_batch_prompt(batch)
             try:
                 raw = await asyncio.to_thread(_call_ai, provider, api_key, prompt, system, model, ollama_url)
                 if not raw:
-                    out[pid] = _heuristic(post); return
+                    for p in batch:
+                        out[p.get("id") or ""] = _heuristic(p)
+                    return
                 s = raw.strip()
                 if s.startswith("```"):
                     s = s.split("```")[1]
@@ -3160,55 +3240,33 @@ async def score_viral_batch(req: dict):
                     s = s.strip("`").strip()
                 start = s.find("{"); end = s.rfind("}")
                 if start < 0 or end <= start:
-                    out[pid] = _heuristic(post); return
+                    raise ValueError("no JSON object in response")
                 parsed = json.loads(s[start:end + 1])
+                results = parsed.get("results") or []
+                by_id = {}
+                for r in results:
+                    rid = str(r.get("id") or "").strip()
+                    if rid:
+                        by_id[rid] = r
 
-                def _clip_int(v, default=None):
-                    try:
-                        n = int(v)
-                        return max(0, min(100, n))
-                    except (TypeError, ValueError):
-                        return default
-
-                def _clip_str(v, n=160):
-                    return (str(v)[:n] if v is not None else "") or ""
-
-                def _clip_list(v, n=3, maxlen=40):
-                    if not isinstance(v, list):
-                        return []
-                    return [str(x)[:maxlen] for x in v[:n] if x]
-
-                result = {
-                    "score":            _clip_int(parsed.get("score"), 0) or 0,
-                    "hook_strength":    _clip_int(parsed.get("hook_strength")),
-                    "payoff_strength":  _clip_int(parsed.get("payoff_strength")),
-                    "emotion":          _clip_str(parsed.get("emotion"), 30).lower() or None,
-                    "target_audience":  _clip_str(parsed.get("target_audience"), 40) or None,
-                    "recommended_mode": _clip_str(parsed.get("recommended_mode"), 20).lower() or None,
-                    "suggested_hook":   _clip_str(parsed.get("suggested_hook"), 120) or None,
-                    "pitfalls":         _clip_list(parsed.get("pitfalls")),
-                    "content_warnings": _clip_list(parsed.get("content_warnings")),
-                    "reason":           _clip_str(parsed.get("reason"), 160),
-                    "source":           provider,
-                }
-                out[pid] = result
-                if cache_file:
-                    try:
-                        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-                        with open(cache_file, "w", encoding="utf-8") as f:
-                            json.dump({
-                                "v": CACHE_VERSION,
-                                "model": model,
-                                "title": post.get("title"),
-                                "result": result,
-                            }, f)
-                    except Exception:
-                        pass
+                for i, post in enumerate(batch):
+                    pid = post.get("id") or ""
+                    # Prefer match by id, fall back to positional match.
+                    r = by_id.get(pid) or (results[i] if i < len(results) else None)
+                    if not r:
+                        out[pid] = _heuristic(post)
+                        continue
+                    result = _normalize_result(r)
+                    out[pid] = result
+                    _persist_cache(pid, post, result)
             except Exception as e:
-                _log(f"Viral score failed for {pid}: {e}")
-                out[pid] = _heuristic(post)
+                _log(f"Viral score batch failed ({len(batch)} posts): {e}")
+                for p in batch:
+                    out[p.get("id") or ""] = _heuristic(p)
 
-    await asyncio.gather(*[_score_one(p) for p in posts_in[:40]])  # hard cap 40
+    batches = [to_score[i:i + batch_size] for i in range(0, len(to_score), batch_size)]
+    _log(f"AI score: {len(to_score)} posts → {len(batches)} batches (provider={provider}, batch={batch_size}, concurrency={concurrency})")
+    await asyncio.gather(*[_score_batch(b) for b in batches])
     return {"scores": out}
 
 

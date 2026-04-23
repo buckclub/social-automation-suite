@@ -183,18 +183,33 @@ export default function PostsPage() {
 
   // --- AI scoring ---
   const runAiScore = async () => {
-    const visible = filtered.slice(0, 40);
-    if (!visible.length) return;
+    // Only score posts that are actually eligible (not already used, not
+    // filtered out, not already scored) and visible on the current page.
+    // Scoring already-filtered posts with a local 14B model wastes 2+ minutes
+    // per post for results the user will never see.
+    const candidates = filtered.filter(
+      (p) =>
+        !p.already_used &&
+        !p.filter_reason &&
+        !aiScores[p.id],     // don't re-score what we already have
+    ).slice(0, 40);
+    if (!candidates.length) {
+      toast({
+        title: "Nothing to score",
+        description: "Every visible post is either filtered out or already scored.",
+      });
+      return;
+    }
     setAiLoading(true);
     try {
       const r = await api.scoreViralBatch(
-        visible.map((p) => ({
+        candidates.map((p) => ({
           id: p.id, title: p.title, selftext: p.selftext,
           subreddit: p.subreddit, score: p.score, num_comments: p.num_comments,
         }))
       );
       setAiScores((prev) => ({ ...prev, ...r.scores }));
-      toast({ title: `AI scored ${Object.keys(r.scores).length} posts` });
+      toast({ title: `AI scored ${Object.keys(r.scores).length} eligible posts` });
     } catch (e: any) {
       toast({ title: "AI scoring failed", description: e.message, variant: "destructive" });
     } finally {
