@@ -48,6 +48,7 @@ export function YouTubeUploadDialog({ videoId, videoTitle, partIndex = 0, open, 
   const [publishLocal, setPublishLocal] = useState<string>(defaultFutureLocal());
   const [uploading, setUploading] = useState(false);
   const [resultUrl, setResultUrl] = useState<string>("");
+  const [quota, setQuota] = useState<{ used: number; limit: number; uploads_left: number } | null>(null);
 
   // Pre-fill from saved social copy + connection status on open.
   useEffect(() => {
@@ -59,6 +60,14 @@ export function YouTubeUploadDialog({ videoId, videoTitle, partIndex = 0, open, 
       setConnected(s.connected);
       setChannelTitle(s.channel_title || "");
     }).catch(() => setConnected(false));
+
+    api.youtubeQuota().then((q) => {
+      setQuota({
+        used: q.used_today,
+        limit: q.daily_limit,
+        uploads_left: Math.floor(q.remaining / 1600),
+      });
+    }).catch(() => setQuota(null));
 
     api.getSocialCopy(videoId).then((s) => {
       const y = (s as any)?.youtube || {};
@@ -222,6 +231,13 @@ export function YouTubeUploadDialog({ videoId, videoTitle, partIndex = 0, open, 
               </div>
             )}
           </div>
+        )}
+
+        {!resultUrl && quota && (
+          <p className={`text-[10px] leading-snug ${quota.uploads_left <= 1 ? "text-destructive" : "text-muted-foreground"}`}>
+            Quota: {quota.used.toLocaleString()} / {quota.limit.toLocaleString()} units used today
+            · ~<strong>{quota.uploads_left}</strong> upload{quota.uploads_left === 1 ? "" : "s"} left before the midnight-Pacific reset.
+          </p>
         )}
 
         <DialogFooter>

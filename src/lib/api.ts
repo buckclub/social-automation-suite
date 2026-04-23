@@ -301,6 +301,25 @@ export const api = {
     request<{ auth_url: string }>(`/api/publish/youtube/oauth/start?host=${encodeURIComponent(host)}`),
   youtubeDisconnect: () =>
     request<{ disconnected: boolean }>("/api/publish/youtube/disconnect", { method: "POST" }),
+  youtubeQuota: () =>
+    request<{
+      today: string;
+      daily_limit: number;
+      used_today: number;
+      remaining: number;
+      pct_used: number;
+      events_today: Record<string, number>;
+      history: { date: string; total: number }[];
+      reset_at: string;
+      seconds_until_reset: number;
+    }>("/api/publish/youtube/quota"),
+  youtubeQuotaSetLimit: (limit: number) =>
+    request<{ saved: boolean; limit: number }>("/api/publish/youtube/quota/limit", {
+      method: "POST",
+      body: JSON.stringify({ limit }),
+    }),
+  youtubeQuotaReset: () =>
+    request<{ reset: boolean }>("/api/publish/youtube/quota/reset", { method: "POST" }),
   youtubeUpload: (body: {
     video_id: string;
     part_index?: number;

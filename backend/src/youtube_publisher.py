@@ -50,12 +50,25 @@ RANDOM_HASHTAG_POOL = [
 class YouTubePublisher:
     """Upload YouTube Shorts via the YouTube Data API v3."""
 
-    def __init__(self, client_id: str, client_secret: str, refresh_token: str):
+    def __init__(self, client_id: str, client_secret: str, refresh_token: str,
+                 project_root: Optional[str] = None):
         self.client_id = client_id
         self.client_secret = client_secret
         self.refresh_token = refresh_token
         self._access_token: Optional[str] = None
         self._token_expiry: float = 0
+        # Optional — when set, every outbound YouTube API call is recorded
+        # in `.cache/youtube_quota.json` so the UI can show daily usage.
+        self.project_root = project_root
+
+    def _quota(self, operation: str, units: Optional[int] = None) -> None:
+        if not self.project_root:
+            return
+        try:
+            from youtube_quota import record as _rec
+            _rec(self.project_root, operation, units)
+        except Exception:
+            pass
 
     # ──────────────────── Auth ────────────────────
 
@@ -91,6 +104,7 @@ class YouTubePublisher:
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=30,
             )
+            self._quota("channels.list")
             r.raise_for_status()
             items = r.json().get("items", [])
             if not items:
@@ -243,6 +257,11 @@ class YouTubePublisher:
                 logger.error(f"YouTube upload failed [{upload_resp.status_code}]: {upload_resp.text}")
                 return None
 
+            # Only charge quota on a successful insert. YouTube bills the
+            # full 1600 units regardless, so only record when we got a
+            # confirmed video back.
+            self._quota("videos.insert")
+
             video_data = upload_resp.json()
             video_id = video_data.get("id")
             logger.info(f"✅ YouTube upload complete — video ID: {video_id}")
@@ -250,6 +269,7 @@ class YouTubePublisher:
             # ── Step 3: Set custom thumbnail (optional) ──
             if thumbnail_path and video_id and os.path.exists(thumbnail_path):
                 self._set_thumbnail(video_id, thumbnail_path)
+                self._quota("thumbnails.set")
 
             return video_id
 

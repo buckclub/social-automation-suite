@@ -100,6 +100,12 @@ def fetch_benchmarks(
         if prefer_shorts:
             search_params["videoDuration"] = "short"  # < 4min (captures shorts)
         r = requests.get(SEARCH_URL, params=search_params, timeout=10)
+        if project_root:
+            try:
+                from youtube_quota import record as _quota_record
+                _quota_record(project_root, "search.list")
+            except Exception:
+                pass
         if r.status_code == 403:
             print("⚠️  YouTube API: 403 (check API key, billing, or daily quota)")
             return []
@@ -120,6 +126,12 @@ def fetch_benchmarks(
             "key": api_key,
         }
         r2 = requests.get(VIDEOS_URL, params=videos_params, timeout=10)
+        if project_root:
+            try:
+                from youtube_quota import record as _quota_record
+                _quota_record(project_root, "videos.list")
+            except Exception:
+                pass
         r2.raise_for_status()
         vdata = r2.json()
 

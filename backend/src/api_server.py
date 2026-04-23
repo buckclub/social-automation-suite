@@ -3009,6 +3009,33 @@ def _yt_callback_url(request_host: Optional[str] = None) -> str:
     return f"http://{host}/api/publish/youtube/oauth/callback"
 
 
+@app.get("/api/publish/youtube/quota")
+async def youtube_quota_get():
+    """Current daily quota usage ledger (counted client-side from our own
+    API calls — YouTube doesn't expose a real-time usage endpoint)."""
+    from youtube_quota import snapshot
+    return snapshot(PROJECT_ROOT)
+
+
+@app.post("/api/publish/youtube/quota/limit")
+async def youtube_quota_set_limit(req: dict):
+    """Override the assumed daily quota (e.g. after getting a Google quota bump)."""
+    limit = int(req.get("limit") or 0)
+    if limit < 1:
+        raise HTTPException(400, "limit must be a positive integer")
+    from youtube_quota import set_daily_limit
+    set_daily_limit(PROJECT_ROOT, limit)
+    return {"saved": True, "limit": limit}
+
+
+@app.post("/api/publish/youtube/quota/reset")
+async def youtube_quota_reset_today():
+    """Zero today's counter — for when the ledger drifted from reality."""
+    from youtube_quota import reset_today
+    reset_today(PROJECT_ROOT)
+    return {"reset": True}
+
+
 @app.get("/api/publish/youtube/status")
 async def youtube_publish_status():
     """Return connection status for the YouTube publisher."""
@@ -3111,7 +3138,7 @@ async def youtube_oauth_callback(code: Optional[str] = None, error: Optional[str
 
         # Fetch channel info so we can show it in the UI.
         from youtube_publisher import YouTubePublisher
-        pub = YouTubePublisher(yt["client_id"], yt["client_secret"], rt)
+        pub = YouTubePublisher(yt["client_id"], yt["client_secret"], rt, project_root=PROJECT_ROOT)
         info = pub.fetch_my_channel() or {}
 
         _yt_save({
@@ -3214,7 +3241,7 @@ async def youtube_upload(req: dict):
     _log(f"YouTube upload starting: {title[:60]}… (privacy={privacy}, publish_at={publish_at or '-'})")
 
     from youtube_publisher import YouTubePublisher
-    pub = YouTubePublisher(yt["client_id"], yt["client_secret"], yt["refresh_token"])
+    pub = YouTubePublisher(yt["client_id"], yt["client_secret"], yt["refresh_token"], project_root=PROJECT_ROOT)
 
     try:
         yt_video_id = await asyncio.to_thread(

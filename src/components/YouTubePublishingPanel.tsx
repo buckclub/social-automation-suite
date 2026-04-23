@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Youtube, CheckCircle2, XCircle, Loader2, ExternalLink, Unplug } from "lucide-react";
+import { Youtube, CheckCircle2, XCircle, Loader2, ExternalLink, Unplug, Gauge, RotateCcw, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -7,6 +7,165 @@ import { SecretInput } from "@/components/ui/secret-input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+
+interface QuotaSnapshot {
+  today: string;
+  daily_limit: number;
+  used_today: number;
+  remaining: number;
+  pct_used: number;
+  events_today: Record<string, number>;
+  history: { date: string; total: number }[];
+  reset_at: string;
+  seconds_until_reset: number;
+}
+
+function formatResetIn(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h < 1) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+
+function QuotaWidget() {
+  const { toast } = useToast();
+  const [q, setQ] = useState<QuotaSnapshot | null>(null);
+  const [limitInput, setLimitInput] = useState<string>("");
+  const [savingLimit, setSavingLimit] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const refresh = async () => {
+    try {
+      const s = await api.youtubeQuota();
+      setQ(s);
+      if (!limitInput) setLimitInput(String(s.daily_limit));
+    } catch (e: any) {
+      toast({ title: "Couldn't load quota", description: e.message, variant: "destructive" });
+    }
+  };
+  useEffect(() => { refresh(); const t = setInterval(refresh, 30_000); return () => clearInterval(t); }, []);
+
+  if (!q) return null;
+
+  const pct = q.pct_used;
+  const barColor = pct >= 90 ? "bg-destructive" : pct >= 70 ? "bg-warning" : "bg-success";
+  const uploadsLeft = Math.floor(q.remaining / 1600);
+
+  const saveLimit = async () => {
+    const n = parseInt(limitInput, 10);
+    if (!n || n < 1) { toast({ title: "Enter a positive number", variant: "destructive" }); return; }
+    setSavingLimit(true);
+    try {
+      await api.youtubeQuotaSetLimit(n);
+      toast({ title: "Daily limit updated" });
+      await refresh();
+    } catch (e: any) {
+      toast({ title: "Save failed", description: e.message, variant: "destructive" });
+    } finally {
+      setSavingLimit(false);
+    }
+  };
+
+  const doReset = async () => {
+    if (!confirm("Zero today's quota counter? Use this if the ledger drifted (e.g. Google issued a reset).")) return;
+    setResetting(true);
+    try {
+      await api.youtubeQuotaReset();
+      toast({ title: "Today's counter cleared" });
+      await refresh();
+    } catch (e: any) {
+      toast({ title: "Reset failed", description: e.message, variant: "destructive" });
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2.5 rounded-md border border-border bg-secondary/30 p-3">
+      <div className="flex items-center gap-2">
+        <Gauge className="h-3.5 w-3.5 text-primary" />
+        <span className="text-xs font-semibold">Quota usage</span>
+        <span className="text-[10px] text-muted-foreground ml-auto">
+          resets in {formatResetIn(q.seconds_until_reset)}
+        </span>
+      </div>
+
+      <div className="space-y-1">
+        <div className="flex justify-between text-[11px]">
+          <span className="font-mono">{q.used_today.toLocaleString()} / {q.daily_limit.toLocaleString()} units</span>
+          <span className="font-mono text-muted-foreground">{pct}%</span>
+        </div>
+        <div className="h-1.5 w-full rounded-full bg-background overflow-hidden">
+          <div
+            className={`h-full ${barColor} transition-all`}
+            style={{ width: `${Math.min(100, pct)}%` }}
+          />
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          ~{uploadsLeft} upload{uploadsLeft === 1 ? "" : "s"} left today (1,600 units each).
+          Benchmarks search is 101 units; cached 24h so re-generations are free.
+        </p>
+      </div>
+
+      {/* Per-operation breakdown */}
+      {Object.keys(q.events_today).length > 0 && (
+        <div className="pt-1 border-t border-border/60">
+          <p className="text-[10px] text-muted-foreground mb-1">Today's calls</p>
+          <div className="flex flex-wrap gap-1">
+            {Object.entries(q.events_today).map(([op, count]) => (
+              <Badge key={op} variant="outline" className="text-[9px] font-mono">
+                {op} × {count}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* History sparkline */}
+      {q.history.length > 1 && (
+        <div className="pt-1 border-t border-border/60">
+          <p className="text-[10px] text-muted-foreground mb-1">Last {q.history.length} days</p>
+          <div className="flex items-end gap-0.5 h-8">
+            {q.history.map((d) => {
+              const h = q.daily_limit > 0 ? Math.max(2, Math.round((d.total / q.daily_limit) * 32)) : 2;
+              const over = d.total >= q.daily_limit * 0.9;
+              return (
+                <div
+                  key={d.date}
+                  className={`flex-1 rounded-sm ${over ? "bg-destructive" : "bg-primary/60"}`}
+                  style={{ height: `${h}px` }}
+                  title={`${d.date}: ${d.total.toLocaleString()} units`}
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Admin controls */}
+      <div className="flex items-end gap-2 pt-1 border-t border-border/60">
+        <div className="space-y-0.5 flex-1">
+          <Label className="text-[10px] text-muted-foreground">Daily limit (if you got a quota bump)</Label>
+          <Input
+            type="number"
+            value={limitInput}
+            onChange={(e) => setLimitInput(e.target.value)}
+            className="h-7 text-[11px] bg-secondary border-border font-mono"
+          />
+        </div>
+        <Button size="sm" variant="outline" onClick={saveLimit} disabled={savingLimit} className="h-7 gap-1 text-[10px]">
+          {savingLimit ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+          Save
+        </Button>
+        <Button size="sm" variant="outline" onClick={doReset} disabled={resetting} className="h-7 gap-1 text-[10px]" title="Zero today's counter (use after Google issues a manual reset)">
+          {resetting ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+          Reset today
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 interface YtStatus {
   has_credentials: boolean;
@@ -107,6 +266,8 @@ export function YouTubePublishingPanel() {
 
   return (
     <div className="space-y-3">
+      <QuotaWidget />
+
       {/* Connection status */}
       <div className="flex items-center gap-2">
         {status.connected ? (
