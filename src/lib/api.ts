@@ -4,7 +4,13 @@
  * GitHub: https://github.com/FaheemAlvii
  * License: CC BY-NC 4.0
  */
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Use the current page's origin so `localhost:8000`, `127.0.0.1:8000`, LAN IPs,
+// etc. all hit the backend without triggering CORS preflights. Override with
+// VITE_API_URL for dev setups where the Vite dev server runs on a different
+// port than the backend.
+const API_BASE =
+  import.meta.env.VITE_API_URL ||
+  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -138,6 +144,12 @@ export interface SocialCopy {
   youtube?: { titles?: string[]; description?: string; tags?: string[] };
   tiktok?: { caption?: string; hashtags?: string[] };
   instagram?: { caption?: string; hashtags?: string[] };
+  benchmarks_used?: Array<{
+    title: string;
+    channel: string;
+    view_count: number;
+    video_id: string;
+  }>;
 }
 
 export interface FullConfig {
@@ -231,6 +243,19 @@ export const api = {
   getNarratorGender: (postId: string) =>
     request<{ detected: "male" | "female" | null; title?: string }>(`/api/posts/${postId}/narrator-gender`),
 
+  // Destructive maintenance
+  clearAllData: (body: {
+    posts?: boolean;
+    videos?: boolean;
+    history?: boolean;
+    registry?: boolean;
+    confirm: "DELETE";
+  }) =>
+    request<{ success: boolean; removed_paths: string[]; errors: string[] }>(
+      "/api/maintenance/clear-all",
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+
   // AI virality scorer
   scoreViralBatch: (posts: { id: string; title: string; selftext?: string; subreddit?: string; score?: number; num_comments?: number }[]) =>
     request<{ scores: Record<string, { score: number; reason: string; source: string }> }>("/api/posts/score-viral", {
@@ -292,6 +317,7 @@ export const api = {
     max_comment_chars?: number;
     narrator_gender?: "auto" | "male" | "female";
     voice_override?: string;
+    fresh?: boolean;
   }) =>
     request<{ started: boolean }>("/api/pipeline/run", {
       method: "POST",

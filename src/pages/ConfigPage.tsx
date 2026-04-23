@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   Settings2, Save, Loader2, Plus, X, RotateCcw,
   MessageSquare, Mic, Film, FolderOutput, Bell,
-  Download, CheckCircle2, XCircle, RefreshCw, Cpu, Sparkles, Zap, Type
+  Download, CheckCircle2, XCircle, RefreshCw, Cpu, Sparkles, Zap, Type, Youtube
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,8 @@ import { api } from "@/lib/api";
 import type { FullConfig, TtsProvider } from "@/lib/api";
 import { CaptionsPreview } from "@/components/CaptionsPreview";
 import { ColorInput } from "@/components/ColorInput";
+import { SecretInput } from "@/components/ui/secret-input";
+import { ELEVENLABS_LIBRARY } from "@/components/ElevenLabsLibraryPresets";
 
 function TestAiButton({ provider, model, apiKey, ollamaUrl }: { provider: string; model: string; apiKey: string; ollamaUrl?: string }) {
   const [testing, setTesting] = useState(false);
@@ -220,6 +222,9 @@ export default function ConfigPage() {
   ]);
   const [newModelId, setNewModelId] = useState("");
 
+  // YouTube benchmark API (for social copy style references)
+  const [youtubeApiKey, setYoutubeApiKey] = useState("");
+
   const [initialLoaded, setInitialLoaded] = useState(false);
   type TabId = "general" | "formatting" | "tts" | "video" | "captions" | "ai" | "output";
   const [activeTab, setActiveTab] = useState<TabId>("general");
@@ -336,6 +341,9 @@ export default function ConfigPage() {
     if (g.ollama_models?.length) setOllamaModels(g.ollama_models);
     setNvidiaNimApiKey(g.nvidia_nim_api_key ?? "");
     if (g.nvidia_nim_models?.length) setNvidiaNimModels(g.nvidia_nim_models);
+
+    const yt = (c as any).youtube ?? {};
+    setYoutubeApiKey(yt.api_key ?? "");
 
     setInitialLoaded(true);
   }, [config, initialLoaded]);
@@ -465,6 +473,9 @@ export default function ConfigPage() {
           ollama_url: ollamaUrl,
           ollama_models: ollamaModels,
           nvidia_nim_models: nvidiaNimModels,
+        },
+        youtube: {
+          api_key: youtubeApiKey,
         },
       },
       {
@@ -818,14 +829,31 @@ export default function ConfigPage() {
                             } />
                           </SelectTrigger>
                           <SelectContent className="max-h-[380px]">
+                            {/* 1. User's account voices (live from /v2/voices) */}
+                            {voices.length > 0 && (
+                              <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-muted-foreground">Your voices</div>
+                            )}
                             {voices.map((v) => (
                               <SelectItem key={v.voice_id} value={v.voice_id}>
                                 {v.name}
                                 {v.category ? ` — ${v.category}` : ""}
                               </SelectItem>
                             ))}
-                            {/* Keep the current value selectable even if not in the fetched list */}
-                            {ttsMainVoice && !voices.some(v => v.voice_id === ttsMainVoice) && (
+                            {/* 2. ElevenLabs default library voices (always available) —
+                                   skip ones already shown in the user's account above. */}
+                            <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-muted-foreground border-t border-border mt-1">
+                              ElevenLabs Library
+                            </div>
+                            {ELEVENLABS_LIBRARY
+                              .filter((lib) => !voices.some((v) => v.voice_id === lib.id))
+                              .map((lib) => (
+                                <SelectItem key={lib.id} value={lib.id}>
+                                  {lib.name} — {lib.category}
+                                </SelectItem>
+                              ))}
+                            {/* Keep the current value selectable even if not in either list */}
+                            {ttsMainVoice && !voices.some(v => v.voice_id === ttsMainVoice) &&
+                              !ELEVENLABS_LIBRARY.some(l => l.id === ttsMainVoice) && (
                               <SelectItem value={ttsMainVoice}>{ttsMainVoice} (saved)</SelectItem>
                             )}
                           </SelectContent>
@@ -837,8 +865,23 @@ export default function ConfigPage() {
                              `ElevenLabs error: ${err}`}
                           </p>
                         )}
+                        <div className="space-y-1">
+                          <Label className="text-[10px] text-muted-foreground">
+                            Or paste a raw voice_id (e.g. public library voice)
+                          </Label>
+                          <Input
+                            value={ttsMainVoice}
+                            onChange={(e) => setTtsMainVoice(e.target.value)}
+                            placeholder="nPczCjzI2devNBz1zQrb (Brian), 21m00Tcm4TlvDq8ikWAM (Rachel), ..."
+                            className="h-7 text-[11px] font-mono bg-secondary border-border"
+                          />
+                        </div>
                         <p className="text-[10px] text-muted-foreground">
-                          Voices are fetched live from your ElevenLabs account. Save the API key and refresh if you add new voices there.
+                          Voices are fetched live from your ElevenLabs account. To use a library voice
+                          like <strong>Brian</strong>, either add it via{" "}
+                          <a href="https://elevenlabs.io/app/voice-library" target="_blank" rel="noreferrer"
+                             className="underline hover:text-primary">elevenlabs.io/app/voice-library</a>
+                          {" "}or paste its voice_id above.
                         </p>
                       </>
                     );
@@ -887,6 +930,12 @@ export default function ConfigPage() {
                   if (ttsProvider === "elevenlabs") {
                     const ev = elevenVoicesQuery.data?.voices ?? [];
                     voiceList = ev.map((v) => ({ id: v.voice_id, label: `${v.name}${v.category ? ` — ${v.category}` : ""}` }));
+                    // Append library voices not already in the account.
+                    for (const lib of ELEVENLABS_LIBRARY) {
+                      if (!voiceList.some((x) => x.id === lib.id)) {
+                        voiceList.push({ id: lib.id, label: `${lib.name} (library) — ${lib.category}` });
+                      }
+                    }
                   } else {
                     const detailed = currentProvider?.voices_detailed ?? [];
                     const raw = currentProvider?.voices ?? STREAMLABS_VOICES;
@@ -941,12 +990,11 @@ export default function ConfigPage() {
                   </div>
                   <div className="space-y-1">
                     <Label className="text-xs text-muted-foreground">API Key</Label>
-                    <Input
-                      type="password"
+                    <SecretInput
                       value={elevenApiKey}
                       onChange={(e) => setElevenApiKey(e.target.value)}
                       placeholder="sk_..."
-                      className="h-8 text-xs bg-secondary border-border"
+                      inputClassName="h-8 text-xs bg-secondary border-border"
                     />
                     <p className="text-[10px] text-muted-foreground">Get one at <code>elevenlabs.io</code> → Profile → API Keys.</p>
                   </div>
@@ -1385,7 +1433,9 @@ export default function ConfigPage() {
                         <SelectItem value="base">base (~145 MB, recommended)</SelectItem>
                         <SelectItem value="small">small (~500 MB, more accurate)</SelectItem>
                         <SelectItem value="medium">medium (~1.5 GB, slow, best for noisy voices)</SelectItem>
-                        <SelectItem value="large-v3">large-v3 (~3 GB, best quality, needs GPU)</SelectItem>
+                        <SelectItem value="large-v2">large-v2 (~3 GB, most stable on TTS voices — recommended)</SelectItem>
+                        <SelectItem value="large-v3">large-v3 (~3 GB, best on real voices but can hallucinate on TTS)</SelectItem>
+                        <SelectItem value="distil-large-v3">distil-large-v3 (~1.5 GB, 6× faster than large-v3, near-identical accuracy)</SelectItem>
                       </SelectContent>
                     </Select>
                     <p className="text-[10px] text-muted-foreground">
@@ -1558,24 +1608,22 @@ export default function ConfigPage() {
               {geminiProvider === "gemini" && (
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">Gemini API Key</Label>
-                  <Input
-                    type="password"
+                  <SecretInput
                     value={geminiApiKey}
                     onChange={(e) => setGeminiApiKey(e.target.value)}
                     placeholder="AIza..."
-                    className="h-8 text-xs bg-secondary border-border font-mono"
+                    inputClassName="h-8 text-xs bg-secondary border-border"
                   />
                 </div>
               )}
               {geminiProvider === "openrouter" && (
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">OpenRouter API Key</Label>
-                  <Input
-                    type="password"
+                  <SecretInput
                     value={openrouterApiKey}
                     onChange={(e) => setOpenrouterApiKey(e.target.value)}
                     placeholder="sk-or-..."
-                    className="h-8 text-xs bg-secondary border-border font-mono"
+                    inputClassName="h-8 text-xs bg-secondary border-border"
                   />
                 </div>
               )}
@@ -1598,12 +1646,11 @@ export default function ConfigPage() {
               {geminiProvider === "nvidia_nim" && (
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">Nvidia NIM API Key</Label>
-                  <Input
-                    type="password"
+                  <SecretInput
                     value={nvidiaNimApiKey}
                     onChange={(e) => setNvidiaNimApiKey(e.target.value)}
                     placeholder="nvapi-..."
-                    className="h-8 text-xs bg-secondary border-border font-mono"
+                    inputClassName="h-8 text-xs bg-secondary border-border"
                   />
                   <p className="text-[10px] text-muted-foreground">
                     Get your key from <a href="https://build.nvidia.com" target="_blank" rel="noopener noreferrer" className="text-primary underline">build.nvidia.com</a>
@@ -1636,6 +1683,29 @@ export default function ConfigPage() {
             </div>
           )}
         </Section>
+
+        {/* YouTube Benchmarks (style references for Social Copy) */}
+        <Section title="YouTube Benchmarks" icon={<Youtube className="h-4 w-4 text-destructive" />}>
+          <p className="text-[11px] text-muted-foreground leading-snug">
+            When generating social copy, the AI can reference the top-performing short
+            videos in the same niche (same subreddit + "reddit stories shorts") to match
+            proven hook phrasing, tag patterns, and tone. Uses the YouTube Data API v3.
+            Free tier = 10,000 units/day ≈ ~90 generations. Results cached for 24h per query.
+          </p>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">YouTube Data API v3 Key</Label>
+            <SecretInput
+              value={youtubeApiKey}
+              onChange={(e) => setYoutubeApiKey(e.target.value)}
+              placeholder="AIza... (leave empty to disable benchmarks)"
+              inputClassName="h-8 text-xs bg-secondary border-border"
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Get a key: <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="text-primary underline">Google Cloud Console</a> →
+              enable "YouTube Data API v3" → create an API key. No billing required for free tier.
+            </p>
+          </div>
+        </Section>
         </div>
 
         <div className={activeTab === "output" ? "space-y-5" : "hidden"}>
@@ -1659,12 +1729,11 @@ export default function ConfigPage() {
             </div>
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">Webhook URL</Label>
-              <Input
-                type="password"
+              <SecretInput
                 value={webhookUrl}
                 onChange={(e) => setWebhookUrl(e.target.value)}
                 placeholder="https://discord.com/api/webhooks/..."
-                className="h-8 text-xs bg-secondary border-border font-mono"
+                inputClassName="h-8 text-xs bg-secondary border-border"
               />
             </div>
             <div className="flex items-center justify-between">

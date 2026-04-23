@@ -71,6 +71,13 @@
     "speed": 1.0,
     "pre_normalize": true,
 
+    "prefilter": {
+      "enabled": true,
+      "expand_age_gender": true,
+      "expand_tldr": true,
+      "expand_acronyms": true
+    },
+
     "elevenlabs_api_key": "",
     "elevenlabs_model_id": "eleven_multilingual_v2",
     "elevenlabs": {
@@ -140,5 +147,9 @@
     "generate_hook": true,
     "generate_thumbnail_text": true,
     "ollama_url": "http://localhost:11434"
+  },
+
+  "youtube": {
+    "api_key": ""
   }
 }

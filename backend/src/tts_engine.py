@@ -425,7 +425,11 @@ class ElevenLabsTTS:
 
     API_URL_TMPL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     VOICES_URL   = "https://api.elevenlabs.io/v2/voices"
-    MAX_TEXT_LENGTH = 1000  # well under the 5000-char hard limit; keeps caption chunks reasonable
+    # Kept short on purpose: shorter audio clips align far more accurately in
+    # faster-whisper. ElevenLabs bills per character so splitting doesn't cost
+    # extra. ~350 chars ≈ 10-15s of audio at normal speed, which whisper
+    # handles with minimal drift.
+    MAX_TEXT_LENGTH = 350
 
     # Voice IDs shift over time in ElevenLabs' default library, so we don't
     # hardcode them. Anything that isn't already a 20-char voice_id is resolved
@@ -527,7 +531,7 @@ class ElevenLabsTTS:
             return []
         import re
         pause_split = re.split(r'(\[PAUSE:\d+\])', text)
-        final = []
+        final: List[str] = []
         for part in pause_split:
             part = part.strip()
             if not part:
@@ -559,7 +563,36 @@ class ElevenLabsTTS:
                     final.append(buf); buf = s
             if buf:
                 final.append(buf)
-        return final
+
+        # --- Smart join: fix orphan punctuation at segment boundaries ---
+        # If a segment starts with closing brackets/quotes/dashes it means the
+        # previous split cut inside a parenthetical. Merge back, or at least
+        # pull the orphan PREFIX onto the end of the previous segment so TTS
+        # never tries to synthesize a clip starting with ") — but".
+        orphan_prefix_re = re.compile(r'^\s*[)\]\}»\"”’—–\-:;,]+\s*')
+
+        merged: List[str] = []
+        for seg in final:
+            if not merged or re.match(r'^\[PAUSE:\d+\]$', seg):
+                merged.append(seg)
+                continue
+            m = orphan_prefix_re.match(seg)
+            if not m:
+                merged.append(seg)
+                continue
+            orphan = m.group(0)
+            rest = seg[m.end():].strip()
+            if not rest:
+                # Segment is ONLY orphan punctuation (whole segment is `)`) —
+                # just tack it onto the previous one, no new segment.
+                merged[-1] = merged[-1].rstrip() + " " + orphan.strip()
+                continue
+            # Pull just the orphan prefix onto the previous segment so the new
+            # segment starts on a real word. Avoids over-merging into huge
+            # clips that whisper struggles with.
+            merged[-1] = merged[-1].rstrip() + " " + orphan.strip()
+            merged.append(rest)
+        return merged
 
     def synthesize(self, text: str, output_filename: Optional[str] = None, max_retries: int = 3) -> Optional[str]:
         if not text or not text.strip():
@@ -576,29 +609,37 @@ class ElevenLabsTTS:
             print(f"✓ Using cached audio: {output_filename}")
             return output_path
 
-        # Chunk if the text is too long for one request.
-        if len(text) > self.MAX_TEXT_LENGTH:
+        # Chunk if the text is WELL over the limit. Small overruns (smart-join
+        # can push a segment a few chars past MAX_TEXT_LENGTH when fixing
+        # orphan punctuation) go straight to the API — ElevenLabs accepts up
+        # to ~5000 chars per request. Recursing on those was causing infinite
+        # loops because segment_text would return the same oversized chunk.
+        HARD_SPLIT_OVER = int(self.MAX_TEXT_LENGTH * 1.5)
+        if len(text) > HARD_SPLIT_OVER:
             chunks = self.segment_text(text)
-            pieces = []
-            for i, chunk in enumerate(chunks):
-                if self.cancel_check:
-                    self.cancel_check()
-                piece_name = f"el_tmp_{int(time.time())}_{i}.mp3"
-                p = self.synthesize(chunk, output_filename=piece_name, max_retries=max_retries)
-                if not p:
+            # Progress guard: if segment_text couldn't shrink the input,
+            # fall through to the API call rather than recurse forever.
+            if len(chunks) > 1 or (chunks and len(chunks[0]) < len(text)):
+                pieces = []
+                for i, chunk in enumerate(chunks):
+                    if self.cancel_check:
+                        self.cancel_check()
+                    piece_name = f"el_tmp_{int(time.time())}_{i}.mp3"
+                    p = self.synthesize(chunk, output_filename=piece_name, max_retries=max_retries)
+                    if not p:
+                        return None
+                    pieces.append(p)
+                try:
+                    with open(output_path, 'wb') as out:
+                        for p in pieces:
+                            with open(p, 'rb') as f:
+                                out.write(f.read())
+                            try: os.remove(p)
+                            except: pass
+                    return output_path
+                except Exception as e:
+                    print(f"❌ ElevenLabs: chunk combine failed: {e}")
                     return None
-                pieces.append(p)
-            try:
-                with open(output_path, 'wb') as out:
-                    for p in pieces:
-                        with open(p, 'rb') as f:
-                            out.write(f.read())
-                        try: os.remove(p)
-                        except: pass
-                return output_path
-            except Exception as e:
-                print(f"❌ ElevenLabs: chunk combine failed: {e}")
-                return None
 
         url = self.API_URL_TMPL.format(voice_id=self.voice_id)
         headers = {

@@ -162,6 +162,43 @@ export function SocialCopyDialog({ postId, title, open, onOpenChange }: Props) {
                 )}
               </section>
             )}
+
+            {data.benchmarks_used && data.benchmarks_used.length > 0 && (
+              <section className="space-y-1.5 pt-3 border-t border-border/60">
+                <div className="flex items-center gap-2">
+                  <Youtube className="h-3.5 w-3.5 text-[#ff0000]" />
+                  <h4 className="font-semibold text-[11px]">Style references</h4>
+                  <span className="text-[10px] text-muted-foreground">
+                    ({data.benchmarks_used.length} high-performing videos{data.subreddit ? ` in r/${data.subreddit}` : ""})
+                  </span>
+                </div>
+                <p className="text-[10px] text-muted-foreground leading-snug">
+                  These videos informed the hook phrasing, tag patterns, and tone above.
+                  Click to open on YouTube.
+                </p>
+                <div className="space-y-1">
+                  {data.benchmarks_used.map((b) => (
+                    <a
+                      key={b.video_id}
+                      href={`https://www.youtube.com/watch?v=${b.video_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 text-[10px] bg-secondary/30 hover:bg-secondary/60 rounded px-2 py-1 transition-colors"
+                    >
+                      <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-mono shrink-0">
+                        {b.view_count >= 1_000_000
+                          ? `${(b.view_count / 1_000_000).toFixed(1)}M`
+                          : b.view_count >= 1_000
+                          ? `${(b.view_count / 1_000).toFixed(0)}K`
+                          : b.view_count}
+                      </Badge>
+                      <span className="flex-1 truncate">{b.title}</span>
+                      <span className="text-muted-foreground shrink-0 max-w-[30%] truncate">{b.channel}</span>
+                    </a>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         )}
 

@@ -12,17 +12,20 @@ This is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/r
 
 ### TTS
 
-- **ElevenLabs provider** — live voice fetching from `/v2/voices` (no stale hardcoded IDs); stability / similarity / style / speaker-boost sliders; model selection (Multilingual v2 / Turbo v2.5 / Monolingual v1); configs that stored a name instead of a voice_id self-heal on next run.
+- **ElevenLabs provider** — live voice fetching from `/v2/voices` (no stale hardcoded IDs); stability / similarity / style / speaker-boost sliders; model selection (Multilingual v2 / Turbo v2.5 / Monolingual v1); configs that stored a name instead of a voice_id self-heal on next run. Includes a 21-voice ElevenLabs library preset list so common voices (Rachel, Adam, Bella, Brian, etc.) are always pickable even when the API hasn't been queried yet.
 - **Gendered voice presets** — per-provider male/female defaults in the TTS tab. The Run dialog auto-detects narrator gender from the post title/body (regex on `(M32)` / `28f` / `as a 24F` / `my wife|husband`) and picks the matching preset. Can be overridden per-run.
 - **Pre-TTS cleanup with local Ollama** — expands Reddit shorthand (`tho`→`though`, `cuz`→`because`) and fixes typos before sending to paid TTS. Cached per-post. Silently skipped if Ollama is offline.
-- **Playback speed is actually applied now** — the speed slider was cosmetic upstream; I pipe each synthesized clip through FFmpeg `atempo` (handles 0.25×–4× via chaining). Whisper alignment then runs on the stretched audio so captions stay in sync.
+- **Pre-TTS prefilter** (dedicated module, no LLM call) — expands age/gender tokens (`25M` → "twenty five male", only real ages so `M3` / `F1` don't get mangled), TL;DR → "too long; didn't read", and Reddit-subreddit acronyms (AITA/NTA/YTA/ESH/NAH, MIL/FIL/BIL/SIL/DH/DW). Smart-quotes are normalized to ASCII and `U+FFFD` is stripped so TTS engines don't choke.
+- **Playback speed is actually applied now** — the speed slider was cosmetic upstream; I pipe each synthesized clip through FFmpeg `atempo` (handles 0.25×–4× via chaining). Whisper alignment runs on the **pre-stretch** audio and timestamps are scaled by `1/speed` afterwards, which keeps whisper's accuracy (atempo distorts formants enough to degrade alignment) while still matching the final stretched clip.
+- **FFmpeg concat filter for clip joining** — replaces MoviePy's `concat_audioclips`, which introduced audible boundary clicks between segments.
 
 ### Captions
 
 - **Fully configurable** — font (server-side font picker enumerating installed TTFs), size, color, stroke color/width, uppercase, background box, position (center/top/bottom), offset, max width %, words-per-chunk.
 - **Color picker** — native swatch + hex input combo for text, stroke, BG, and highlight colors.
 - **Animations** (MoviePy engine): fade, pop, fade+pop with tunable duration, overshoot, start-scale.
-- **Whisper forced alignment** — optional local `faster-whisper` (GPU-aware: `cuda` + `float16` when available, else `cpu` + `int8`) produces word-level timestamps so captions snap to the actual spoken words. Cached per audio file.
+- **Whisper forced alignment** — optional local `faster-whisper` (GPU-aware: `cuda` + `float16` when available, else `cpu` + `int8`) produces word-level timestamps so captions snap to the actual spoken words. Cached per audio file (`.whisper_v8.json`). Model is unloaded + CUDA cache flushed before FFmpeg spawns so Windows doesn't hit `WinError 1455` (parent-process paging-file reservation).
+- **Hybrid LCS + timing-consistency alignment** — whisper hallucinations (`Subtitled by the Amara.org community`, `CastingWords transcription service`, `Thanks for watching`) are filtered by a deny-list, then the remaining words are matched to the **expected** text via Longest-Common-Subsequence. A timing-consistency filter (speech-rate sanity check) drops outlier anchors so a misplaced word can't freeze a caption for 15 seconds. Captions always render the expected text — never the hallucinated text — even when whisper goes off the rails.
 - **Per-word highlight** — current spoken word rendered in a configurable color, optionally scaled up 100–150% for a TikTok-style bounce. Requires alignment.
 - **Per-word shrink-to-fit** — if one word would overflow the caption width, just that word is scaled down (baseline-aligned with its neighbors); the rest stay at normal size.
 - **Runaway-caption cap** — `max_chunk_duration` prevents a single chunk from staying on screen for 15+ seconds when whisper leaves a gap. `lead_in_grace` covers brief TTS leading silence.
@@ -39,15 +42,21 @@ This is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/r
 ### Publishing / output
 
 - **Social copy generator** — per-video "Social Copy" button generates YouTube Shorts titles (3 variants) + description + tags, TikTok caption + hashtags, Instagram caption + hashtags, via your configured AI provider. Saved to `posts/<id>/social.json` with per-field copy buttons.
-- **Project registry** — every rendered video is tracked in `projects.json` at the repo root. Audio + `timeline.json` are preserved under `videos/proj_<id>/` even when `auto_cleanup` nukes `posts/<id>/`, so the Videos page survives server restarts and Re-render keeps working indefinitely.
+- **YouTube benchmarks for social copy** — if a YouTube Data API v3 key is configured, the generator first pulls the top-performing short videos in the same niche (query: `r/<subreddit> reddit stories shorts`) and feeds their titles / descriptions / tags into the prompt as style references. The LLM is instructed to emulate hook phrasing, tag density, and tone **without copying verbatim**. Results cached 24h per query (~110 quota units per fresh fetch, ~90 generations/day on the free tier). The dialog shows the referenced videos with view counts so you can see what inspired the output. Graceful no-op if the key is missing or quota is exhausted.
+- **Project registry — fully persistent** — `projects.json` at the repo root now stores every flavor of entry (published, audio-only, fetched, failed), not just successful renders. The in-memory `videos_db` is dumped to disk after **every** mutation (pipeline complete, resume, delete, Full Redo, Clear All). Audio + `timeline.json` are preserved under `videos/proj_<id>/` even when `auto_cleanup` nukes `posts/<id>/`, so the Videos page survives server restarts exactly as you left it — audio-only rows can still be resumed after a reboot.
 - **Re-render** — re-runs just the video step using the persisted audio and aligned timeline, so caption/video settings can be tweaked without re-spending TTS credits. Preview URLs include `?v=<mtime>` + no-cache headers so the new render shows immediately.
+- **Full Redo dialog** — re-runs the entire pipeline (fetch → TTS → render) for a post. Lets you force a male/female preset or override the voice for this one run without touching your global config. Deletes old audio/video/workspace first and re-marks the post as eligible for discovery. Explicit cost warning since this **does** spend TTS credits.
 - **Delete dialog** — two options: "List only" (keeps files) and "Delete files too" (removes the .mp4s, thumbnail, and preserved workspace). Exact-path matching — deleting one video no longer wipes siblings with similar titles.
+- **Confirmation popups** on Re-render, Full Redo, Delete, and Clear All — hard to accidentally nuke hours of rendering.
 
 ### Dev experience
 
-- **Tabbed config page** — sidebar navigation (General / Formatting / TTS / Video / Captions / AI Hooks / Output & Discord) instead of one long scrolling page.
-- **`start.ps1` dev loop** — wraps the server with Ctrl+C-restarts-server behavior (double-tap Ctrl+C within 2s to exit).
+- **Tabbed config page** — sidebar navigation (General / Formatting / TTS / Video / Captions / AI Hooks / Output & Discord) instead of one long scrolling page. AI Hooks tab now includes a **YouTube Benchmarks** section for the Data API v3 key.
+- **`start.ps1` dev loop** — wraps the server with Ctrl+C-restarts-server behavior (double-tap Ctrl+C within 2s to exit). Also checks whether Ollama is listening on `:11434` at startup and spawns `ollama serve` in a separate window if not — Ollama survives supervisor restarts so you don't reload a 14B model every time you Ctrl+C.
+- **`dev_supervisor.py`** — Python supervisor that uses Windows `CREATE_NEW_PROCESS_GROUP` + `CTRL_BREAK_EVENT` so the child uvicorn process actually handles Ctrl+C (upstream's PowerShell loop was no-op on Windows).
 - **`run_server.py`** — single-entry dev launcher that mounts the built frontend and runs uvicorn with the backend path correctly resolved.
+- **Masked API-key inputs (`<SecretInput>`)** — every API key / webhook URL field (ElevenLabs, Gemini, OpenRouter, NVIDIA NIM, YouTube, Discord) uses CSS text-security + explicit `data-1p-ignore` / `data-lpignore` / `data-bwignore` / `data-form-type="other"` attributes. Chrome / Firefox / 1Password / LastPass / Bitwarden no longer try to save or autofill them as passwords. Each field has a show/hide eye toggle.
+- **Origin-aware API base URL** — frontend uses `window.location.origin` so `localhost:8000`, `127.0.0.1:8000`, and LAN IPs all work without cross-origin CORS preflights. Override with `VITE_API_URL` for split-port dev setups.
 
 ### Upstream bug fixes shipped
 
@@ -55,6 +64,10 @@ This is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/r
 - **Caption overflow on wide fonts** — upstream used a `fontsize * 0.5` estimate for wrap width; display fonts like Gotham Ultra overflowed the frame. Rewrote with `font.getlength()` pixel-accurate wrapping and stroke-aware canvas sizing.
 - **Title card appearing too late and then vanishing** — title/hook segments now carry a `segment_role: "title"` tag so the card shows for the whole hook block and captions only engage once the body begins.
 - **Delete endpoint substring-match** — previously `if video_id in filename:` deleted all posts with overlapping characters. Replaced with exact-path matching.
+- **Caption drift across segment boundaries** — the MP3 header duration reported a longer total than the actual FFmpeg-concatenated output by ~37 ms per segment. Fixed by rescaling per-segment durations to the measured concat duration (`effective_durs`).
+- **Video duplicated 3× on Videos page** — `projects.json` + `posts/` scan + loose `videos/*.mp4` could each claim the same render. Scan passes now skip ids already in `videos_db`, and Full Redo deletes old mp4s before re-rendering.
+- **Infinite recursion in TTS chunk splitter** — smart-join of orphan punctuation occasionally produced a segment just over `MAX_TEXT_LENGTH`, which re-entered the splitter on the same input. Added `HARD_SPLIT_OVER = MAX_TEXT_LENGTH * 1.5` and a progress guard.
+- **Windows `WinError 1455` during render** — faster-whisper large-v3 leaves ~5 GB committed on CUDA. `CreateProcess` on Windows pre-reserves swap equal to parent committed pages, so FFmpeg's concat subprocess failed with "paging file too small". Fix: unload the whisper model + `torch.cuda.empty_cache()` before Step 4.
 
 ### Config changes
 
@@ -79,7 +92,8 @@ Copy `config.json.example` to `config.json` on first run. All new keys have defa
   "force_align": false, "align_model_size": "base",
   "highlight_word": false, "highlight_color": "#FFD93D", "highlight_scale": 1.1,
   "max_chunk_duration": 2.5, "lead_in_grace": 1.0
-}
+},
+"youtube": { "api_key": "" }   // optional — enables YouTube-benchmark style refs
 ```
 
 **How to run (Windows):**
@@ -97,6 +111,16 @@ Copy-Item config.json.example config.json
 ```
 
 Open http://localhost:8000.
+
+### Windows: pagefile note for `whisper large-v3`
+
+If you use `faster-whisper` with the `large-v3` or `distil-large-v3` model on Windows and see `[WinError 1455] The paging file is too small for this operation to complete` when FFmpeg spawns, set your pagefile to system-managed (or at least 16–32 GB fixed) and reboot. Root cause: Windows' `CreateProcess` pre-commits swap equal to the parent process's committed pages, and the whisper CUDA arena bloats Python enough to trip tiny pagefiles. The code also proactively unloads the whisper model before the render step — the pagefile tweak is belt-and-suspenders.
+
+```powershell
+# Run elevated
+wmic computersystem set AutomaticManagedPagefile=True
+# Then reboot.
+```
 
 ---
 

@@ -2,21 +2,30 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   Play, Clock, CheckCircle2, XCircle, Loader2, Film, Trash2,
-  Download, Eye, HardDrive, Layers, RefreshCw, Share2
+  Download, Eye, HardDrive, Layers, RefreshCw, Share2, AlertTriangle
 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { SocialCopyDialog } from "@/components/SocialCopyDialog";
+import { FullRedoDialog } from "@/components/FullRedoDialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter
 } from "@/components/ui/dialog";
 import { useVideos, useUsedPosts, useDeleteVideo, useResumeVideo } from "@/hooks/use-api";
+import { api } from "@/lib/api";
 import { formatDistanceToNow } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import type { VideoRecord } from "@/lib/api";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_BASE =
+  import.meta.env.VITE_API_URL ||
+  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 
 function formatFileSize(bytes?: number) {
   if (!bytes) return "—";
@@ -35,6 +44,8 @@ function VideoCard({ video, index, onPreview, onDelete }: {
   const resumeMutation = useResumeVideo();
   const { toast } = useToast();
   const [socialOpen, setSocialOpen] = useState(false);
+  const [redoOpen, setRedoOpen] = useState(false);
+  const [rerenderConfirmOpen, setRerenderConfirmOpen] = useState(false);
   const handleRerender = () => {
     resumeMutation.mutate(video.id, {
       onSuccess: () => toast({
@@ -167,17 +178,43 @@ function VideoCard({ video, index, onPreview, onDelete }: {
 
           <div className="flex items-center justify-between pt-1 gap-1">
             <div className="flex items-center gap-1">
-              {(video.has_audio || video.has_video) && (
+              {video.has_audio ? (
                 <Button
                   size="sm"
                   variant="outline"
                   className="h-7 text-[10px] gap-1 px-2 border-accent/40 text-accent hover:bg-accent/10"
-                  onClick={handleRerender}
+                  onClick={() => setRerenderConfirmOpen(true)}
                   disabled={resumeMutation.isPending}
                   title="Re-render this video using current caption & video settings. Reuses existing audio — no TTS charges."
                 >
                   <RefreshCw className="h-3 w-3" />
                   {resumeMutation.isPending ? "Re-rendering..." : "Re-render"}
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled
+                  className="h-7 text-[10px] gap-1 px-2 opacity-50 cursor-not-allowed"
+                  title="Audio from this render wasn't preserved (legacy video made before the project registry). Run a fresh pipeline to produce a re-renderable copy."
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  No audio
+                </Button>
+              )}
+              {/* Full Redo only makes sense for real Reddit post IDs (alphanumeric,
+                  ≤12 chars). Loose legacy mp4s have filename-shaped ids that
+                  the pipeline can't re-fetch from Reddit. */}
+              {video.id && /^[a-z0-9]{1,12}$/i.test(video.id) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px] gap-1 px-2 border-warning/40 text-warning hover:bg-warning/10"
+                  onClick={() => setRedoOpen(true)}
+                  title="Re-run the entire pipeline for this post from scratch (uses TTS credits). Lets you change voice and narrator gender."
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  Full Redo
                 </Button>
               )}
               {video.has_video && (
@@ -204,6 +241,31 @@ function VideoCard({ video, index, onPreview, onDelete }: {
             open={socialOpen}
             onOpenChange={setSocialOpen}
           />
+          <FullRedoDialog
+            postId={video.id}
+            title={video.title}
+            open={redoOpen}
+            onOpenChange={setRedoOpen}
+          />
+          <ConfirmDialog
+            open={rerenderConfirmOpen}
+            onOpenChange={setRerenderConfirmOpen}
+            title="Re-render this video?"
+            icon={<RefreshCw className="h-4 w-4 text-accent" />}
+            description={
+              <>
+                Re-runs <strong>just the video step</strong> on "<strong>{video.title}</strong>" using
+                the existing TTS audio. Your current caption / video / font / animation settings will
+                apply. This <strong>does not</strong> spend TTS credits. Takes ~30-60s on GPU.
+              </>
+            }
+            confirmLabel="Re-render"
+            onConfirm={() => {
+              setRerenderConfirmOpen(false);
+              handleRerender();
+            }}
+            isLoading={resumeMutation.isPending}
+          />
         </CardContent>
       </Card>
     </motion.div>
@@ -220,6 +282,45 @@ export default function VideosPage() {
 
   const [preview, setPreview] = useState<{ video: VideoRecord; part: number } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<VideoRecord | null>(null);
+
+  // "Clear all data" dialog state
+  const qc = useQueryClient();
+  const [clearOpen, setClearOpen]       = useState(false);
+  const [clearPosts, setClearPosts]     = useState(true);
+  const [clearVideos, setClearVideos]   = useState(true);
+  const [clearHistory, setClearHistory] = useState(true);
+  const [clearRegistry, setClearRegistry] = useState(true);
+  const [clearConfirmText, setClearConfirmText] = useState("");
+  const [clearing, setClearing]         = useState(false);
+  const clearReady = clearConfirmText === "DELETE" &&
+    (clearPosts || clearVideos || clearHistory || clearRegistry);
+
+  const handleClearAll = async () => {
+    setClearing(true);
+    try {
+      const r = await api.clearAllData({
+        posts: clearPosts, videos: clearVideos,
+        history: clearHistory, registry: clearRegistry,
+        confirm: "DELETE",
+      });
+      toast({
+        title: "Data cleared",
+        description: r.errors?.length
+          ? `${r.removed_paths.length} path(s) removed, ${r.errors.length} error(s). Check server log.`
+          : `${r.removed_paths.length} path(s) removed.`,
+        variant: r.errors?.length ? "destructive" : "default",
+      });
+      setClearOpen(false);
+      setClearConfirmText("");
+      qc.invalidateQueries({ queryKey: ["videos"] });
+      qc.invalidateQueries({ queryKey: ["used-posts"] });
+      qc.invalidateQueries({ queryKey: ["stats"] });
+    } catch (e: any) {
+      toast({ title: "Clear failed", description: e.message, variant: "destructive" });
+    } finally {
+      setClearing(false);
+    }
+  };
 
   const published = videos.filter((v) => v.status === "published").length;
   const failed = videos.filter((v) => v.status === "failed").length;
@@ -242,12 +343,23 @@ export default function VideosPage() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5">
-      <div>
-        <h2 className="text-xl font-bold">Video History</h2>
-        <p className="text-xs text-muted-foreground mt-1">
-          {videos.length} videos total · {published} published · {failed} failed
-          {usedPosts.length > 0 && ` · ${usedPosts.length} posts used`}
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-xl font-bold">Video History</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            {videos.length} videos total · {published} published · {failed} failed
+            {usedPosts.length > 0 && ` · ${usedPosts.length} posts used`}
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1.5 border-destructive/50 text-destructive hover:bg-destructive/10"
+          onClick={() => setClearOpen(true)}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          Clear data…
+        </Button>
       </div>
 
       {isLoading && (
@@ -374,6 +486,88 @@ export default function VideosPage() {
             >
               {deleteMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1" />}
               Delete files too
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Clear-all / Nuke confirmation */}
+      <Dialog open={clearOpen} onOpenChange={(v) => { if (!clearing) setClearOpen(v); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-4 w-4" /> Clear data
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Wipes selected data from disk and memory. This is irreversible — consider backing up
+              <code className="mx-1">videos/</code>first.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2.5 py-1">
+            <label className="flex items-start justify-between gap-3 cursor-pointer">
+              <div>
+                <div className="text-xs font-medium">Rendered videos & preserved audio</div>
+                <div className="text-[10px] text-muted-foreground">
+                  Deletes <code>videos/</code> — all .mp4 files and <code>videos/proj_*</code> (audio + timeline needed for Re-render).
+                </div>
+              </div>
+              <Switch checked={clearVideos} onCheckedChange={setClearVideos} />
+            </label>
+
+            <label className="flex items-start justify-between gap-3 cursor-pointer">
+              <div>
+                <div className="text-xs font-medium">Post workspace</div>
+                <div className="text-[10px] text-muted-foreground">
+                  Deletes <code>posts/</code> — raw Reddit fetches, TTS audio waits, timelines, whisper caches, social copy, viral scores.
+                </div>
+              </div>
+              <Switch checked={clearPosts} onCheckedChange={setClearPosts} />
+            </label>
+
+            <label className="flex items-start justify-between gap-3 cursor-pointer">
+              <div>
+                <div className="text-xs font-medium">Project registry</div>
+                <div className="text-[10px] text-muted-foreground">
+                  Deletes <code>projects.json</code>. The Videos page will rebuild from whatever mp4s remain on disk.
+                </div>
+              </div>
+              <Switch checked={clearRegistry} onCheckedChange={setClearRegistry} />
+            </label>
+
+            <label className="flex items-start justify-between gap-3 cursor-pointer">
+              <div>
+                <div className="text-xs font-medium">Post history</div>
+                <div className="text-[10px] text-muted-foreground">
+                  Resets <code>used_posts.json</code> so the pipeline can re-pick posts it already used. Also zeroes dashboard counters.
+                </div>
+              </div>
+              <Switch checked={clearHistory} onCheckedChange={setClearHistory} />
+            </label>
+          </div>
+
+          <div className="pt-1 space-y-1">
+            <Label className="text-[10px] uppercase tracking-wider text-destructive">
+              Type DELETE to confirm
+            </Label>
+            <Input
+              value={clearConfirmText}
+              onChange={(e) => setClearConfirmText(e.target.value)}
+              placeholder="DELETE"
+              className="h-8 text-xs font-mono bg-secondary border-border"
+              autoFocus
+            />
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setClearOpen(false)} disabled={clearing}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={handleClearAll}
+              disabled={!clearReady || clearing}
+            >
+              {clearing ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Trash2 className="h-4 w-4 mr-1" />}
+              Clear selected
             </Button>
           </DialogFooter>
         </DialogContent>

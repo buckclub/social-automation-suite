@@ -37,6 +37,10 @@ audio/
 models/
 build/
 
+# Runtime registry + caches (per-machine, per-user data)
+projects.json
+.cache/
+
 # AI / editor sessions
 .claude/
 .cursor/

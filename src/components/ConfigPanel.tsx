@@ -2,6 +2,7 @@ import { Settings2, Plus, X, Loader2, Save, Sparkles, Zap, CheckCircle2, XCircle
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { SecretInput } from "@/components/ui/secret-input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
@@ -288,24 +289,22 @@ export function ConfigPanel() {
               {geminiProvider === "gemini" && (
                 <div className="space-y-1">
                   <label className="text-xs text-muted-foreground">Gemini API Key</label>
-                  <Input
-                    type="password"
+                  <SecretInput
                     value={geminiApiKey}
                     onChange={(e) => setGeminiApiKey(e.target.value)}
                     placeholder="AIza..."
-                    className="h-8 text-xs bg-secondary border-border font-mono"
+                    inputClassName="h-8 text-xs bg-secondary border-border"
                   />
                 </div>
               )}
               {geminiProvider === "openrouter" && (
                 <div className="space-y-1">
                   <label className="text-xs text-muted-foreground">OpenRouter API Key</label>
-                  <Input
-                    type="password"
+                  <SecretInput
                     value={openrouterApiKey}
                     onChange={(e) => setOpenrouterApiKey(e.target.value)}
                     placeholder="sk-or-..."
-                    className="h-8 text-xs bg-secondary border-border font-mono"
+                    inputClassName="h-8 text-xs bg-secondary border-border"
                   />
                 </div>
               )}
@@ -326,12 +325,11 @@ export function ConfigPanel() {
               {geminiProvider === "nvidia_nim" && (
                 <div className="space-y-1">
                   <label className="text-xs text-muted-foreground">Nvidia NIM API Key</label>
-                  <Input
-                    type="password"
+                  <SecretInput
                     value={nvidiaNimApiKey}
                     onChange={(e) => setNvidiaNimApiKey(e.target.value)}
                     placeholder="nvapi-..."
-                    className="h-8 text-xs bg-secondary border-border font-mono"
+                    inputClassName="h-8 text-xs bg-secondary border-border"
                   />
                 </div>
               )}

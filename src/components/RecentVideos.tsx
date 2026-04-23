@@ -9,10 +9,13 @@ import {
 } from "@/components/ui/dialog";
 import { useVideos, useResumeVideo } from "@/hooks/use-api";
 import { useToast } from "@/hooks/use-toast";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { formatDistanceToNow } from "date-fns";
 import type { VideoRecord } from "@/lib/api";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_BASE =
+  import.meta.env.VITE_API_URL ||
+  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 
 const statusStyles: Record<string, string> = {
   published: "",
@@ -46,12 +49,19 @@ export function RecentVideos() {
 
   const partCount = (v?: VideoRecord) => v?.part_files?.length || (v?.parts ?? (v?.has_video ? 1 : 0));
 
-  const handleResume = (e: React.MouseEvent, videoId: string) => {
-    e.stopPropagation();
+  // Re-render confirmation: target holds {id, title, mode} while the popup is open.
+  const [confirmTarget, setConfirmTarget] = useState<{ id: string; title: string; mode: "resume" | "rerender" } | null>(null);
+
+  const doResume = (videoId: string) => {
     resumeMutation.mutate(videoId, {
       onSuccess: () => toast({ title: "Resuming video", description: "Video generation started from existing audio." }),
       onError: (err) => toast({ title: "Resume failed", description: err.message, variant: "destructive" }),
     });
+  };
+
+  const openConfirm = (e: React.MouseEvent, video: VideoRecord, mode: "resume" | "rerender") => {
+    e.stopPropagation();
+    setConfirmTarget({ id: video.id, title: video.title, mode });
   };
 
   return (
@@ -140,20 +150,20 @@ export function RecentVideos() {
                     size="sm"
                     variant="outline"
                     className="mt-1.5 h-6 text-[10px] gap-1 px-2 border-primary/40 text-primary hover:bg-primary/10"
-                    onClick={(e) => handleResume(e, video.id)}
+                    onClick={(e) => openConfirm(e, video, "resume")}
                     disabled={resumeMutation.isPending}
                   >
                     <RefreshCw className="h-3 w-3" />
                     {resumeMutation.isPending ? "Resuming..." : "Resume Video"}
                   </Button>
                 )}
-                {video.has_video && (
+                {video.has_video && video.has_audio && (
                   <Button
                     size="sm"
                     variant="outline"
                     title="Re-render this video with current caption/video settings. Reuses existing audio — no TTS charges."
                     className="mt-1.5 h-6 text-[10px] gap-1 px-2 border-accent/40 text-accent hover:bg-accent/10"
-                    onClick={(e) => handleResume(e, video.id)}
+                    onClick={(e) => openConfirm(e, video, "rerender")}
                     disabled={resumeMutation.isPending}
                   >
                     <RefreshCw className="h-3 w-3" />
@@ -229,6 +239,26 @@ export function RecentVideos() {
           )}
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!confirmTarget}
+        onOpenChange={(v) => { if (!v) setConfirmTarget(null); }}
+        title={confirmTarget?.mode === "rerender" ? "Re-render this video?" : "Resume video render?"}
+        icon={<RefreshCw className="h-4 w-4 text-accent" />}
+        description={
+          <>
+            {confirmTarget?.mode === "rerender" ? "Re-runs just the video step on " : "Continues the pipeline from the existing audio for "}
+            "<strong>{confirmTarget?.title}</strong>" using your current caption / video / font
+            settings. No TTS credits will be spent.
+          </>
+        }
+        confirmLabel={confirmTarget?.mode === "rerender" ? "Re-render" : "Resume"}
+        onConfirm={() => {
+          if (confirmTarget) doResume(confirmTarget.id);
+          setConfirmTarget(null);
+        }}
+        isLoading={resumeMutation.isPending}
+      />
     </>
   );
 }

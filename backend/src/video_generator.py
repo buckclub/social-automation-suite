@@ -36,6 +36,314 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+def _norm_for_match(w: str) -> str:
+    """Strip punctuation + lowercase for fuzzy whisper-to-text matching."""
+    import re as _re
+    return _re.sub(r"[^a-z0-9']", "", (w or "").lower())
+
+
+def _is_speakable(w: str) -> bool:
+    """
+    Return True if a token represents actual spoken content. Filters out
+    orphan punctuation like '-', ')', '(', '--', '...' which aren't spoken
+    and would render as ugly standalone captions.
+    """
+    if not w:
+        return False
+    import re as _re
+    stripped = _re.sub(r"[^\w']", "", w)
+    return bool(stripped)
+
+
+def _hybrid_align(expected_words: list, whisper_words: list, duration: float):
+    """
+    Align a list of KNOWN text words to whisper's partial timings.
+
+    Returns a list of word dicts `{word, start, end}` covering all expected
+    words. Whisper's matched words are used verbatim; unmatched expected
+    words are interpolated linearly between surrounding anchors.
+
+    Strategy: whisper on TTS audio typically produces a *contiguous slice* of
+    the real narration (it just starts late or ends early). So we find the
+    offset into expected_words where whisper's sequence best fits as a block,
+    then do sequential matching from there.
+
+    Returns None if matching fails (too few anchors).
+    """
+    if not expected_words or not whisper_words:
+        return None
+
+    # --- Step 0: Strip leading/trailing whisper hallucinations ---
+    # Whisper (especially large-v3) sometimes emits a couple of "ghost" words
+    # at the start or end of a clip that actually happen elsewhere in the
+    # text. They appear as outliers — a large time gap (>2s) separates them
+    # from the main body of detected speech. Keep only the longest run of
+    # whisper words whose adjacent gaps are physically plausible.
+    MAX_ADJ_GAP = 2.0  # seconds
+    if len(whisper_words) >= 3:
+        runs: list[list[int]] = []
+        cur = [0]
+        for i in range(1, len(whisper_words)):
+            prev_end = float(whisper_words[i - 1].get("end", 0.0))
+            this_start = float(whisper_words[i].get("start", 0.0))
+            gap = this_start - prev_end
+            if gap <= MAX_ADJ_GAP:
+                cur.append(i)
+            else:
+                runs.append(cur)
+                cur = [i]
+        runs.append(cur)
+        if runs:
+            longest = max(runs, key=len)
+            if len(longest) < len(whisper_words):
+                dropped = len(whisper_words) - len(longest)
+                print(f"   ⚠️  whisper: dropped {dropped} hallucinated word(s) "
+                      f"(>{MAX_ADJ_GAP}s gap from body)")
+                whisper_words = [whisper_words[i] for i in longest]
+
+    if not whisper_words:
+        return None
+
+    norm_expected = [_norm_for_match(w) for w in expected_words]
+    norm_whisper  = [_norm_for_match((w.get("word") or "")) for w in whisper_words]
+
+    # --- Step 1: Longest Common Subsequence of (whisper_idx, expected_idx) ---
+    # This naturally skips whisper hallucinations that don't appear in the
+    # known text, and skips expected words that whisper missed. Output is a
+    # list of index pairs in monotonic order.
+    n_w, n_e = len(norm_whisper), len(norm_expected)
+    # DP table of LCS lengths.
+    dp = [[0] * (n_e + 1) for _ in range(n_w + 1)]
+    for i in range(n_w):
+        for j in range(n_e):
+            if norm_whisper[i] and norm_whisper[i] == norm_expected[j]:
+                dp[i + 1][j + 1] = dp[i][j] + 1
+            else:
+                dp[i + 1][j + 1] = max(dp[i][j + 1], dp[i + 1][j])
+    # Trace back to recover matched pairs.
+    matches: list[tuple[int, int]] = []
+    i, j = n_w, n_e
+    while i > 0 and j > 0:
+        if norm_whisper[i - 1] and norm_whisper[i - 1] == norm_expected[j - 1]:
+            matches.append((i - 1, j - 1))
+            i -= 1; j -= 1
+        elif dp[i - 1][j] >= dp[i][j - 1]:
+            i -= 1
+        else:
+            j -= 1
+    matches.reverse()
+
+    if len(matches) < 3:
+        return None
+
+    # --- Step 2: filter matches by TIMING consistency ---
+    # Expected-progress and whisper-progress should track roughly linearly.
+    # If an anchor's (expected_idx/total_expected) differs wildly from
+    # (whisper_time/audio_duration) it's probably a coincidental word match
+    # (whisper's "ut" hallucination matching expected "but" at position 8
+    # when the rest of the run says it's actually at position 42). Drop it.
+    def progress_pair(m):
+        w_idx, e_idx = m
+        w_t = float(whisper_words[w_idx].get("start", 0.0))
+        return (e_idx / max(1, n_e - 1), w_t / max(0.001, duration))
+
+    # Use the median of middle matches as the trusted slope reference.
+    # Bad anchors deviate from the median-consistent cluster.
+    if len(matches) >= 5:
+        sorted_by_time = sorted(matches, key=lambda m: float(whisper_words[m[0]].get("start", 0.0)))
+        # Drop anchors whose expected-progress deviates > 0.25 from whisper-progress.
+        filtered_matches = []
+        for m in matches:
+            ep, wp = progress_pair(m)
+            if abs(ep - wp) <= 0.3:
+                filtered_matches.append(m)
+        if len(filtered_matches) >= 3:
+            matches = filtered_matches
+
+    # --- Step 3: build anchors from filtered matches ---
+    anchors: list[tuple[int, float, float]] = []
+    last_e = -1
+    for w_idx, e_idx in matches:
+        if e_idx <= last_e:
+            continue  # ensure strict monotonicity
+        ww = whisper_words[w_idx]
+        anchors.append((e_idx, float(ww.get("start", 0.0)), float(ww.get("end", 0.0))))
+        last_e = e_idx
+
+    # --- Step 3b: speech-rate sanity check ---
+    # If the first surviving anchor would force leading captions to flow
+    # faster than narrator can physically speak (whisper missed a middle
+    # chunk of words, so its first valid anchor sits too far right in the
+    # expected text), drop leading anchors until the implied rate matches
+    # this segment's overall speech rate. Also do the same for trailing
+    # anchors that would force the END of the segment to flow unreasonably
+    # fast or slow.
+    segment_rate = len(expected_words) / max(0.01, duration)  # words per second
+    MAX_RATIO = 1.15  # tolerate up to 15% faster than average before rejecting
+
+    while anchors:
+        a_idx, a_start, _ = anchors[0]
+        if a_start <= 0.05 or a_idx == 0:
+            break
+        lead_rate = a_idx / a_start
+        if lead_rate <= segment_rate * MAX_RATIO:
+            break
+        anchors.pop(0)
+
+    # Same for the tail — trailing anchors too close to the end of audio
+    # relative to their expected position force trailing captions to speed up.
+    while anchors:
+        a_idx, _, a_end = anchors[-1]
+        remaining_words = len(expected_words) - 1 - a_idx
+        remaining_time  = max(0.01, duration - a_end)
+        if remaining_words <= 0:
+            break
+        tail_rate = remaining_words / remaining_time
+        if tail_rate <= segment_rate * MAX_RATIO:
+            break
+        anchors.pop()
+
+    if len(anchors) < 2:
+        return None
+
+    if len(anchors) < 2:
+        return None  # not enough solid points to interpolate
+
+    # Build the full word list by interpolating between anchors.
+    result: list[dict] = [{} for _ in expected_words]
+
+    # Helper: distribute `total_time` across `words` using a char-weighted
+    # split PLUS small pauses added after sentence-ending punctuation
+    # (period, question mark, em-dash, semicolon). Makes captions respect
+    # natural speech cadence instead of flowing uniformly.
+    def _distribute(start_t: float, total_time: float, words: list) -> list[dict]:
+        if not words or total_time <= 0:
+            return [{"word": w, "start": start_t, "end": start_t} for w in words]
+        # Weights: chars + pause bonus after strong punctuation.
+        weights = []
+        for i, w in enumerate(words):
+            base = max(1, len(w))
+            pause = 0
+            if w and w[-1] in ".!?":
+                pause = 3   # ~3 char-widths of extra time
+            elif w and w[-1] in ",;:":
+                pause = 1
+            weights.append(base + pause)
+        total_w = sum(weights) or 1
+        out = []
+        cursor = start_t
+        for w, weight in zip(words, weights):
+            d = total_time * (weight / total_w)
+            out.append({"word": w, "start": cursor, "end": cursor + d})
+            cursor += d
+        return out
+
+    # 1. Leading: expected words before the first anchor.
+    first_idx, first_start, first_end = anchors[0]
+    if first_idx > 0:
+        leading = _distribute(0.0, first_start, expected_words[:first_idx])
+        for j, r in enumerate(leading):
+            result[j] = r
+    result[first_idx] = {"word": expected_words[first_idx], "start": first_start, "end": first_end}
+
+    # 2. Middle: between each pair of consecutive anchors.
+    for k in range(1, len(anchors)):
+        prev_idx, prev_start, prev_end = anchors[k - 1]
+        cur_idx, cur_start, cur_end = anchors[k]
+        # Words strictly between are prev_idx+1 .. cur_idx-1
+        gap_words = cur_idx - prev_idx - 1
+        if gap_words > 0:
+            span = max(0.0, cur_start - prev_end)
+            per = span / (gap_words + 1)
+            for g in range(gap_words):
+                ex_i = prev_idx + 1 + g
+                s = prev_end + (g + 1) * per * 0 + (g) * per  # start for slot g
+                # simpler: distribute evenly
+                slot_start = prev_end + (span * (g) / gap_words)
+                slot_end = prev_end + (span * (g + 1) / gap_words)
+                result[ex_i] = {"word": expected_words[ex_i], "start": slot_start, "end": slot_end}
+        result[cur_idx] = {"word": expected_words[cur_idx], "start": cur_start, "end": cur_end}
+
+    # 3. Trailing: expected words after the last anchor.
+    last_idx, _, last_end = anchors[-1]
+    tail = len(expected_words) - last_idx - 1
+    if tail > 0:
+        remaining = max(0.2, duration - last_end)
+        per = remaining / tail
+        for g in range(tail):
+            ex_i = last_idx + 1 + g
+            result[ex_i] = {
+                "word": expected_words[ex_i],
+                "start": last_end + g * per,
+                "end":   last_end + (g + 1) * per,
+            }
+
+    # Sanitize: ensure every slot is filled and times are monotonically increasing.
+    for i, r in enumerate(result):
+        if not r:
+            # Shouldn't happen but guard.
+            prev_end = result[i - 1]["end"] if i > 0 else 0.0
+            result[i] = {"word": expected_words[i], "start": prev_end, "end": prev_end + 0.1}
+    # Enforce monotonicity.
+    for i in range(1, len(result)):
+        if result[i]["start"] < result[i - 1]["end"]:
+            result[i]["start"] = result[i - 1]["end"]
+        if result[i]["end"] < result[i]["start"]:
+            result[i]["end"] = result[i]["start"] + 0.05
+    return result
+
+
+_SILENCE_CACHE: dict = {}
+
+
+def _detect_leading_silence(audio_path: str, cap: float = 1.5) -> float:
+    """
+    Return the number of seconds of silence at the start of an audio file,
+    clamped to `cap`. Used to push fallback captions past TTS dead air.
+    Cached per-path so we don't re-probe on every chunking call.
+    """
+    if not audio_path:
+        return 0.0
+    cached = _SILENCE_CACHE.get(audio_path)
+    if cached is not None:
+        return min(cached, cap)
+    try:
+        import subprocess, re as _re
+        try:
+            import imageio_ffmpeg
+            ff = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            ff = "ffmpeg"
+        # -30 dB threshold catches TTS leading quiet reasonably well.
+        r = subprocess.run(
+            [ff, "-i", audio_path, "-af",
+             "silencedetect=noise=-30dB:d=0.05", "-f", "null", "-"],
+            capture_output=True, text=True,
+        )
+        # We only care about the first silence_end line (if present at t≈0).
+        first_end = 0.0
+        for line in r.stderr.splitlines():
+            m = _re.search(r"silence_end: ([\d.]+)", line)
+            if m:
+                first_end = float(m.group(1))
+                break
+        # Only consider it "leading silence" if it starts very near t=0.
+        # (silencedetect reports silence_start too — check it's small.)
+        first_start = None
+        for line in r.stderr.splitlines():
+            m = _re.search(r"silence_start: ([\d.]+)", line)
+            if m:
+                first_start = float(m.group(1))
+                break
+        if first_start is not None and first_start > 0.3:
+            first_end = 0.0  # first silence isn't at the start
+        _SILENCE_CACHE[audio_path] = first_end
+        return min(first_end, cap)
+    except Exception:
+        _SILENCE_CACHE[audio_path] = 0.0
+        return 0.0
+
+
 if getattr(sys, "frozen", False):
     PROJECT_ROOT = os.path.dirname(sys.executable)
 else:
@@ -145,124 +453,250 @@ class VideoGenerator:
             text = (segment_or_text or "").strip()
             words = []
 
-        # --- Aligned path: we have whisper word timestamps ---
+        # --- Always align whisper TIMING onto the known EXPECTED text ---
+        # Whisper occasionally hallucinates training-data phrases like
+        # "Subtitled by the Amara.org community" or "Thanks for watching".
+        # If we use its transcription text verbatim, those artifacts end up on
+        # screen. Instead: display the text we KNOW was sent to TTS, and use
+        # whisper only as a timing source. Hallucinations can't leak through
+        # because their (junk) words never match the expected text during LCS,
+        # so they contribute no anchors and are silently ignored.
+        if words and isinstance(segment_or_text, dict):
+            expected_words = (segment.get("text") or "").split()
+            if len(expected_words) >= 3:
+                hybrid = _hybrid_align(expected_words, words, duration)
+                if hybrid is not None:
+                    if len(words) != len(expected_words):
+                        print(f"   ✎ aligning {len(words)} whisper word(s) onto {len(expected_words)} expected word(s)")
+                    words = hybrid
+
+        # Safety fallback: if whisper has a huge gap between words that we
+        # couldn't hybrid-fill, revert to even distribution of known text.
+        if words and len(words) >= 2:
+            max_gap = max((float(words[i + 1].get("start", 0)) - float(words[i].get("end", 0)))
+                          for i in range(len(words) - 1))
+            if max_gap > 4.0:
+                print(f"   ⚠️  whisper left a {max_gap:.1f}s gap; using even distribution")
+                words = []
+
         if words and words_per_caption > 0:
             highlight = bool(self.captions.get('highlight_word'))
-            # Cap how long a single caption chunk stays on screen. If the next
-            # word-group is far away (long pause, whisper gap, leading silence)
-            # we show the caption for this long then blank until the next word.
-            max_chunk_dur = float(self.captions.get('max_chunk_duration', 2.5))
-            # First-chunk grace: if the first spoken word is 5s in, we still
-            # want a caption up for a short lead-in, not the whole gap.
-            lead_grace   = float(self.captions.get('lead_in_grace', 1.0))
 
-            # Build groups with their anchored start (first word's whisper start).
+            # Defensive cleanup: strip SentencePiece markers and zero-width chars
+            # that occasionally leak through from whisper tokenization and render
+            # as "tofu" boxes in fonts that lack those glyphs.
+            import re as _re
+            _JUNK = _re.compile(
+                "[\u2581\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064"
+                "\ufe00-\ufe0f\ufeff\ufff9-\ufffb]"
+            )
+            def _clean(s: str) -> str:
+                if not s:
+                    return ""
+                s = _JUNK.sub("", s)
+                s = _re.sub(r"\s+", " ", s).strip()
+                return s
+
+            # Drop un-speakable tokens (standalone punctuation, empty) before
+            # chunking so we don't render "- and", ")", etc. as caption words.
+            words = [w for w in words if _is_speakable(_clean(w.get("word") or ""))]
+            if not words:
+                words = []
+
+            # Build groups with their whisper-anchored start. Drop words that
+            # clean to empty.
             groups = []
             for i in range(0, len(words), words_per_caption):
-                grp = words[i:i + words_per_caption]
-                chunk_text = " ".join((w.get("word") or "").strip() for w in grp).strip()
+                grp = [w for w in words[i:i + words_per_caption] if _clean(w.get("word") or "")]
+                if not grp:
+                    continue
+                chunk_text = " ".join(_clean(w.get("word") or "") for w in grp).strip()
                 grp_start = max(0.0, float(grp[0].get("start", 0.0)))
                 groups.append((chunk_text, grp_start, grp))
 
             out = []
-            cursor = 0.0
-            for i, (chunk_text, grp_start, grp) in enumerate(groups):
-                # When should this chunk become visible?
+
+            # Policy: captions cover the ENTIRE segment with no blanks.
+            # Each chunk is visible from its own "display start" until the next
+            # chunk's display start. Display starts:
+            #   * First chunk: t=0, so any leading silence gets the first caption.
+            #   * Middle chunks: at the whisper-reported start of the group's
+            #     first word (snaps to speech).
+            #   * Last chunk: extends until the segment end so the final words
+            #     hold on screen rather than cutting to black.
+            chunk_display_starts = []
+            for i, (_txt, g_start, _grp) in enumerate(groups):
                 if i == 0:
-                    # First chunk: cover leading silence up to `lead_grace` seconds.
-                    chunk_start = max(0.0, min(cursor, grp_start))
-                    if grp_start - chunk_start > lead_grace:
-                        chunk_start = max(0.0, grp_start - lead_grace)
+                    chunk_display_starts.append(0.0)
                 else:
-                    chunk_start = max(cursor, grp_start)
+                    chunk_display_starts.append(min(duration, max(chunk_display_starts[-1] + 0.04, g_start)))
 
-                # When should the next chunk take over?
-                if i + 1 < len(groups):
-                    next_start = min(duration, max(chunk_start + 0.05, groups[i + 1][1]))
-                else:
-                    next_start = duration
+            for i, (chunk_text, grp_start, grp) in enumerate(groups):
+                start_t = chunk_display_starts[i]
+                end_t   = chunk_display_starts[i + 1] if i + 1 < len(groups) else duration
+                end_t   = min(duration, max(start_t + 0.04, end_t))
+                total_dur = end_t - start_t
 
-                # Leading blank (after last chunk ended but before this one starts)
-                if chunk_start > cursor:
-                    out.append({"text": "", "duration": chunk_start - cursor,
-                                "words": [], "active_index": -1})
-                    cursor = chunk_start
+                word_list = [_clean(w.get("word") or "") for w in grp]
 
-                available = max(0.05, next_start - chunk_start)
+                # The chunk is visible for the whole total_dur. Whisper's
+                # intra-chunk word timestamps have too much jitter (±80ms) and
+                # produce 40ms highlight frames that look like a glitch.
+                #
+                # Policy:
+                #   * Use whisper for CHUNK boundaries (start_t / end_t) — solid.
+                #   * Distribute the per-word HIGHLIGHT evenly by char weight
+                #     within the chunk. Visually smooth, viewer-readable.
+                #   * Cap the visible chunk at SOFT_MAX; excess becomes a
+                #     no-highlight hold frame so long silence doesn't freeze
+                #     the highlight on one word.
+                SOFT_MAX = 4.0
+                MIN_FRAME = 0.16  # 160 ms — below this looks like a flash
 
                 if not highlight or len(grp) <= 1:
-                    # Single-frame chunk, capped.
-                    visible = min(available, max_chunk_dur)
-                    out.append({"text": chunk_text, "duration": visible,
-                                "words": [(w.get("word") or "").strip() for w in grp],
-                                "active_index": -1})
-                    cursor = chunk_start + visible
-                    # Blank tail if the gap exceeds the cap
-                    if available > visible + 0.01:
-                        out.append({"text": "", "duration": available - visible,
-                                    "words": [], "active_index": -1})
-                        cursor = next_start
+                    if total_dur > SOFT_MAX:
+                        out.append({"text": chunk_text, "duration": SOFT_MAX,
+                                    "words": word_list, "active_index": -1})
+                        out.append({"text": chunk_text, "duration": total_dur - SOFT_MAX,
+                                    "words": word_list, "active_index": -1})
                     else:
-                        cursor = next_start
+                        out.append({"text": chunk_text, "duration": total_dur,
+                                    "words": word_list, "active_index": -1})
                     continue
 
-                # Per-word highlight frames for the group.
-                word_list = [(w.get("word") or "").strip() for w in grp]
-                # Determine per-word end times from the next word's start (or group end).
-                word_ends = []
-                for j, w in enumerate(grp):
-                    if j + 1 < len(grp):
-                        nxt = max(chunk_start + (j + 1) * 0.04, float(grp[j + 1].get("start", 0.0)))
-                        nxt = min(nxt, next_start)
+                # Only the portion up to SOFT_MAX gets per-word highlight; the
+                # rest (if any) becomes a hold frame.
+                visible = min(total_dur, SOFT_MAX)
+                tail    = total_dur - visible
+
+                n = len(grp)
+                # Char-weighted distribution of `visible` across the group's words.
+                weights = [max(1, len(w)) for w in word_list]
+                tot_w = sum(weights) or 1
+                # If any word's allocation would be below MIN_FRAME, promote to
+                # MIN_FRAME and scale the rest. If we can't fit MIN per word
+                # (chunk too short), fall back to a single no-highlight frame.
+                if visible < MIN_FRAME * n:
+                    out.append({"text": chunk_text, "duration": total_dur,
+                                "words": word_list, "active_index": -1})
+                    continue
+                raw = [visible * (w / tot_w) for w in weights]
+                short = sum(1 for d in raw if d < MIN_FRAME)
+                if short:
+                    # Enforce MIN on short ones, rescale long ones to absorb.
+                    fixed_sum = MIN_FRAME * short
+                    long_durs = [d for d in raw if d >= MIN_FRAME]
+                    long_sum = sum(long_durs)
+                    if long_sum > fixed_sum and (visible - fixed_sum) > 0:
+                        scale = (visible - fixed_sum) / long_sum
+                        new_durs = []
+                        for d in raw:
+                            new_durs.append(MIN_FRAME if d < MIN_FRAME else d * scale)
+                        raw = new_durs
                     else:
-                        nxt = next_start
-                    word_ends.append(nxt)
+                        # Not enough slack; just give each word equal time.
+                        raw = [visible / n] * n
 
-                # Scale: how much of `available` does "real speech" cover?
-                # Last word's timestamp-end or group_end — whichever comes first.
-                last_word_end = float(grp[-1].get("end", word_ends[-1]))
-                real_end = min(last_word_end, next_start)
-                real_end = max(real_end, chunk_start + 0.05)
-
-                # Draw each word, clamped to max_chunk_dur per word (rarely triggers)
-                word_cursor = chunk_start
-                for j, _w in enumerate(grp):
-                    end_time = min(word_ends[j], real_end)
-                    dur = max(0.04, end_time - word_cursor)
-                    dur = min(dur, max_chunk_dur)
-                    out.append({"text": chunk_text, "duration": dur,
+                for j in range(n):
+                    out.append({"text": chunk_text, "duration": raw[j],
                                 "words": word_list, "active_index": j})
-                    word_cursor += dur
 
-                cursor = word_cursor
-                # Trailing silence within this group's window -> blank
-                if next_start > cursor + 0.01:
-                    out.append({"text": "", "duration": next_start - cursor,
-                                "words": [], "active_index": -1})
-                    cursor = next_start
+                if tail > 0.05:
+                    out.append({"text": chunk_text, "duration": tail,
+                                "words": word_list, "active_index": -1})
 
-            # Drop zero-duration slivers
+            # Drop zero-duration slivers but NEVER emit a blank caption.
             out = [f for f in out if f["duration"] > 0.001]
-            return out if out else [{"text": text, "duration": duration, "words": [text], "active_index": -1}]
+            if not out:
+                return [{"text": text, "duration": duration,
+                         "words": [text] if text else [], "active_index": -1}]
+            # Final guard: merge any still-too-short frame forward into its
+            # neighbor. Prevents any single flash no matter what upstream
+            # produced (edge cases in hybrid back-fill, trailing squeeze, etc).
+            MIN_FINAL = 0.14
+            merged = []
+            for f in out:
+                if merged and f["duration"] < MIN_FINAL:
+                    # absorb into previous
+                    merged[-1] = {**merged[-1], "duration": merged[-1]["duration"] + f["duration"]}
+                else:
+                    merged.append(dict(f))
+            # If the very FIRST frame is too short, merge it forward.
+            if len(merged) >= 2 and merged[0]["duration"] < MIN_FINAL:
+                merged[1]["duration"] += merged[0]["duration"]
+                merged = merged[1:]
+            return merged
 
         # --- Fallback: even char-weighted chunking ---
+        # Still produces per-word highlight frames when `highlight_word` is on,
+        # by evenly distributing word durations. Not whisper-accurate, but
+        # matches speech rate closely enough that captions never sit frozen.
         if words_per_caption <= 0 or not text:
             return [{"text": text, "duration": duration, "words": text.split() if text else [], "active_index": -1}]
-        tok = text.split()
+        # Skip pure-punctuation tokens — they're not spoken and look ugly as captions.
+        tok = [t for t in text.split() if _is_speakable(t)]
         if not tok:
             return [{"text": text, "duration": duration, "words": [], "active_index": -1}]
-        chunks = [' '.join(tok[i:i + words_per_caption])
-                  for i in range(0, len(tok), words_per_caption)]
-        total_chars = sum(len(c) for c in chunks) or 1
+
+        # Leading-silence compensation: TTS clips usually have 0.1–0.4s of
+        # dead air before the first word. Distributing captions across the
+        # full duration makes them feel slightly ahead of the voice. Pull
+        # a measured lead-time from:
+        #   1) The audio file's silencedetect (preferred), via ffprobe
+        #   2) The original `segment.words[0].start` if any whisper words
+        #      survived — gives us a confirmed speech-starts-at anchor
+        #   3) A conservative default of 0.2s
+        lead_silence = 0.0
+        audio_path = None
+        if isinstance(segment_or_text, dict):
+            audio_path = segment_or_text.get("audio_path")
+            orig_words = segment_or_text.get("words") or []
+            if orig_words:
+                lead_silence = max(0.0, min(1.5, float(orig_words[0].get("start", 0.0))))
+        if audio_path and lead_silence == 0.0:
+            lead_silence = _detect_leading_silence(audio_path, cap=1.2)
+        if lead_silence == 0.0:
+            lead_silence = 0.2  # conservative TTS default
+
+        # Clamp so we still have time to render something.
+        lead_silence = min(lead_silence, max(0.0, duration * 0.2))
+        speech_dur = max(0.2, duration - lead_silence)
+
+        chunks_text = [' '.join(tok[i:i + words_per_caption])
+                       for i in range(0, len(tok), words_per_caption)]
+        chunks_words = [tok[i:i + words_per_caption]
+                        for i in range(0, len(tok), words_per_caption)]
+        total_chars = sum(len(c) for c in chunks_text) or 1
+
+        highlight = bool(self.captions.get('highlight_word'))
         out = []
+        # Leading blank frame so captions don't pre-roll during TTS dead air.
+        if lead_silence > 0.05:
+            out.append({"text": "", "duration": lead_silence, "words": [], "active_index": -1})
+
         allocated = 0.0
-        for i, c in enumerate(chunks):
-            if i == len(chunks) - 1:
-                dur = max(0.0, duration - allocated)
+        for i, (c_text, c_words) in enumerate(zip(chunks_text, chunks_words)):
+            if i == len(chunks_text) - 1:
+                c_dur = max(0.04, speech_dur - allocated)
             else:
-                dur = duration * (len(c) / total_chars)
-                allocated += dur
-            out.append({"text": c, "duration": dur, "words": c.split(), "active_index": -1})
+                c_dur = speech_dur * (len(c_text) / total_chars)
+                allocated += c_dur
+
+            if not highlight or len(c_words) <= 1:
+                out.append({"text": c_text, "duration": c_dur,
+                            "words": c_words, "active_index": -1})
+                continue
+
+            word_chars = sum(len(w) for w in c_words) or 1
+            sub_alloc = 0.0
+            for j, w in enumerate(c_words):
+                if j == len(c_words) - 1:
+                    dur = max(0.04, c_dur - sub_alloc)
+                else:
+                    dur = c_dur * (len(w) / word_chars)
+                    sub_alloc += dur
+                out.append({"text": c_text, "duration": dur,
+                            "words": c_words, "active_index": j})
         return out
 
     def _animate_clip(self, clip, chunk_dur: float):
@@ -1239,17 +1673,70 @@ class VideoGenerator:
             ffmpeg_exe = 'ffmpeg' # Fallback to system path
         
         try:
-            # 1. Prepare Audio (Using MoviePy for safety/compatibility)
-            # We reuse the concatenation logic to get one solid audio file
-            audio_clips = [AudioFileClip(s['audio_path']) for s in audio_segments]
-            final_audio = concatenate_audioclips(audio_clips)
-            total_duration = final_audio.duration + (tail_duration if (tail_text and tail_duration and tail_duration > 0) else 0)
-            
+            # 1. Prepare Audio — use FFmpeg's concat FILTER for a proper
+            # sample-level join. The moviepy path was stitching decoded mp3
+            # frames back-to-back which produced tiny click/pop artifacts
+            # at each segment boundary due to encoder padding. The concat
+            # filter decodes each clip, appends raw PCM, and re-encodes once.
             output_dir = os.path.dirname(output_path)
             os.makedirs(output_dir, exist_ok=True)
             temp_audio_path = os.path.join(output_dir, "ffmpeg_audio_temp.m4a")
-            final_audio.write_audiofile(temp_audio_path, codec='aac', logger=None)
-            final_audio.close()
+
+            audio_paths = [s['audio_path'] for s in audio_segments
+                           if s.get('audio_path') and os.path.exists(s['audio_path'])]
+            if not audio_paths:
+                raise RuntimeError("No audio files to concatenate")
+
+            concat_cmd = [ffmpeg_exe, "-y", "-hide_banner", "-loglevel", "error"]
+            for p in audio_paths:
+                concat_cmd.extend(["-i", p])
+            # Build the filter: [0:a][1:a]...[N:a] concat=n=N:v=0:a=1[out]
+            # Add a tiny acrossfade bias by including a 10ms silence pad is
+            # unnecessary — concat filter output is sample-clean.
+            inputs = "".join(f"[{i}:a]" for i in range(len(audio_paths)))
+            filter_complex = f"{inputs}concat=n={len(audio_paths)}:v=0:a=1[out]"
+            concat_cmd.extend([
+                "-filter_complex", filter_complex,
+                "-map", "[out]",
+                "-c:a", "aac", "-b:a", "192k",
+                temp_audio_path,
+            ])
+            subprocess.run(concat_cmd, check=True)
+
+            # Measure the actual duration of the joined audio (ffprobe-style)
+            # so our caption timing is sample-accurate, not mp3-header-accurate.
+            probe = subprocess.run(
+                [ffmpeg_exe, "-i", temp_audio_path, "-hide_banner"],
+                capture_output=True, text=True,
+            )
+            import re as _re
+            total_duration = 0.0
+            for ln in probe.stderr.splitlines():
+                m = _re.search(r"Duration: (\d+):(\d+):([\d.]+)", ln)
+                if m:
+                    h, mm, ss = m.groups()
+                    total_duration = int(h)*3600 + int(mm)*60 + float(ss)
+                    break
+
+            # We still need per-clip durations to compute caption overlays.
+            # Use moviepy JUST for duration reads (no audio concatenation).
+            audio_clips = [AudioFileClip(p) for p in audio_paths]
+
+            # mp3 headers over-report duration by ~30-50ms of encoder padding
+            # per file. The concat filter trims that padding, so moviepy's
+            # sum is ~150ms longer than the actual joined audio — captions
+            # end up trailing the voice. Scale each clip's duration to match
+            # reality so caption timing lines up with what's actually heard.
+            reported_sum = sum(c.duration for c in audio_clips) or 1.0
+            if total_duration > 0.0:
+                scale = total_duration / reported_sum
+            else:
+                scale = 1.0
+                total_duration = reported_sum
+            # Build an effective-duration list for the overlay/chunking code.
+            effective_durs = [c.duration * scale for c in audio_clips]
+            total_duration += (tail_duration if (tail_text and tail_duration and tail_duration > 0) else 0)
+
             temp_files.append(temp_audio_path)
             
             # 2. Get Background Video (Pure FFmpeg)
@@ -1335,7 +1822,10 @@ class VideoGenerator:
 
             for i, segment in enumerate(audio_segments):
                 text_preview = (segment.get('text', '') or '')[:60]
-                duration = audio_clips[i].duration
+                # Use the concat-scaled duration so caption timing matches
+                # the ACTUAL audio the video will play, not the padded mp3
+                # header value reported by moviepy.
+                duration = effective_durs[i] if i < len(effective_durs) else audio_clips[i].duration
                 chunks_for_seg = 0
                 for overlay_path, chunk_dur in self.create_full_frame_overlays(segment, duration, branding=branding):
                     temp_files.append(overlay_path)
