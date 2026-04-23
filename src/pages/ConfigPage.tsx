@@ -102,6 +102,8 @@ export default function ConfigPage() {
   const [subreddits, setSubreddits] = useState<string[]>([]);
   const [newSub, setNewSub] = useState("");
   const [requestDelay, setRequestDelay] = useState(2);
+  const [redditFetchLimit, setRedditFetchLimit] = useState(25);
+  const [redditKeepPerSub, setRedditKeepPerSub] = useState(10);
 
   // Filters
   const [minUpvotes, setMinUpvotes] = useState(500);
@@ -244,6 +246,9 @@ export default function ConfigPage() {
     const c = config as FullConfig;
     setSubreddits(c.subreddits ?? []);
     setRequestDelay(c.request_delay ?? 2);
+    const rcfg = ((c as any).reddit ?? {}) as Record<string, any>;
+    setRedditFetchLimit(rcfg.fetch_limit ?? 25);
+    setRedditKeepPerSub(rcfg.max_per_subreddit_per_run ?? 10);
 
     const f = c.filters ?? {} as FullConfig["filters"];
     setMinUpvotes(f.min_upvotes ?? 500);
@@ -375,6 +380,10 @@ export default function ConfigPage() {
       {
         subreddits,
         request_delay: requestDelay,
+        reddit: {
+          fetch_limit: redditFetchLimit,
+          max_per_subreddit_per_run: redditKeepPerSub,
+        },
         filters: {
           min_upvotes: minUpvotes,
           min_comments: minComments,
@@ -569,10 +578,29 @@ export default function ConfigPage() {
               </Button>
             </div>
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Request Delay (seconds)</Label>
-            <Input type="number" value={requestDelay} onChange={(e) => setRequestDelay(+e.target.value)} className="h-8 text-xs bg-secondary border-border" step={0.5} min={0} />
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Request Delay (s)</Label>
+              <Input type="number" value={requestDelay} onChange={(e) => setRequestDelay(+e.target.value)} className="h-8 text-xs bg-secondary border-border" step={0.5} min={0} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground" title="How many posts to request from Reddit per subreddit listing (max 100). Higher = more candidates survive filtering.">
+                Fetch per sub
+              </Label>
+              <Input type="number" value={redditFetchLimit} onChange={(e) => setRedditFetchLimit(+e.target.value)} className="h-8 text-xs bg-secondary border-border" step={5} min={5} max={100} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground" title="Max posts to keep per subreddit after filtering. Must be <= Fetch per sub.">
+                Keep per sub
+              </Label>
+              <Input type="number" value={redditKeepPerSub} onChange={(e) => setRedditKeepPerSub(+e.target.value)} className="h-8 text-xs bg-secondary border-border" step={1} min={1} max={100} />
+            </div>
           </div>
+          <p className="text-[10px] text-muted-foreground leading-snug">
+            The scanner pulls <b>{redditFetchLimit}</b> posts per subreddit, applies
+            your filters, then keeps at most <b>{redditKeepPerSub}</b>. If good posts
+            get filtered out, bump Fetch higher (not Keep).
+          </p>
         </Section>
 
         {/* Filters */}

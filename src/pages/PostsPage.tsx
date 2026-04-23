@@ -51,6 +51,14 @@ interface FilterPreset {
   maxDurationS: number;           // 0 = no cap
   minAiScore: number;             // 0 = no threshold
   dedupeWarn: boolean;            // hide near-duplicates of used posts
+  // AI-analysis filters (all empty/0 = no constraint)
+  minAiHookStrength: number;      // 0-100
+  minAiPayoff: number;            // 0-100
+  aiEmotions: string;             // comma-separated allow-list ("" = any)
+  aiModes: string;                // comma-separated recommended_mode allow-list
+  aiAudience: string;             // case-insensitive substring match on target_audience
+  hideContentWarnings: boolean;   // drop posts with any AI content_warnings
+  requireAiScored: boolean;       // only show posts that have been AI-scored
 }
 
 const EMPTY_PRESET: FilterPreset = {
@@ -66,6 +74,13 @@ const EMPTY_PRESET: FilterPreset = {
   maxDurationS: 0,
   minAiScore: 0,
   dedupeWarn: true,
+  minAiHookStrength: 0,
+  minAiPayoff: 0,
+  aiEmotions: "",
+  aiModes: "",
+  aiAudience: "",
+  hideContentWarnings: false,
+  requireAiScored: false,
 };
 
 const PRESETS_KEY = "rtr_filter_presets_v1";
@@ -126,8 +141,29 @@ export default function PostsPage() {
         if (f.minComments && p.num_comments < f.minComments) return false;
         if (f.minViralPerHr && (p.viral_score ?? 0) < f.minViralPerHr) return false;
         if (f.maxDurationS && (p.est_duration_s ?? 0) > f.maxDurationS) return false;
-        const ai = aiScores[p.id]?.score ?? 0;
+        const aiRow = aiScores[p.id];
+        const ai = aiRow?.score ?? 0;
         if (f.minAiScore && ai < f.minAiScore) return false;
+        if (f.requireAiScored && !aiRow) return false;
+        if (f.minAiHookStrength) {
+          if (!aiRow || (aiRow.hook_strength ?? 0) < f.minAiHookStrength) return false;
+        }
+        if (f.minAiPayoff) {
+          if (!aiRow || (aiRow.payoff_strength ?? 0) < f.minAiPayoff) return false;
+        }
+        const emoAllow = tokens(f.aiEmotions);
+        if (emoAllow.length) {
+          if (!aiRow?.emotion || !emoAllow.includes(aiRow.emotion.toLowerCase())) return false;
+        }
+        const modeAllow = tokens(f.aiModes);
+        if (modeAllow.length) {
+          if (!aiRow?.recommended_mode || !modeAllow.includes(aiRow.recommended_mode.toLowerCase())) return false;
+        }
+        if (f.aiAudience.trim()) {
+          const needle = f.aiAudience.trim().toLowerCase();
+          if (!aiRow?.target_audience || !aiRow.target_audience.toLowerCase().includes(needle)) return false;
+        }
+        if (f.hideContentWarnings && (aiRow?.content_warnings?.length ?? 0) > 0) return false;
         const hay = (p.title + " " + (p.selftext || "")).toLowerCase();
         if (must.length && !must.every((t) => hay.includes(t))) return false;
         if (excl.length && excl.some((t) => hay.includes(t))) return false;
@@ -372,6 +408,63 @@ export default function PostsPage() {
               placeholder="0 = no cap" className="h-7 text-[11px] bg-secondary border-border" />
           </div>
         </div>
+
+        {/* AI-analysis filters — only meaningful after Score with AI has run */}
+        <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-3.5 w-3.5 text-primary" />
+            <span className="text-[11px] font-semibold">AI filters</span>
+            <span className="text-[10px] text-muted-foreground">
+              — run "Score with AI" first, then narrow by what the AI found.
+            </span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
+            <div className="space-y-0.5">
+              <label className="text-[10px] text-muted-foreground">Min hook strength (0–100)</label>
+              <Input type="number" min={0} max={100} value={f.minAiHookStrength || ""}
+                onChange={(e) => update("minAiHookStrength", +e.target.value || 0)}
+                placeholder="0" className="h-7 text-[11px] bg-secondary border-border" />
+            </div>
+            <div className="space-y-0.5">
+              <label className="text-[10px] text-muted-foreground">Min payoff (0–100)</label>
+              <Input type="number" min={0} max={100} value={f.minAiPayoff || ""}
+                onChange={(e) => update("minAiPayoff", +e.target.value || 0)}
+                placeholder="0" className="h-7 text-[11px] bg-secondary border-border" />
+            </div>
+            <div className="space-y-0.5">
+              <label className="text-[10px] text-muted-foreground" title="Case-insensitive substring match, e.g. 'women' matches 'women 25-34'.">
+                Target audience contains
+              </label>
+              <Input value={f.aiAudience} onChange={(e) => update("aiAudience", e.target.value)}
+                placeholder="e.g. women, men 18-24" className="h-7 text-[11px] bg-secondary border-border" />
+            </div>
+            <div className="space-y-0.5 md:col-span-2">
+              <label className="text-[10px] text-muted-foreground">
+                Emotion allow-list (comma-sep)
+              </label>
+              <Input value={f.aiEmotions} onChange={(e) => update("aiEmotions", e.target.value)}
+                placeholder="e.g. outrage, schadenfreude, heartbreak" className="h-7 text-[11px] bg-secondary border-border" />
+            </div>
+            <div className="space-y-0.5">
+              <label className="text-[10px] text-muted-foreground">
+                Mode allow-list (comma-sep)
+              </label>
+              <Input value={f.aiModes} onChange={(e) => update("aiModes", e.target.value)}
+                placeholder="story, qa, hottake" className="h-7 text-[11px] bg-secondary border-border" />
+            </div>
+          </div>
+          <div className="flex items-center gap-4 flex-wrap text-[11px]">
+            <label className="flex items-center gap-2 text-muted-foreground">
+              <Switch checked={f.requireAiScored} onCheckedChange={(v) => update("requireAiScored", v)} />
+              Only show AI-scored posts
+            </label>
+            <label className="flex items-center gap-2 text-muted-foreground">
+              <Switch checked={f.hideContentWarnings} onCheckedChange={(v) => update("hideContentWarnings", v)} />
+              Hide posts with content warnings
+            </label>
+          </div>
+        </div>
+
         <div className="flex items-center gap-3 text-[11px]">
           <label className="flex items-center gap-2 text-muted-foreground">
             <Switch checked={f.dedupeWarn} onCheckedChange={(v) => update("dedupeWarn", v)} />

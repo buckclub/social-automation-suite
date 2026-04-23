@@ -625,6 +625,12 @@ async def discover_posts(sort: str = "hot"):
 
         reddit_cfg = maker.config.get("reddit", {}) if isinstance(maker.config.get("reddit"), dict) else {}
         per_sub_cap = int(reddit_cfg.get("max_per_subreddit_per_run", 10))
+        # How many posts Reddit actually returns per subreddit listing — the
+        # ones that fail filters still count against per_sub_cap, so fetch_limit
+        # should be comfortably higher than the cap. Clamped to Reddit's own
+        # 100-per-request limit.
+        fetch_limit = max(per_sub_cap, int(reddit_cfg.get("fetch_limit", 25)))
+        fetch_limit = min(100, fetch_limit)
         used_titles = _used_post_titles()
 
         from difflib import SequenceMatcher
@@ -639,7 +645,7 @@ async def discover_posts(sort: str = "hot"):
 
         all_posts = []
         for subreddit in subreddits:
-            fetched = maker.fetch_subreddit_posts(subreddit=subreddit, limit=25, sort=reddit_sort)
+            fetched = maker.fetch_subreddit_posts(subreddit=subreddit, limit=fetch_limit, sort=reddit_sort)
             sub_count = 0
             for post in fetched:
                 meets, reason = maker._meets_filters(post)
@@ -673,7 +679,7 @@ async def discover_posts(sort: str = "hot"):
         if sort == "viral":
             all_posts.sort(key=lambda p: p["viral_score"], reverse=True)
         stats["posts_scanned"] += len(all_posts)
-        _log(f"Discovered {len(all_posts)} posts from {len(subreddits)} subreddits (sort={sort}, cap={per_sub_cap}/sub)")
+        _log(f"Discovered {len(all_posts)} posts from {len(subreddits)} subreddits (sort={sort}, fetch={fetch_limit}/sub, keep<={per_sub_cap}/sub)")
         return {"posts": all_posts, "total": len(all_posts)}
     except Exception as e:
         _log(f"Discover error: {e}")
