@@ -81,6 +81,31 @@ class YouTubePublisher:
         logger.info("YouTube access token refreshed")
         return self._access_token
 
+    def fetch_my_channel(self) -> Optional[Dict[str, str]]:
+        """Return {id, title, custom_url} for the authenticated channel, or None."""
+        try:
+            token = self._get_access_token()
+            r = requests.get(
+                f"{YOUTUBE_API_BASE}/channels",
+                params={"part": "snippet", "mine": "true"},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30,
+            )
+            r.raise_for_status()
+            items = r.json().get("items", [])
+            if not items:
+                return None
+            it = items[0]
+            snip = it.get("snippet", {}) or {}
+            return {
+                "id": it.get("id", ""),
+                "title": snip.get("title", ""),
+                "custom_url": snip.get("customUrl", ""),
+            }
+        except Exception as e:
+            logger.error(f"fetch_my_channel failed: {e}")
+            return None
+
     # ──────────────────── Caption ────────────────────
 
     @staticmethod
@@ -119,7 +144,9 @@ class YouTubePublisher:
                      thumbnail_path: Optional[str] = None,
                      tags: Optional[List[str]] = None,
                      category_id: str = "22",
-                     privacy: str = "public") -> Optional[str]:
+                     privacy: str = "public",
+                     publish_at: Optional[str] = None,
+                     made_for_kids: bool = False) -> Optional[str]:
         """
         Upload a video as a YouTube Short.
 
@@ -131,6 +158,12 @@ class YouTubePublisher:
             tags: Optional list of tags
             category_id: YouTube category (22 = People & Blogs)
             privacy: public, unlisted, or private
+            publish_at: Optional ISO-8601/RFC-3339 UTC timestamp (e.g.
+                "2026-05-01T17:00:00Z"). When set, the video is uploaded as
+                PRIVATE and YouTube auto-promotes it to public at that time —
+                which means our server doesn't need to be running at release.
+            made_for_kids: COPPA flag. Default False. Reddit stories are
+                typically not made for kids.
 
         Returns:
             YouTube video ID or None on failure
@@ -141,7 +174,18 @@ class YouTubePublisher:
 
         token = self._get_access_token()
 
-        # Video metadata
+        # YouTube requires privacy=private when publishAt is set.
+        effective_privacy = "private" if publish_at else privacy
+
+        status: Dict[str, Any] = {
+            "privacyStatus": effective_privacy,
+            "selfDeclaredMadeForKids": made_for_kids,
+        }
+        if publish_at:
+            status["publishAt"] = publish_at
+
+        # Note: the `shorts.isShort` flag is legacy/unsupported — YouTube auto-
+        # classifies Shorts from aspect ratio (≤9:16) and duration (<60s).
         body = {
             "snippet": {
                 "title": title[:100],
@@ -149,13 +193,7 @@ class YouTubePublisher:
                 "tags": tags or ["reddit", "shorts", "storytime"],
                 "categoryId": category_id,
             },
-            "status": {
-                "privacyStatus": privacy,
-                "selfDeclaredMadeForKids": False,
-                "shorts": {  # Mark as Short
-                    "isShort": True,
-                },
-            },
+            "status": status,
         }
 
         file_size = os.path.getsize(video_path)

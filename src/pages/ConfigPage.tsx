@@ -21,6 +21,7 @@ import type { FullConfig, TtsProvider } from "@/lib/api";
 import { CaptionsPreview } from "@/components/CaptionsPreview";
 import { ColorInput } from "@/components/ColorInput";
 import { SecretInput } from "@/components/ui/secret-input";
+import { YouTubePublishingPanel } from "@/components/YouTubePublishingPanel";
 import { ELEVENLABS_LIBRARY } from "@/components/ElevenLabsLibraryPresets";
 
 function TestAiButton({ provider, model, apiKey, ollamaUrl }: { provider: string; model: string; apiKey: string; ollamaUrl?: string }) {
@@ -228,7 +229,7 @@ export default function ConfigPage() {
   const [youtubeApiKey, setYoutubeApiKey] = useState("");
 
   const [initialLoaded, setInitialLoaded] = useState(false);
-  type TabId = "general" | "formatting" | "tts" | "video" | "captions" | "ai" | "output";
+  type TabId = "general" | "formatting" | "tts" | "video" | "captions" | "ai" | "publishing" | "output";
   const [activeTab, setActiveTab] = useState<TabId>("general");
 
   const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
@@ -238,6 +239,7 @@ export default function ConfigPage() {
     { id: "video",      label: "Video",         icon: <Film className="h-4 w-4" /> },
     { id: "captions",   label: "Captions",      icon: <Type className="h-4 w-4" /> },
     { id: "ai",         label: "AI Hooks",      icon: <Sparkles className="h-4 w-4" /> },
+    { id: "publishing", label: "Publishing",    icon: <Youtube className="h-4 w-4" /> },
     { id: "output",     label: "Output & Discord", icon: <FolderOutput className="h-4 w-4" /> },
   ];
 
@@ -1733,6 +1735,26 @@ export default function ConfigPage() {
               enable "YouTube Data API v3" → create an API key. No billing required for free tier.
             </p>
           </div>
+        </Section>
+        </div>
+
+        <div className={activeTab === "publishing" ? "space-y-5" : "hidden"}>
+        <Section title="YouTube Shorts" icon={<Youtube className="h-4 w-4 text-[#ff0000]" />}>
+          <YouTubePublishingPanel />
+        </Section>
+        <Section title="TikTok" icon={<Film className="h-4 w-4 text-muted-foreground" />}>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Coming next. TikTok's Content Posting API requires a developer app
+            that's been approved — until approval you're stuck in sandbox mode
+            (5 test users). We'll wire it up once you're ready to apply.
+          </p>
+        </Section>
+        <Section title="Instagram Reels" icon={<Film className="h-4 w-4 text-muted-foreground" />}>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Coming next. Instagram needs a Business/Creator account linked to a
+            Facebook Page plus a public URL for the video during upload (IG
+            fetches, doesn't accept direct bytes). More setup-heavy than YouTube.
+          </p>
         </Section>
         </div>
 

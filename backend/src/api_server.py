@@ -2970,6 +2970,289 @@ Return JSON with exactly this shape:
         raise HTTPException(500, f"Social copy generation failed: {e}")
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Publishing — YouTube Shorts
+# ──────────────────────────────────────────────────────────────────────
+#
+# Auth model: Desktop-app OAuth 2.0 against Google. User creates a Desktop
+# app client in Google Cloud Console, pastes the client_id + client_secret
+# here, then clicks Connect — we open their browser to Google's consent
+# page, catch the redirect on our own localhost callback endpoint, exchange
+# the code for a refresh_token, and stash it in config.json.
+#
+# Scheduled release: uploads with `publish_at` are sent to YouTube as
+# private + publishAt=<timestamp>. YouTube itself flips them public at the
+# scheduled time, so our server can be offline at release.
+
+YT_OAUTH_SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
+YT_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+YT_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+
+def _yt_cfg() -> dict:
+    return (_load_config().get("publishing") or {}).get("youtube") or {}
+
+
+def _yt_save(patch: dict) -> None:
+    cfg = _load_config()
+    pub = cfg.setdefault("publishing", {})
+    yt = pub.setdefault("youtube", {})
+    yt.update(patch)
+    _save_config(cfg)
+
+
+def _yt_callback_url(request_host: Optional[str] = None) -> str:
+    # The user's panel is served on the same host/port that runs this API,
+    # so the callback can reuse it. Google's Desktop-app flow accepts any
+    # localhost / 127.0.0.1 redirect URI without extra domain verification.
+    host = (request_host or "localhost:8000").split(",")[0].strip()
+    return f"http://{host}/api/publish/youtube/oauth/callback"
+
+
+@app.get("/api/publish/youtube/status")
+async def youtube_publish_status():
+    """Return connection status for the YouTube publisher."""
+    yt = _yt_cfg()
+    has_client = bool(yt.get("client_id") and yt.get("client_secret"))
+    has_token = bool(yt.get("refresh_token"))
+    return {
+        "has_credentials": has_client,
+        "connected": has_client and has_token,
+        "channel_title": yt.get("channel_title", ""),
+        "channel_id": yt.get("channel_id", ""),
+        "custom_url": yt.get("channel_custom_url", ""),
+    }
+
+
+@app.post("/api/publish/youtube/credentials")
+async def youtube_save_credentials(req: dict):
+    """
+    Save the OAuth client_id + client_secret from the Google Cloud
+    Desktop-app credential. These are needed before the Connect flow.
+    """
+    cid = (req.get("client_id") or "").strip()
+    csec = (req.get("client_secret") or "").strip()
+    if not cid or not csec:
+        raise HTTPException(400, "client_id and client_secret are required")
+    _yt_save({"client_id": cid, "client_secret": csec})
+    return {"saved": True}
+
+
+@app.post("/api/publish/youtube/disconnect")
+async def youtube_disconnect():
+    """Forget the stored refresh_token (keeps client_id/secret)."""
+    _yt_save({"refresh_token": "", "channel_title": "", "channel_id": "", "channel_custom_url": ""})
+    return {"disconnected": True}
+
+
+@app.get("/api/publish/youtube/oauth/start")
+async def youtube_oauth_start(host: Optional[str] = None):
+    """
+    Return the Google consent URL for the user to open. `host` should be
+    the same host:port the panel is running on (e.g. 'localhost:8000').
+    """
+    yt = _yt_cfg()
+    if not (yt.get("client_id") and yt.get("client_secret")):
+        raise HTTPException(400, "Save client_id + client_secret first")
+    from urllib.parse import urlencode
+    params = {
+        "client_id": yt["client_id"],
+        "redirect_uri": _yt_callback_url(host),
+        "response_type": "code",
+        "scope": YT_OAUTH_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",   # force re-issuing a refresh_token
+        "include_granted_scopes": "true",
+    }
+    return {"auth_url": f"{YT_OAUTH_AUTH_URL}?{urlencode(params)}"}
+
+
+@app.get("/api/publish/youtube/oauth/callback")
+async def youtube_oauth_callback(code: Optional[str] = None, error: Optional[str] = None):
+    """
+    Google redirects here with ?code=... after the user consents. We
+    exchange it for a refresh_token, fetch the channel info, and return
+    a tiny self-closing HTML page so the popup tab can close itself.
+    """
+    from fastapi.responses import HTMLResponse
+
+    def _html(msg: str, ok: bool = True) -> HTMLResponse:
+        color = "#22c55e" if ok else "#ef4444"
+        return HTMLResponse(
+            f"""<!doctype html><html><body style="font-family:system-ui;background:#0a0a0f;color:#eee;padding:40px;text-align:center">
+<div style="max-width:400px;margin:auto">
+  <div style="font-size:48px;color:{color};margin-bottom:16px">{'✓' if ok else '✗'}</div>
+  <h2>{msg}</h2>
+  <p style="color:#888;font-size:14px">You can close this tab and return to the panel.</p>
+</div>
+<script>setTimeout(()=>window.close(),2000);if(window.opener)window.opener.postMessage({{youtubeOauth:'{ 'done' if ok else 'error' }'}},'*')</script>
+</body></html>"""
+        )
+
+    if error or not code:
+        return _html(f"Authorization failed: {error or 'no code returned'}", ok=False)
+
+    yt = _yt_cfg()
+    if not (yt.get("client_id") and yt.get("client_secret")):
+        return _html("Missing client_id/secret in config", ok=False)
+
+    try:
+        resp = requests.post(YT_OAUTH_TOKEN_URL, data={
+            "code": code,
+            "client_id": yt["client_id"],
+            "client_secret": yt["client_secret"],
+            "redirect_uri": _yt_callback_url(),
+            "grant_type": "authorization_code",
+        }, timeout=30)
+        data = resp.json()
+        rt = data.get("refresh_token")
+        if not rt:
+            return _html(f"Token exchange failed: {data.get('error_description') or data}", ok=False)
+
+        # Fetch channel info so we can show it in the UI.
+        from youtube_publisher import YouTubePublisher
+        pub = YouTubePublisher(yt["client_id"], yt["client_secret"], rt)
+        info = pub.fetch_my_channel() or {}
+
+        _yt_save({
+            "refresh_token": rt,
+            "channel_title": info.get("title", ""),
+            "channel_id": info.get("id", ""),
+            "channel_custom_url": info.get("custom_url", ""),
+        })
+        _log(f"YouTube connected: {info.get('title', '(unknown)')}")
+        return _html(f"Connected as {info.get('title') or 'YouTube channel'}")
+    except Exception as e:
+        return _html(f"OAuth error: {e}", ok=False)
+
+
+# requests is imported at module top for the benchmarks client already.
+import requests  # noqa: E402  (kept near use-site for clarity)
+
+
+@app.post("/api/publish/youtube/upload")
+async def youtube_upload(req: dict):
+    """
+    Upload a rendered video to YouTube Shorts.
+
+    Body:
+      {
+        "video_id":    "<registry id of the video>",
+        "part_index":  0,                           # which part for multi-part videos
+        "title":       "...",                       # optional override; defaults to social.json.youtube.titles[0]
+        "description": "...",                       # optional override
+        "tags":        ["..."],                     # optional override
+        "privacy":     "public" | "unlisted" | "private",
+        "publish_at":  "2026-05-01T17:00:00Z"       # optional; set ⇒ uploaded private, YouTube auto-publishes
+      }
+    """
+    yt = _yt_cfg()
+    if not (yt.get("client_id") and yt.get("client_secret") and yt.get("refresh_token")):
+        raise HTTPException(400, "YouTube not connected — open Config → Publishing and finish the OAuth flow.")
+
+    vid = (req.get("video_id") or "").strip()
+    if not vid:
+        raise HTTPException(400, "video_id is required")
+    part_idx = int(req.get("part_index") or 0)
+
+    entry = next((v for v in videos_db if v["id"] == vid), None)
+    if not entry:
+        raise HTTPException(404, f"Video '{vid}' not in registry")
+    paths = entry.get("video_paths") or []
+    if not paths or part_idx >= len(paths):
+        raise HTTPException(404, "No mp4 on disk for that video / part")
+    video_path = paths[part_idx]
+    if not os.path.isfile(video_path):
+        raise HTTPException(404, f"mp4 missing: {video_path}")
+
+    # Pull defaults from social.json if the user didn't override.
+    social_path = os.path.join(PROJECT_ROOT, "posts", vid, "social.json")
+    social: dict = {}
+    if os.path.isfile(social_path):
+        try:
+            with open(social_path, "r", encoding="utf-8") as f:
+                social = json.load(f)
+        except Exception:
+            pass
+    yt_copy = social.get("youtube") or {}
+
+    title = (req.get("title") or "").strip() or (yt_copy.get("titles") or [entry.get("title", "")])[0]
+    description = (req.get("description") or "").strip() or yt_copy.get("description") or entry.get("title", "")
+    tags = req.get("tags") or yt_copy.get("tags") or ["reddit", "redditstories", "shorts"]
+    privacy = (req.get("privacy") or "public").lower()
+    if privacy not in ("public", "unlisted", "private"):
+        privacy = "public"
+    publish_at = (req.get("publish_at") or "").strip() or None
+
+    # Basic publish_at validation: must be UTC RFC-3339 and in the future.
+    if publish_at:
+        from datetime import datetime as _dt
+        try:
+            # Accept "...Z" and "+00:00".
+            norm = publish_at.replace("Z", "+00:00")
+            ts = _dt.fromisoformat(norm)
+            if ts.tzinfo is None:
+                raise ValueError("publish_at must include timezone (use Z or +00:00)")
+            if ts.timestamp() <= time.time() + 60:
+                raise ValueError("publish_at must be at least 1 minute in the future")
+            # Canonicalize to Z form for the API.
+            publish_at = ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception as e:
+            raise HTTPException(400, f"Invalid publish_at: {e}")
+
+    # Thumbnail (optional — YouTube ignores custom thumbs on unverified channels).
+    thumb_path = None
+    try:
+        base, _ = os.path.splitext(video_path)
+        for cand in (base + "_thumbnail.png", base + ".png"):
+            if os.path.isfile(cand):
+                thumb_path = cand
+                break
+    except Exception:
+        pass
+
+    _log(f"YouTube upload starting: {title[:60]}… (privacy={privacy}, publish_at={publish_at or '-'})")
+
+    from youtube_publisher import YouTubePublisher
+    pub = YouTubePublisher(yt["client_id"], yt["client_secret"], yt["refresh_token"])
+
+    try:
+        yt_video_id = await asyncio.to_thread(
+            pub.upload_short,
+            video_path, title, description,
+            thumb_path, tags, "22", privacy, publish_at,
+        )
+    except Exception as e:
+        _log(f"YouTube upload exception: {e}")
+        raise HTTPException(500, f"YouTube upload failed: {e}")
+
+    if not yt_video_id:
+        raise HTTPException(502, "YouTube upload returned no video id — see server logs")
+
+    # Record the upload on the registry entry so the UI can show a link.
+    uploads = entry.setdefault("uploads", [])
+    uploads.append({
+        "platform":   "youtube",
+        "video_id":   yt_video_id,
+        "url":        f"https://youtube.com/shorts/{yt_video_id}",
+        "part_index": part_idx,
+        "privacy":    privacy,
+        "publish_at": publish_at,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "title":      title,
+    })
+    _persist_videos_db()
+    _log(f"YouTube upload complete: https://youtube.com/shorts/{yt_video_id}")
+
+    return {
+        "success": True,
+        "video_id": yt_video_id,
+        "url": f"https://youtube.com/shorts/{yt_video_id}",
+        "privacy": privacy,
+        "publish_at": publish_at,
+    }
+
+
 @app.post("/api/maintenance/clear-all")
 async def clear_all_data(req: dict = {}):
     """

@@ -283,6 +283,44 @@ export const api = {
   generateSocialCopy: (postId: string) =>
     request<SocialCopy>(`/api/posts/${postId}/generate-social`, { method: "POST" }),
 
+  // Publishing — YouTube
+  youtubeStatus: () =>
+    request<{
+      has_credentials: boolean;
+      connected: boolean;
+      channel_title: string;
+      channel_id: string;
+      custom_url: string;
+    }>("/api/publish/youtube/status"),
+  youtubeSaveCredentials: (client_id: string, client_secret: string) =>
+    request<{ saved: boolean }>("/api/publish/youtube/credentials", {
+      method: "POST",
+      body: JSON.stringify({ client_id, client_secret }),
+    }),
+  youtubeOauthStart: (host: string) =>
+    request<{ auth_url: string }>(`/api/publish/youtube/oauth/start?host=${encodeURIComponent(host)}`),
+  youtubeDisconnect: () =>
+    request<{ disconnected: boolean }>("/api/publish/youtube/disconnect", { method: "POST" }),
+  youtubeUpload: (body: {
+    video_id: string;
+    part_index?: number;
+    title?: string;
+    description?: string;
+    tags?: string[];
+    privacy?: "public" | "unlisted" | "private";
+    publish_at?: string;
+  }) =>
+    request<{
+      success: boolean;
+      video_id: string;
+      url: string;
+      privacy: string;
+      publish_at: string | null;
+    }>("/api/publish/youtube/upload", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   // ElevenLabs voices (live, authenticated via server-side config.api_key)
   listElevenLabsVoices: () =>
     request<{

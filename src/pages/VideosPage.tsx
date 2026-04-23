@@ -2,10 +2,11 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   Play, Clock, CheckCircle2, XCircle, Loader2, Film, Trash2,
-  Download, Eye, HardDrive, Layers, RefreshCw, Share2, AlertTriangle
+  Download, Eye, HardDrive, Layers, RefreshCw, Share2, AlertTriangle, Youtube
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { SocialCopyDialog } from "@/components/SocialCopyDialog";
+import { YouTubeUploadDialog } from "@/components/YouTubeUploadDialog";
 import { FullRedoDialog } from "@/components/FullRedoDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Card, CardContent } from "@/components/ui/card";
@@ -45,6 +46,7 @@ function VideoCard({ video, index, onPreview, onDelete }: {
   const { toast } = useToast();
   const [socialOpen, setSocialOpen] = useState(false);
   const [redoOpen, setRedoOpen] = useState(false);
+  const [ytOpen, setYtOpen] = useState(false);
   const [rerenderConfirmOpen, setRerenderConfirmOpen] = useState(false);
   const handleRerender = () => {
     resumeMutation.mutate(video.id, {
@@ -229,6 +231,18 @@ function VideoCard({ video, index, onPreview, onDelete }: {
                   Social Copy
                 </Button>
               )}
+              {video.has_video && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px] gap-1 px-2 border-[#ff0000]/40 text-[#ff0000] hover:bg-[#ff0000]/10"
+                  onClick={() => setYtOpen(true)}
+                  title="Upload to YouTube Shorts — supports scheduled release on YouTube's side"
+                >
+                  <Youtube className="h-3 w-3" />
+                  YouTube
+                </Button>
+              )}
             </div>
             <Button size="sm" variant="ghost" className="h-7 px-2 text-destructive hover:text-destructive"
               onClick={() => onDelete(video)}>
@@ -240,6 +254,12 @@ function VideoCard({ video, index, onPreview, onDelete }: {
             title={video.title}
             open={socialOpen}
             onOpenChange={setSocialOpen}
+          />
+          <YouTubeUploadDialog
+            videoId={video.id}
+            videoTitle={video.title}
+            open={ytOpen}
+            onOpenChange={setYtOpen}
           />
           <FullRedoDialog
             postId={video.id}
