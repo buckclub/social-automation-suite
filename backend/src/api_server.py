@@ -1411,7 +1411,7 @@ def _check_cancelled():
 
 async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_comments: Optional[List[int]] = None, max_comment_chars: int = 0, narrator_gender: Optional[str] = None, voice_override: Optional[str] = None):
     """Execute the full pipeline matching main.py run_pipeline() flow."""
-    global _cancel_requested
+    global _cancel_requested, videos_db
     _cancel_requested = False
     start_time = time.time()
     config = _load_config()
