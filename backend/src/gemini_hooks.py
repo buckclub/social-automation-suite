@@ -23,7 +23,7 @@ from typing import Optional, Tuple
 if getattr(sys, "frozen", False):
     PROJECT_ROOT = os.path.dirname(sys.executable)
 else:
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # ── Prompts ──────────────────────────────────────────────────────────

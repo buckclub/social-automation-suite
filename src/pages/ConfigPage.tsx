@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   Settings2, Save, Loader2, Plus, X, RotateCcw,
   MessageSquare, Mic, Film, FolderOutput, Bell,
-  Download, CheckCircle2, XCircle, RefreshCw, Cpu, Sparkles, Zap
+  Download, CheckCircle2, XCircle, RefreshCw, Cpu, Sparkles, Zap, Type
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -14,10 +14,11 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { useConfig, useUpdateConfig, useTtsProviders, useInstallTtsProvider } from "@/hooks/use-api";
+import { useConfig, useUpdateConfig, useTtsProviders, useInstallTtsProvider, useSystemFonts, useElevenLabsVoices } from "@/hooks/use-api";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import type { FullConfig, TtsProvider } from "@/lib/api";
+import { CaptionsPreview } from "@/components/CaptionsPreview";
 
 function TestAiButton({ provider, model, apiKey, ollamaUrl }: { provider: string; model: string; apiKey: string; ollamaUrl?: string }) {
   const [testing, setTesting] = useState(false);
@@ -89,6 +90,7 @@ export default function ConfigPage() {
   const { data: config, isLoading, isError, error } = useConfig();
   const updateMutation = useUpdateConfig();
   const { data: providersData, isLoading: providersLoading } = useTtsProviders();
+  const { data: fontsData } = useSystemFonts();
   const installMutation = useInstallTtsProvider();
   const { toast } = useToast();
   const providers = providersData?.providers ?? [];
@@ -121,6 +123,16 @@ export default function ConfigPage() {
   const [ttsCommentVoices, setTtsCommentVoices] = useState<string[]>(STREAMLABS_VOICES);
   const [ttsFormat, setTtsFormat] = useState("mp3");
   const [ttsSpeed, setTtsSpeed] = useState(0.5);
+  const [ttsPreNormalize, setTtsPreNormalize] = useState(true);
+
+  // ElevenLabs-specific
+  const [elevenApiKey, setElevenApiKey] = useState("");
+  const [elevenModel, setElevenModel] = useState("eleven_multilingual_v2");
+  const [elevenStability, setElevenStability] = useState(0.5);
+  const [elevenSimilarity, setElevenSimilarity] = useState(0.75);
+  const [elevenStyle, setElevenStyle] = useState(0.0);
+  const [elevenSpeakerBoost, setElevenSpeakerBoost] = useState(true);
+  const elevenVoicesQuery = useElevenLabsVoices(ttsProvider === "elevenlabs");
 
   // Video
   const [videoMode, setVideoMode] = useState("short_reel");
@@ -131,6 +143,29 @@ export default function ConfigPage() {
   const [splitDuration, setSplitDuration] = useState(30);
   const [outroText, setOutroText] = useState("Follow for Part {next_part}");
   const [branding, setBranding] = useState("");
+
+  // Captions
+  const [capEnabled, setCapEnabled] = useState(true);
+  const [capFontPath, setCapFontPath] = useState("arial.ttf");
+  const [capFontSize, setCapFontSize] = useState(80);
+  const [capColor, setCapColor] = useState("white");
+  const [capStrokeColor, setCapStrokeColor] = useState("black");
+  const [capStrokeWidth, setCapStrokeWidth] = useState(4);
+  const [capBgEnabled, setCapBgEnabled] = useState(false);
+  const [capBgColor, setCapBgColor] = useState("black");
+  const [capBgOpacity, setCapBgOpacity] = useState(160);
+  const [capPadding, setCapPadding] = useState(30);
+  const [capCornerRadius, setCapCornerRadius] = useState(20);
+  const [capMaxWidthPct, setCapMaxWidthPct] = useState(0.85);
+  const [capPosition, setCapPosition] = useState<"center" | "bottom" | "top">("bottom");
+  const [capPositionOffset, setCapPositionOffset] = useState(0);
+  const [capWordsPerCaption, setCapWordsPerCaption] = useState(3);
+  const [capUppercase, setCapUppercase] = useState(true);
+  const [capAttribution, setCapAttribution] = useState(false);
+  const [capAnimation, setCapAnimation] = useState<"none" | "fade" | "pop" | "fade_pop">("none");
+  const [capAnimationDuration, setCapAnimationDuration] = useState(0.15);
+  const [capPopOvershoot, setCapPopOvershoot] = useState(1.12);
+  const [capPopStartScale, setCapPopStartScale] = useState(0.7);
 
   // Output
   const [postsDir, setPostsDir] = useState("posts");
@@ -175,6 +210,18 @@ export default function ConfigPage() {
   const [newModelId, setNewModelId] = useState("");
 
   const [initialLoaded, setInitialLoaded] = useState(false);
+  type TabId = "general" | "formatting" | "tts" | "video" | "captions" | "ai" | "output";
+  const [activeTab, setActiveTab] = useState<TabId>("general");
+
+  const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
+    { id: "general",    label: "General",       icon: <Settings2 className="h-4 w-4" /> },
+    { id: "formatting", label: "Formatting",    icon: <MessageSquare className="h-4 w-4" /> },
+    { id: "tts",        label: "Text-to-Speech", icon: <Mic className="h-4 w-4" /> },
+    { id: "video",      label: "Video",         icon: <Film className="h-4 w-4" /> },
+    { id: "captions",   label: "Captions",      icon: <Type className="h-4 w-4" /> },
+    { id: "ai",         label: "AI Hooks",      icon: <Sparkles className="h-4 w-4" /> },
+    { id: "output",     label: "Output & Discord", icon: <FolderOutput className="h-4 w-4" /> },
+  ];
 
   useEffect(() => {
     if (!config || initialLoaded) return;
@@ -205,6 +252,15 @@ export default function ConfigPage() {
     setTtsCommentVoices(t.comment_voices ?? STREAMLABS_VOICES);
     setTtsFormat(t.output_format ?? "mp3");
     setTtsSpeed(t.speed ?? 0.5);
+    setTtsPreNormalize((t as any).pre_normalize ?? true);
+
+    const el = ((t as any).elevenlabs as Record<string, unknown>) ?? {};
+    setElevenApiKey((t as any).elevenlabs_api_key ?? el.api_key ?? "");
+    setElevenModel((t as any).elevenlabs_model_id ?? el.model_id ?? "eleven_multilingual_v2");
+    setElevenStability(typeof el.stability === "number" ? el.stability : 0.5);
+    setElevenSimilarity(typeof el.similarity_boost === "number" ? el.similarity_boost : 0.75);
+    setElevenStyle(typeof el.style === "number" ? el.style : 0.0);
+    setElevenSpeakerBoost(el.use_speaker_boost !== undefined ? Boolean(el.use_speaker_boost) : true);
 
     const v = c.video ?? {} as FullConfig["video"];
     setVideoMode(v.mode ?? "short_reel");
@@ -215,6 +271,29 @@ export default function ConfigPage() {
     setSplitDuration(v.split_duration ?? 30);
     setOutroText(v.outro_text ?? "Follow for Part {next_part}");
     setBranding(v.branding ?? "");
+
+    const cap = c.captions ?? {} as NonNullable<FullConfig["captions"]>;
+    setCapEnabled(cap.enabled ?? true);
+    setCapFontPath(cap.font_path ?? "arial.ttf");
+    setCapFontSize(cap.font_size ?? 80);
+    setCapColor(cap.color ?? "white");
+    setCapStrokeColor(cap.stroke_color ?? "black");
+    setCapStrokeWidth(cap.stroke_width ?? 4);
+    setCapBgEnabled(cap.bg_color != null && cap.bg_color !== "");
+    setCapBgColor(cap.bg_color ?? "black");
+    setCapBgOpacity(cap.bg_opacity ?? 160);
+    setCapPadding(cap.padding ?? 30);
+    setCapCornerRadius(cap.corner_radius ?? 20);
+    setCapMaxWidthPct(cap.max_width_pct ?? 0.85);
+    setCapPosition((cap.position as "center" | "bottom" | "top") ?? "bottom");
+    setCapPositionOffset(cap.position_offset ?? 0);
+    setCapWordsPerCaption(cap.words_per_caption ?? 3);
+    setCapUppercase(cap.uppercase ?? true);
+    setCapAttribution(cap.attribution ?? false);
+    setCapAnimation((cap.animation as "none" | "fade" | "pop" | "fade_pop") ?? "none");
+    setCapAnimationDuration(cap.animation_duration ?? 0.15);
+    setCapPopOvershoot(cap.pop_overshoot ?? 1.12);
+    setCapPopStartScale(cap.pop_start_scale ?? 0.7);
 
     const o = c.output ?? {} as FullConfig["output"];
     setPostsDir(o.posts_directory ?? "posts");
@@ -293,6 +372,17 @@ export default function ConfigPage() {
           comment_voices: ttsCommentVoices,
           output_format: ttsFormat,
           speed: ttsSpeed,
+          pre_normalize: ttsPreNormalize,
+          elevenlabs_api_key: elevenApiKey,
+          elevenlabs_model_id: elevenModel,
+          elevenlabs: {
+            api_key: elevenApiKey,
+            model_id: elevenModel,
+            stability: elevenStability,
+            similarity_boost: elevenSimilarity,
+            style: elevenStyle,
+            use_speaker_boost: elevenSpeakerBoost,
+          },
         },
         video: {
           mode: videoMode,
@@ -304,6 +394,28 @@ export default function ConfigPage() {
           split_duration: splitDuration,
           outro_text: outroText,
           branding,
+        },
+        captions: {
+          enabled: capEnabled,
+          font_path: capFontPath,
+          font_size: capFontSize,
+          color: capColor,
+          stroke_color: capStrokeColor,
+          stroke_width: capStrokeWidth,
+          bg_color: capBgEnabled ? capBgColor : null,
+          bg_opacity: capBgOpacity,
+          padding: capPadding,
+          corner_radius: capCornerRadius,
+          max_width_pct: capMaxWidthPct,
+          position: capPosition,
+          position_offset: capPositionOffset,
+          words_per_caption: capWordsPerCaption,
+          uppercase: capUppercase,
+          attribution: capAttribution,
+          animation: capAnimation,
+          animation_duration: capAnimationDuration,
+          pop_overshoot: capPopOvershoot,
+          pop_start_scale: capPopStartScale,
         },
         output: {
           posts_directory: postsDir,
@@ -367,7 +479,33 @@ export default function ConfigPage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div className="flex flex-col md:flex-row gap-5">
+        {/* Sidebar nav */}
+        <aside className="md:w-56 flex-shrink-0">
+          <nav className="flex md:flex-col gap-1 md:sticky md:top-4 overflow-x-auto md:overflow-visible">
+            {tabs.map((t) => {
+              const active = activeTab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setActiveTab(t.id)}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${
+                    active
+                      ? "bg-primary/10 text-primary border border-primary/30"
+                      : "text-muted-foreground hover:bg-secondary/60 border border-transparent"
+                  }`}
+                >
+                  {t.icon}
+                  <span>{t.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
+
+        {/* Tab content */}
+        <div className="flex-1 min-w-0 space-y-5">
+        <div className={activeTab === "general" ? "space-y-5" : "hidden"}>
         {/* Subreddits & General */}
         <Section title="Subreddits & General" icon={<Settings2 className="h-4 w-4 text-primary" />}>
           <div className="space-y-2">
@@ -439,7 +577,9 @@ export default function ConfigPage() {
             <Switch checked={requireSelftext} onCheckedChange={setRequireSelftext} />
           </div>
         </Section>
+        </div>
 
+        <div className={activeTab === "formatting" ? "space-y-5" : "hidden"}>
         {/* Formatting */}
         <Section title="Story Formatting" icon={<MessageSquare className="h-4 w-4 text-accent" />}>
           <div className="space-y-1">
@@ -466,7 +606,9 @@ export default function ConfigPage() {
             </div>
           </div>
         </Section>
+        </div>
 
+        <div className={activeTab === "tts" ? "space-y-5" : "hidden"}>
         {/* TTS */}
         <Section title="Text-to-Speech" icon={<Mic className="h-4 w-4 text-accent" />}>
           <div className="flex items-center justify-between">
@@ -633,31 +775,131 @@ export default function ConfigPage() {
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Main Narrator Voice</Label>
                 {(() => {
+                  // For ElevenLabs, pull the live voice library using the saved API key.
+                  if (ttsProvider === "elevenlabs") {
+                    const voices = elevenVoicesQuery.data?.voices ?? [];
+                    const err = elevenVoicesQuery.data?.error;
+                    const isLoading = elevenVoicesQuery.isFetching;
+                    return (
+                      <>
+                        <Select value={ttsMainVoice} onValueChange={setTtsMainVoice}>
+                          <SelectTrigger className="h-8 text-xs bg-secondary border-border">
+                            <SelectValue placeholder={
+                              err === "missing_api_key" ? "Enter API key below first" :
+                              err === "unauthorized" ? "API key rejected" :
+                              err ? "Failed to load voices" :
+                              isLoading ? "Loading voices..." :
+                              voices.length ? "Select a voice..." : "No voices found"
+                            } />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-[380px]">
+                            {voices.map((v) => (
+                              <SelectItem key={v.voice_id} value={v.voice_id}>
+                                {v.name}
+                                {v.category ? ` — ${v.category}` : ""}
+                              </SelectItem>
+                            ))}
+                            {/* Keep the current value selectable even if not in the fetched list */}
+                            {ttsMainVoice && !voices.some(v => v.voice_id === ttsMainVoice) && (
+                              <SelectItem value={ttsMainVoice}>{ttsMainVoice} (saved)</SelectItem>
+                            )}
+                          </SelectContent>
+                        </Select>
+                        {err && (
+                          <p className="text-[10px] text-destructive">
+                            {err === "missing_api_key" ? "Save your ElevenLabs API key below, then click Save All to refresh this list." :
+                             err === "unauthorized" ? "Your ElevenLabs API key was rejected (401)." :
+                             `ElevenLabs error: ${err}`}
+                          </p>
+                        )}
+                        <p className="text-[10px] text-muted-foreground">
+                          Voices are fetched live from your ElevenLabs account. Save the API key and refresh if you add new voices there.
+                        </p>
+                      </>
+                    );
+                  }
+                  // Default: use the provider's static voice list from /api/tts/providers.
                   const currentProvider = providers.find((p) => p.id === ttsProvider);
                   const voiceList = currentProvider?.voices ?? STREAMLABS_VOICES;
                   const detailedList = currentProvider?.voices_detailed;
                   return (
-                    <Select value={ttsMainVoice} onValueChange={setTtsMainVoice}>
-                      <SelectTrigger className="h-8 text-xs bg-secondary border-border">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {voiceList.map((v) => {
-                          const detail = detailedList?.find((d) => d.id === v);
-                          return (
-                            <SelectItem key={v} value={v}>
-                              {detail ? `${detail.name} (${detail.lang}, ${detail.gender})` : v}
-                            </SelectItem>
-                          );
-                        })}
-                      </SelectContent>
-                    </Select>
+                    <>
+                      <Select value={ttsMainVoice} onValueChange={setTtsMainVoice}>
+                        <SelectTrigger className="h-8 text-xs bg-secondary border-border">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {voiceList.map((v) => {
+                            const detail = detailedList?.find((d) => d.id === v);
+                            return (
+                              <SelectItem key={v} value={v}>
+                                {detail ? `${detail.name} (${detail.lang}, ${detail.gender})` : v}
+                              </SelectItem>
+                            );
+                          })}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-[10px] text-muted-foreground">
+                        Used for the post title and body/story text narration.
+                      </p>
+                    </>
                   );
                 })()}
-                <p className="text-[10px] text-muted-foreground">
-                  Used for the post title and body/story text narration.
-                </p>
               </div>
+
+              {ttsProvider === "elevenlabs" && (
+                <div className="rounded-lg border border-border p-3 space-y-3 bg-primary/5">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-3.5 w-3.5 text-primary" />
+                    <span className="text-xs font-medium">ElevenLabs Settings</span>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">API Key</Label>
+                    <Input
+                      type="password"
+                      value={elevenApiKey}
+                      onChange={(e) => setElevenApiKey(e.target.value)}
+                      placeholder="sk_..."
+                      className="h-8 text-xs bg-secondary border-border"
+                    />
+                    <p className="text-[10px] text-muted-foreground">Get one at <code>elevenlabs.io</code> → Profile → API Keys.</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Model</Label>
+                    <Select value={elevenModel} onValueChange={setElevenModel}>
+                      <SelectTrigger className="h-8 text-xs bg-secondary border-border"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="eleven_multilingual_v2">Multilingual v2 (best quality)</SelectItem>
+                        <SelectItem value="eleven_turbo_v2_5">Turbo v2.5 (fast, low latency)</SelectItem>
+                        <SelectItem value="eleven_monolingual_v1">Monolingual v1 (classic English)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Stability ({elevenStability.toFixed(2)})</Label>
+                      <Slider value={[Math.round(elevenStability * 100)]} onValueChange={([v]) => setElevenStability(v / 100)} min={0} max={100} step={1} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Similarity ({elevenSimilarity.toFixed(2)})</Label>
+                      <Slider value={[Math.round(elevenSimilarity * 100)]} onValueChange={([v]) => setElevenSimilarity(v / 100)} min={0} max={100} step={1} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Style ({elevenStyle.toFixed(2)})</Label>
+                      <Slider value={[Math.round(elevenStyle * 100)]} onValueChange={([v]) => setElevenStyle(v / 100)} min={0} max={100} step={1} />
+                    </div>
+                    <div className="flex items-end justify-between pb-1">
+                      <label className="text-xs text-muted-foreground">Speaker Boost</label>
+                      <Switch checked={elevenSpeakerBoost} onCheckedChange={setElevenSpeakerBoost} />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    Lower stability = more emotion/variance. Higher similarity = closer to the voice preset.
+                  </p>
+                </div>
+              )}
 
               <Separator />
 
@@ -712,6 +954,23 @@ export default function ConfigPage() {
                 </p>
               </div>
 
+              <div className="rounded-md border border-border bg-secondary/30 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs text-muted-foreground font-medium">Pre-TTS Cleanup (Ollama)</label>
+                    <p className="text-[10px] text-muted-foreground leading-snug mt-0.5">
+                      Runs your text through local Ollama to expand Reddit shorthand
+                      (<code>tho</code>→<code>though</code>, <code>cuz</code>→<code>because</code>)
+                      and fix typos before sending to paid TTS. Skipped automatically if Ollama is offline.
+                    </p>
+                  </div>
+                  <Switch checked={ttsPreNormalize} onCheckedChange={setTtsPreNormalize} />
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Uses the <code>gemini.ollama_url</code> and AI Hooks model. Cached per-post so Re-render doesn't re-query.
+                </p>
+              </div>
+
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Output Format</Label>
                 <Select value={ttsFormat} onValueChange={setTtsFormat}>
@@ -728,7 +987,9 @@ export default function ConfigPage() {
             </>
           )}
         </Section>
+        </div>
 
+        <div className={activeTab === "video" ? "space-y-5" : "hidden"}>
         {/* Video */}
         <Section title="Video Rendering" icon={<Film className="h-4 w-4 text-warning" />}>
           <div className="space-y-1">
@@ -797,7 +1058,228 @@ export default function ConfigPage() {
             <p className="text-[10px] text-muted-foreground">Shown on thumbnails to prevent uncredited copying. Leave blank to disable.</p>
           </div>
         </Section>
+        </div>
 
+        <div className={activeTab === "captions" ? "" : "hidden"}>
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-5 items-start">
+        <div className="space-y-5 min-w-0">
+        {/* Captions */}
+        <Section title="Captions" icon={<Type className="h-4 w-4 text-primary" />}>
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-xs text-muted-foreground">Enable Captions</label>
+              <p className="text-[10px] text-muted-foreground">Turn off to render video with no on-screen text</p>
+            </div>
+            <Switch checked={capEnabled} onCheckedChange={setCapEnabled} />
+          </div>
+
+          {capEnabled && (
+            <>
+              <Separator />
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">
+                  Font {fontsData?.fonts ? `(${fontsData.fonts.length} installed)` : ""}
+                </Label>
+                {(() => {
+                  const fonts = fontsData?.fonts ?? [];
+                  const values = new Set(fonts.map((f) => f.path));
+                  const currentInList = values.has(capFontPath);
+                  const selectValue = currentInList ? capFontPath : "__custom__";
+                  return (
+                    <>
+                      <Select
+                        value={selectValue}
+                        onValueChange={(v) => {
+                          if (v === "__custom__") return;
+                          setCapFontPath(v);
+                        }}
+                      >
+                        <SelectTrigger className="h-8 text-xs bg-secondary border-border">
+                          <SelectValue placeholder={fonts.length ? "Select a font..." : "Loading fonts..."} />
+                        </SelectTrigger>
+                        <SelectContent className="max-h-[320px]">
+                          <SelectItem value="__custom__">Custom path (edit below)</SelectItem>
+                          {fonts.map((f) => (
+                            <SelectItem key={f.path} value={f.path}>
+                              <span style={{ fontFamily: `"${f.family}", sans-serif` }}>
+                                {f.family}{f.style && f.style.toLowerCase() !== "regular" ? ` — ${f.style}` : ""}
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        value={capFontPath}
+                        onChange={(e) => setCapFontPath(e.target.value)}
+                        placeholder="arial.ttf or absolute .ttf path"
+                        className="h-8 text-xs bg-secondary border-border font-mono"
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        Pick from installed fonts, or type a name/path — PIL resolves <code>arial.ttf</code> from the Windows fonts folder automatically.
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Font Size</Label>
+                  <Input type="number" value={capFontSize} onChange={(e) => setCapFontSize(+e.target.value)} className="h-8 text-xs bg-secondary border-border" min={10} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Words per Caption (0 = whole)</Label>
+                  <Input type="number" value={capWordsPerCaption} onChange={(e) => setCapWordsPerCaption(+e.target.value)} className="h-8 text-xs bg-secondary border-border" min={0} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Text Color</Label>
+                  <Input value={capColor} onChange={(e) => setCapColor(e.target.value)} placeholder="white or #ffffff" className="h-8 text-xs bg-secondary border-border" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Stroke Color</Label>
+                  <Input value={capStrokeColor} onChange={(e) => setCapStrokeColor(e.target.value)} placeholder="black or #000000" className="h-8 text-xs bg-secondary border-border" />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Stroke Width ({capStrokeWidth}px)</Label>
+                <Slider value={[capStrokeWidth]} onValueChange={([v]) => setCapStrokeWidth(v)} min={0} max={10} step={1} />
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="text-xs text-muted-foreground">UPPERCASE</label>
+                <Switch checked={capUppercase} onCheckedChange={setCapUppercase} />
+              </div>
+
+              <Separator />
+              <div className="flex items-center justify-between">
+                <label className="text-xs text-muted-foreground">Background Box</label>
+                <Switch checked={capBgEnabled} onCheckedChange={setCapBgEnabled} />
+              </div>
+              {capBgEnabled && (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">BG Color</Label>
+                      <Input value={capBgColor} onChange={(e) => setCapBgColor(e.target.value)} placeholder="black or #000000" className="h-8 text-xs bg-secondary border-border" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Corner Radius ({capCornerRadius}px)</Label>
+                      <Slider value={[capCornerRadius]} onValueChange={([v]) => setCapCornerRadius(v)} min={0} max={80} step={1} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">BG Opacity ({capBgOpacity})</Label>
+                      <Slider value={[capBgOpacity]} onValueChange={([v]) => setCapBgOpacity(v)} min={0} max={255} step={1} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Padding ({capPadding}px)</Label>
+                      <Slider value={[capPadding]} onValueChange={([v]) => setCapPadding(v)} min={0} max={100} step={1} />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <Separator />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Position</Label>
+                  <Select value={capPosition} onValueChange={(v) => setCapPosition(v as "center" | "bottom" | "top")}>
+                    <SelectTrigger className="h-8 text-xs bg-secondary border-border"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="center">Center</SelectItem>
+                      <SelectItem value="bottom">Bottom (third)</SelectItem>
+                      <SelectItem value="top">Top (third)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Position Offset ({capPositionOffset}px)</Label>
+                  <Slider value={[capPositionOffset]} onValueChange={([v]) => setCapPositionOffset(v)} min={-400} max={400} step={5} />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Max Width ({Math.round(capMaxWidthPct * 100)}% of frame)</Label>
+                <Slider value={[Math.round(capMaxWidthPct * 100)]} onValueChange={([v]) => setCapMaxWidthPct(v / 100)} min={20} max={100} step={1} />
+              </div>
+
+              <Separator />
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Animation</Label>
+                <Select value={capAnimation} onValueChange={(v) => setCapAnimation(v as "none" | "fade" | "pop" | "fade_pop")}>
+                  <SelectTrigger className="h-8 text-xs bg-secondary border-border"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None</SelectItem>
+                    <SelectItem value="fade">Fade in/out</SelectItem>
+                    <SelectItem value="pop">Pop (scale-in)</SelectItem>
+                    <SelectItem value="fade_pop">Fade + Pop</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[10px] text-muted-foreground">
+                  Animations require <code>engine = moviepy</code>. FFmpeg engine ignores them.
+                </p>
+              </div>
+              {capAnimation !== "none" && (
+                <>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Animation Duration ({capAnimationDuration.toFixed(2)}s)</Label>
+                    <Slider value={[Math.round(capAnimationDuration * 100)]} onValueChange={([v]) => setCapAnimationDuration(v / 100)} min={2} max={80} step={1} />
+                  </div>
+                  {(capAnimation === "pop" || capAnimation === "fade_pop") && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Pop Start Scale ({capPopStartScale.toFixed(2)})</Label>
+                        <Slider value={[Math.round(capPopStartScale * 100)]} onValueChange={([v]) => setCapPopStartScale(v / 100)} min={10} max={100} step={1} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Pop Overshoot ({capPopOvershoot.toFixed(2)})</Label>
+                        <Slider value={[Math.round(capPopOvershoot * 100)]} onValueChange={([v]) => setCapPopOvershoot(v / 100)} min={100} max={150} step={1} />
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-xs text-muted-foreground">Show Attribution</label>
+                  <p className="text-[10px] text-muted-foreground">Shows "u/&lt;branding&gt;" above the caption per segment</p>
+                </div>
+                <Switch checked={capAttribution} onCheckedChange={setCapAttribution} />
+              </div>
+            </>
+          )}
+        </Section>
+        </div>
+        <div className="xl:sticky xl:top-4 self-start">
+          <CaptionsPreview
+            enabled={capEnabled}
+            fontPath={capFontPath}
+            fontSize={capFontSize}
+            color={capColor}
+            strokeColor={capStrokeColor}
+            strokeWidth={capStrokeWidth}
+            bgEnabled={capBgEnabled}
+            bgColor={capBgColor}
+            bgOpacity={capBgOpacity}
+            padding={capPadding}
+            cornerRadius={capCornerRadius}
+            maxWidthPct={capMaxWidthPct}
+            position={capPosition}
+            positionOffset={capPositionOffset}
+            wordsPerCaption={capWordsPerCaption}
+            uppercase={capUppercase}
+            animation={capAnimation}
+            animationDuration={capAnimationDuration}
+            popOvershoot={capPopOvershoot}
+            popStartScale={capPopStartScale}
+          />
+        </div>
+        </div>
+        </div>
+
+        <div className={activeTab === "ai" ? "space-y-5" : "hidden"}>
         {/* AI Hooks */}
         <Section title="AI Hooks" icon={<Sparkles className="h-4 w-4 text-primary" />}>
           <div className="rounded-md bg-secondary/50 border border-border p-3">
@@ -995,7 +1477,9 @@ export default function ConfigPage() {
             </div>
           )}
         </Section>
+        </div>
 
+        <div className={activeTab === "output" ? "space-y-5" : "hidden"}>
         {/* Output & Discord */}
         <div className="space-y-5">
           <Section title="Output Paths" icon={<FolderOutput className="h-4 w-4 text-success" />}>
@@ -1029,6 +1513,8 @@ export default function ConfigPage() {
               <Switch checked={uploadMedia} onCheckedChange={setUploadMedia} />
             </div>
           </Section>
+        </div>
+        </div>
         </div>
       </div>
 

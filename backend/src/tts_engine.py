@@ -416,6 +416,268 @@ class StreamlabsTTS:
         return results
 
 
+class ElevenLabsTTS:
+    """
+    ElevenLabs TTS integration (cloud, paid / metered).
+    Mirrors the StreamlabsTTS public surface so the pipeline can treat it
+    identically: synthesize(), segment_text(), generate_segments().
+    """
+
+    API_URL_TMPL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    VOICES_URL   = "https://api.elevenlabs.io/v2/voices"
+    MAX_TEXT_LENGTH = 1000  # well under the 5000-char hard limit; keeps caption chunks reasonable
+
+    # Voice IDs shift over time in ElevenLabs' default library, so we don't
+    # hardcode them. Anything that isn't already a 20-char voice_id is resolved
+    # against /v2/voices at synthesis time.
+    PRESET_VOICES: dict = {}
+
+    def __init__(self, voice: str = "", output_dir: str = "audio",
+                 api_key: str = "", model_id: str = "eleven_multilingual_v2",
+                 stability: float = 0.5, similarity_boost: float = 0.75,
+                 style: float = 0.0, use_speaker_boost: bool = True,
+                 cancel_check=None, delay_between_requests: float = 0.0):
+        self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY", "")
+        self.output_dir = output_dir
+        self.cancel_check = cancel_check
+        self.delay_between_requests = delay_between_requests
+        self.model_id = model_id
+        self.voice_settings = {
+            "stability": float(stability),
+            "similarity_boost": float(similarity_boost),
+            "style": float(style),
+            "use_speaker_boost": bool(use_speaker_boost),
+        }
+        os.makedirs(output_dir, exist_ok=True)
+        self.voice = voice or ""
+        self._voice_cache: Optional[List[dict]] = None
+        self.voice_id = self._resolve_voice_id(self.voice)
+
+    @staticmethod
+    def _looks_like_voice_id(v: str) -> bool:
+        # ElevenLabs voice_ids are 20 alphanumeric chars.
+        return bool(v) and len(v) == 20 and v.isalnum()
+
+    def _list_account_voices(self) -> List[dict]:
+        """Fetch and cache the user's voice library."""
+        if self._voice_cache is not None:
+            return self._voice_cache
+        if not self.api_key:
+            self._voice_cache = []
+            return self._voice_cache
+        try:
+            r = requests.get(self.VOICES_URL,
+                             headers={"xi-api-key": self.api_key, "Accept": "application/json"},
+                             timeout=15)
+            r.raise_for_status()
+            self._voice_cache = r.json().get("voices", []) or []
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️  ElevenLabs: could not list account voices: {e}")
+            self._voice_cache = []
+        return self._voice_cache
+
+    def _resolve_voice_id(self, voice: str) -> str:
+        """Accept a raw voice_id or a voice name; look up names in the account library."""
+        if self._looks_like_voice_id(voice):
+            return voice
+        # Otherwise treat as a name and find it in the account.
+        voices = self._list_account_voices()
+        if not voices:
+            return voice  # fall through; will error at synth time with a clear message
+        lower = (voice or "").strip().lower()
+        if lower:
+            for v in voices:
+                if (v.get("name") or "").strip().lower() == lower:
+                    return v.get("voice_id") or voice
+        # No exact match — fall back to the first available voice and warn.
+        fallback = voices[0]
+        print(f"⚠️  ElevenLabs: voice '{voice}' not found in your account. Using '{fallback.get('name')}' instead.")
+        return fallback.get("voice_id") or voice
+
+    def _generate_filename(self, text: str, voice: str) -> str:
+        text_hash = hashlib.md5(f"{text}_{voice}_{self.model_id}".encode()).hexdigest()[:12]
+        safe_voice = "".join(c for c in voice if c.isalnum())[:16] or "el"
+        return f"el_{safe_voice}_{text_hash}.mp3"
+
+    # Reuse the same segmentation logic as Streamlabs by delegating to a local impl.
+    def _hard_split(self, text: str) -> List[str]:
+        words = text.split()
+        out, current = [], ""
+        for w in words:
+            if not current:
+                current = w
+            elif len(current) + 1 + len(w) <= self.MAX_TEXT_LENGTH:
+                current += " " + w
+            else:
+                out.append(current); current = w
+        if current:
+            out.append(current)
+        final = []
+        for seg in out:
+            if len(seg) > self.MAX_TEXT_LENGTH:
+                for i in range(0, len(seg), self.MAX_TEXT_LENGTH):
+                    final.append(seg[i:i + self.MAX_TEXT_LENGTH])
+            else:
+                final.append(seg)
+        return final
+
+    def segment_text(self, text: str) -> List[str]:
+        """Split into sentence-ish chunks under MAX_TEXT_LENGTH, preserving [PAUSE:N]."""
+        if not text or not text.strip():
+            return []
+        import re
+        pause_split = re.split(r'(\[PAUSE:\d+\])', text)
+        final = []
+        for part in pause_split:
+            part = part.strip()
+            if not part:
+                continue
+            if re.match(r'^\[PAUSE:\d+\]$', part):
+                final.append(part)
+                continue
+            sentences = re.split(r'([.!?]+)', part)
+            combined = []
+            for i in range(0, len(sentences) - 1, 2):
+                combined.append(sentences[i] + sentences[i + 1])
+            if len(sentences) % 2 == 1:
+                combined.append(sentences[-1])
+            buf = ""
+            for s in combined:
+                s = s.strip()
+                if not s:
+                    continue
+                if len(s) > self.MAX_TEXT_LENGTH:
+                    if buf:
+                        final.append(buf); buf = ""
+                    final.extend(self._hard_split(s))
+                    continue
+                if not buf:
+                    buf = s
+                elif len(buf) + 1 + len(s) <= self.MAX_TEXT_LENGTH:
+                    buf += " " + s
+                else:
+                    final.append(buf); buf = s
+            if buf:
+                final.append(buf)
+        return final
+
+    def synthesize(self, text: str, output_filename: Optional[str] = None, max_retries: int = 3) -> Optional[str]:
+        if not text or not text.strip():
+            return None
+        if not self.api_key:
+            print("❌ ElevenLabs: missing api_key (set tts.elevenlabs_api_key in config.json)")
+            return None
+
+        if not output_filename:
+            output_filename = self._generate_filename(text, self.voice)
+        output_path = os.path.join(self.output_dir, output_filename)
+
+        if os.path.exists(output_path):
+            print(f"✓ Using cached audio: {output_filename}")
+            return output_path
+
+        # Chunk if the text is too long for one request.
+        if len(text) > self.MAX_TEXT_LENGTH:
+            chunks = self.segment_text(text)
+            pieces = []
+            for i, chunk in enumerate(chunks):
+                if self.cancel_check:
+                    self.cancel_check()
+                piece_name = f"el_tmp_{int(time.time())}_{i}.mp3"
+                p = self.synthesize(chunk, output_filename=piece_name, max_retries=max_retries)
+                if not p:
+                    return None
+                pieces.append(p)
+            try:
+                with open(output_path, 'wb') as out:
+                    for p in pieces:
+                        with open(p, 'rb') as f:
+                            out.write(f.read())
+                        try: os.remove(p)
+                        except: pass
+                return output_path
+            except Exception as e:
+                print(f"❌ ElevenLabs: chunk combine failed: {e}")
+                return None
+
+        url = self.API_URL_TMPL.format(voice_id=self.voice_id)
+        headers = {
+            "xi-api-key": self.api_key,
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg",
+        }
+        body = {
+            "text": text,
+            "model_id": self.model_id,
+            "voice_settings": self.voice_settings,
+        }
+        for attempt in range(max_retries):
+            if self.cancel_check:
+                self.cancel_check()
+            try:
+                if attempt > 0 or self.delay_between_requests > 0:
+                    time.sleep(self.delay_between_requests * (2 ** attempt))
+                resp = requests.post(url, headers=headers, json=body, timeout=60)
+                if resp.status_code == 401:
+                    print("❌ ElevenLabs: 401 unauthorized — check api_key")
+                    return None
+                if resp.status_code == 404:
+                    print(f"❌ ElevenLabs: voice_id '{self.voice_id}' not found for this account. "
+                          f"Open the TTS tab and pick a voice from the dropdown.")
+                    return None
+                if resp.status_code == 422:
+                    print(f"❌ ElevenLabs: 422 validation — {resp.text[:200]}")
+                    return None
+                if resp.status_code == 429:
+                    wait = 2.0 * (2 ** attempt)
+                    print(f"⚠️  ElevenLabs rate-limited, waiting {wait:.1f}s...")
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                with open(output_path, 'wb') as f:
+                    f.write(resp.content)
+                print(f"✓ Generated TTS: {output_filename} (ElevenLabs/{self.voice})")
+                return output_path
+            except requests.exceptions.RequestException as e:
+                print(f"✗ ElevenLabs error (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt >= max_retries - 1:
+                    return None
+        return None
+
+    def _generate_silence(self, duration_seconds: int, output_path: str) -> str:
+        import struct, wave
+        wav_path = output_path.replace('.mp3', '.wav') if output_path.endswith('.mp3') else output_path
+        sample_rate = 22050
+        num_samples = sample_rate * duration_seconds
+        with wave.open(wav_path, 'w') as wf:
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sample_rate)
+            wf.writeframes(struct.pack('<' + 'h' * num_samples, *([0] * num_samples)))
+        return wav_path
+
+    def generate_segments(self, text: str, progress_callback=None, cancel_check=None) -> List[dict]:
+        import re
+        segments = self.segment_text(text)
+        results = []
+        for i, seg in enumerate(segments):
+            if cancel_check:
+                cancel_check()
+            pause = re.match(r'^\[PAUSE:(\d+)\]$', seg)
+            if pause:
+                secs = int(pause.group(1))
+                sfile = f"pause_{int(time.time())}_{i}_{secs}s.wav"
+                spath = self._generate_silence(secs, os.path.join(self.output_dir, sfile))
+                results.append({'text': f'[{secs}s pause]', 'audio_path': spath, 'is_pause': True})
+                if progress_callback:
+                    progress_callback(i + 1, len(segments), f"[Pause {secs}s]")
+                continue
+            audio_path = self.synthesize(seg, output_filename=self._generate_filename(seg, self.voice))
+            if audio_path:
+                results.append({'text': seg, 'audio_path': audio_path})
+            if progress_callback:
+                progress_callback(i + 1, len(segments), seg)
+        return results
+
+
 class LazyPyTikTokTTS:
     """
     TikTok TTS via the lazypy.ro proxy API.
@@ -671,7 +933,7 @@ class LazyPyTikTokTTS:
 if getattr(sys, "frozen", False):
     PROJECT_ROOT = os.path.dirname(sys.executable)
 else:
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class TTSManager:
     """

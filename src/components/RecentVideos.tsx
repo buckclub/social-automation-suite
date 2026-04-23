@@ -90,7 +90,7 @@ export function RecentVideos() {
               <div className="relative flex h-16 w-24 shrink-0 items-center justify-center rounded-md bg-secondary overflow-hidden">
                 {video.has_thumbnails ? (
                   <img
-                    src={`${API_BASE}/api/videos/${video.id}/thumbnail?part=0`}
+                    src={`${API_BASE}/api/videos/${video.id}/thumbnail?part=0&v=${encodeURIComponent(video.created_at || "")}`}
                     alt={video.title}
                     className="absolute inset-0 w-full h-full object-cover"
                     onError={(e) => { e.currentTarget.style.display = 'none'; }}
@@ -147,6 +147,19 @@ export function RecentVideos() {
                     {resumeMutation.isPending ? "Resuming..." : "Resume Video"}
                   </Button>
                 )}
+                {video.has_video && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    title="Re-render this video with current caption/video settings. Reuses existing audio — no TTS charges."
+                    className="mt-1.5 h-6 text-[10px] gap-1 px-2 border-accent/40 text-accent hover:bg-accent/10"
+                    onClick={(e) => handleResume(e, video.id)}
+                    disabled={resumeMutation.isPending}
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    {resumeMutation.isPending ? "Re-rendering..." : "Re-render"}
+                  </Button>
+                )}
               </div>
             </motion.div>
           ))}
@@ -170,7 +183,7 @@ export function RecentVideos() {
                 controls
                 autoPlay
                 className="w-full rounded-lg bg-secondary max-h-[60vh]"
-                src={`${API_BASE}/api/videos/${selected.video.id}/stream?part=${selected.part}`}
+                src={`${API_BASE}/api/videos/${selected.video.id}/stream?part=${selected.part}&v=${encodeURIComponent(selected.video.created_at || "")}`}
               />
               <div className="flex items-center gap-2">
                 {partCount(selected.video) > 1 && (

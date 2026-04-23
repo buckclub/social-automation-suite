@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 if getattr(sys, "frozen", False):
     PROJECT_ROOT = os.path.dirname(sys.executable)
 else:
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from gemini_hooks import _call_ai, DEFAULT_OLLAMA_URL
 

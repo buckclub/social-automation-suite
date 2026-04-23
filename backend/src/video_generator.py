@@ -39,28 +39,30 @@ except ImportError:
 if getattr(sys, "frozen", False):
     PROJECT_ROOT = os.path.dirname(sys.executable)
 else:
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class VideoGenerator:
     """
     Generates videos from audio segments and background footage.
     """
     
-    def __init__(self, mode: str = 'reel', use_gpu: bool = False, threads: int = 0, hw_accel: str = 'none'):
+    def __init__(self, mode: str = 'reel', use_gpu: bool = False, threads: int = 0, hw_accel: str = 'none',
+                 captions_config: Optional[dict] = None):
         """
         Initialize video generator.
         mode: 'reel' (9:16) or 'full' (16:9)
         use_gpu: Whether to use hardware encoding (legacy, overridden by hw_accel)
         threads: Number of threads for writing video (0 = auto/max)
         hw_accel: Hardware acceleration type: 'none' (CPU), 'nvenc' (NVIDIA), 'amf' (AMD)
+        captions_config: Caption appearance/timing config (see _caption_params).
         """
         self.mode = mode.lower()
         self.hw_accel = hw_accel if hw_accel in ('none', 'nvenc', 'amf') else ('nvenc' if use_gpu else 'none')
         self.use_gpu = self.hw_accel != 'none'
         self.threads = threads if threads and threads > 0 else os.cpu_count() or 4
-        
+
         print(f"   ⚙️  Video Processor configured with {self.threads} threads.")
-        
+
         if self.mode == 'reel' or self.mode == 'short_reel':
             self.width = 1080
             self.height = 1920
@@ -69,42 +71,180 @@ class VideoGenerator:
             self.width = 1920
             self.height = 1080
             self.aspect_ratio = 16/9
-            
+
         self.backgrounds_dir = os.path.join(PROJECT_ROOT, "backgrounds")
         if not os.path.exists(self.backgrounds_dir):
             os.makedirs(self.backgrounds_dir)
+
+        self.captions = self._caption_params(captions_config or {})
+
+    def _caption_params(self, cfg: dict) -> dict:
+        """Normalize caption config with sensible defaults."""
+        is_reel = self.mode in ('reel', 'short_reel')
+        return {
+            'enabled':         bool(cfg.get('enabled', True)),
+            'font_path':       cfg.get('font_path') or 'arial.ttf',
+            'font_size':       int(cfg.get('font_size', 70 if is_reel else 50)),
+            'color':           cfg.get('color', 'white'),
+            'stroke_color':    cfg.get('stroke_color', 'black'),
+            'stroke_width':    int(cfg.get('stroke_width', 0)),
+            'bg_color':        cfg.get('bg_color', 'black'),   # null/"" to disable box
+            'bg_opacity':      int(cfg.get('bg_opacity', 160)),
+            'padding':         int(cfg.get('padding', 40)),
+            'corner_radius':   int(cfg.get('corner_radius', 20)),
+            'max_width_pct':   float(cfg.get('max_width_pct', 0.8)),
+            'position':        cfg.get('position', 'center'),   # 'center' | 'bottom' | 'top'
+            'position_offset': int(cfg.get('position_offset', 0)),
+            'words_per_caption': int(cfg.get('words_per_caption', 0)),  # 0 = whole segment
+            'uppercase':       bool(cfg.get('uppercase', False)),
+            'attribution':     bool(cfg.get('attribution', True)),
+            # Animation: 'none' | 'fade' | 'pop' | 'fade_pop'. MoviePy engine only.
+            'animation':       (cfg.get('animation') or 'none').lower(),
+            'animation_duration': float(cfg.get('animation_duration', 0.15)),
+            'pop_overshoot':   float(cfg.get('pop_overshoot', 1.12)),
+            'pop_start_scale': float(cfg.get('pop_start_scale', 0.7)),
+        }
+
+    def _caption_xy(self, w: int, h: int) -> tuple:
+        """Compute top-left coords for a caption box sized wxh."""
+        p = self.captions
+        x = (self.width - w) // 2
+        if p['position'] == 'bottom':
+            y = int(self.height * 0.78) - h // 2 + p['position_offset']
+        elif p['position'] == 'top':
+            y = int(self.height * 0.18) - h // 2 + p['position_offset']
+        else:
+            y = (self.height - h) // 2 + p['position_offset']
+        return x, y
+
+    @staticmethod
+    def _chunk_segment(text: str, duration: float, words_per_caption: int):
+        """
+        Split a segment text into chunks of N words, assigning each chunk a
+        duration proportional to its character count. Returns [(text, dur), ...].
+        When words_per_caption <= 0, returns a single chunk with the whole text.
+        """
+        text = text.strip()
+        if words_per_caption <= 0 or not text:
+            return [(text, duration)]
+        words = text.split()
+        if not words:
+            return [(text, duration)]
+        chunks = [' '.join(words[i:i + words_per_caption])
+                  for i in range(0, len(words), words_per_caption)]
+        total_chars = sum(len(c) for c in chunks) or 1
+        out = []
+        allocated = 0.0
+        for i, c in enumerate(chunks):
+            if i == len(chunks) - 1:
+                dur = max(0.0, duration - allocated)  # absorb rounding
+            else:
+                dur = duration * (len(c) / total_chars)
+                allocated += dur
+            out.append((c, dur))
+        return out
+
+    def _animate_clip(self, clip, chunk_dur: float):
+        """
+        Apply the configured caption animation to an ImageClip.
+        Safe against very short chunks — animation is capped at 40% of duration.
+        """
+        anim = self.captions['animation']
+        if anim == 'none' or chunk_dur <= 0:
+            return clip
+
+        d = min(self.captions['animation_duration'], max(0.02, chunk_dur * 0.4))
+
+        if anim in ('fade', 'fade_pop'):
+            clip = clip.crossfadein(d).crossfadeout(d)
+
+        if anim in ('pop', 'fade_pop'):
+            start_scale = self.captions['pop_start_scale']
+            overshoot = self.captions['pop_overshoot']
+            def scale_at(t, _d=d, _s=start_scale, _o=overshoot):
+                if t >= _d:
+                    return 1.0
+                # Ease: start → overshoot at 70% → settle to 1.0
+                p = t / _d
+                if p < 0.7:
+                    k = p / 0.7
+                    return _s + (_o - _s) * k
+                k = (p - 0.7) / 0.3
+                return _o + (1.0 - _o) * k
+            clip = clip.resize(scale_at)
+
+        return clip
             
-    def create_text_image(self, text: str, fontsize: int = 60, color: str = 'white', 
+    def create_text_image(self, text: str, fontsize: int = 60, color: str = 'white',
                          bg_color: Optional[str] = None, max_width: int = 800,
-                         use_bg_box: bool = False, bg_opacity: int = 255, padding: int = 40) -> str:
+                         use_bg_box: bool = False, bg_opacity: int = 255, padding: int = 40,
+                         font_path: Optional[str] = None, stroke_color: str = 'black',
+                         stroke_width: Optional[int] = None, corner_radius: int = 20,
+                         uppercase: bool = False) -> str:
         """
         Create an image with text using Pillow.
         Returns path to temporary image file.
         """
+        if uppercase:
+            text = text.upper()
         # Create a dummy image to calculate text size
-        # Try to load a nicer font if available, else default
-        try:
-            # Arial usually exists on Windows
-            font = ImageFont.truetype("arial.ttf", fontsize)
-        except OSError:
+        # Try to load the requested font; fall back to arial then default
+        font = None
+        for candidate in (font_path, 'arial.ttf'):
+            if not candidate:
+                continue
+            try:
+                font = ImageFont.truetype(candidate, fontsize)
+                break
+            except OSError:
+                continue
+        if font is None:
             font = ImageFont.load_default()
             
-        # Wrap text
-        avg_char_width = fontsize * 0.5  # Rough estimate
-        chars_per_line = int(max_width / avg_char_width)
-        lines = textwrap.wrap(text, width=chars_per_line)
+        # Wrap text to fit `max_width` in pixels. The old avg-char-width estimate
+        # was inaccurate for wide display fonts (Gotham, Impact etc) and caused
+        # rendered PNGs to overflow the frame. Using the actual font metrics
+        # guarantees the text fits.
+        budget = max(1, max_width - 2 * padding - 2 * max(0, stroke_width or 0))
+        words = text.split()
+        lines: list[str] = []
+        if not words:
+            lines = [""]
+        else:
+            current = words[0]
+            # If a single word exceeds the budget, shrink the font until it fits.
+            while font.getlength(current) > budget and fontsize > 10:
+                fontsize -= 2
+                try:
+                    font = ImageFont.truetype(font_path or 'arial.ttf', fontsize)
+                except OSError:
+                    font = ImageFont.load_default()
+                budget = max(1, max_width - 2 * padding - 2 * max(0, stroke_width or 0))
+            for w in words[1:]:
+                candidate = current + " " + w
+                if font.getlength(candidate) <= budget:
+                    current = candidate
+                else:
+                    lines.append(current)
+                    current = w
+                    while font.getlength(current) > budget and fontsize > 10:
+                        fontsize -= 2
+                        try:
+                            font = ImageFont.truetype(font_path or 'arial.ttf', fontsize)
+                        except OSError:
+                            font = ImageFont.load_default()
+                        budget = max(1, max_width - 2 * padding - 2 * max(0, stroke_width or 0))
+            lines.append(current)
         wrapped_text = "\n".join(lines)
-        
-        # Calculate size
+
+        # Resolve stroke width up-front so it's included in size measurement.
+        sw_measure = stroke_width if stroke_width is not None else (0 if use_bg_box else 3)
+
         dummy_draw = ImageDraw.Draw(Image.new('RGBA', (1, 1)))
-        bbox = dummy_draw.multiline_textbbox((0, 0), wrapped_text, font=font)
+        bbox = dummy_draw.multiline_textbbox((0, 0), wrapped_text, font=font, stroke_width=sw_measure)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
-        
-        # Add padding
-        # Add padding
-        # If using a background box, we might want different padding
-        
+
         img_width = text_width + padding * 2
         img_height = text_height + padding * 2
         
@@ -139,8 +279,8 @@ class VideoGenerator:
             
             # Draw rounded rectangle (pill shape-ish)
             draw.rounded_rectangle(
-                [(0, 0), (img_width, img_height)], 
-                radius=20, 
+                [(0, 0), (img_width, img_height)],
+                radius=corner_radius,
                 fill=box_color
             )
             
@@ -154,18 +294,21 @@ class VideoGenerator:
             draw = ImageDraw.Draw(img)
             
         
-        # Draw text (with outline/stroke for better visibility)
-        stroke_width = 3 if not use_bg_box else 0 # No stroke needed if we have a box usually, but let's see
-        if use_bg_box:
-             stroke_width = 0 # Clean look on box
-             
-        stroke_color = 'black'
-        
+        # Draw text (with outline/stroke for better visibility). Caller may
+        # override; otherwise default to 3px stroke on transparent bg, 0 on box.
+        if stroke_width is None:
+            stroke_width = 0 if use_bg_box else 3
+
+        # Offset the text by (-bbox_min + padding) so the stroke on the left/top
+        # side stays inside the canvas.
+        draw_x = padding - bbox[0]
+        draw_y = padding - bbox[1]
+
         draw.multiline_text(
-            (padding, padding), 
-            wrapped_text, 
-            font=font, 
-            fill=color, 
+            (draw_x, draw_y),
+            wrapped_text,
+            font=font,
+            fill=color,
             align='center',
             stroke_width=stroke_width,
             stroke_fill=stroke_color
@@ -178,6 +321,26 @@ class VideoGenerator:
         temp_file.close()
         
         return temp_file.name
+
+    def _render_caption_image(self, text: str) -> str:
+        """Render a single caption PNG using the normalized caption config."""
+        p = self.captions
+        use_bg = bool(p['bg_color'])
+        return self.create_text_image(
+            text,
+            fontsize=p['font_size'],
+            color=p['color'],
+            max_width=int(self.width * p['max_width_pct']),
+            use_bg_box=use_bg,
+            bg_color=p['bg_color'] if use_bg else None,
+            bg_opacity=p['bg_opacity'],
+            padding=p['padding'],
+            font_path=p['font_path'],
+            stroke_color=p['stroke_color'],
+            stroke_width=p['stroke_width'],
+            corner_radius=p['corner_radius'],
+            uppercase=p['uppercase'],
+        )
 
     def get_random_background(self, duration: float) -> VideoFileClip:
         """
@@ -277,36 +440,40 @@ class VideoGenerator:
                 print(f"     Processing segment {i+1}/{total_segments}...")
             segment_duration = audio_clips[i].duration
             author = segment.get('author', 'Anonymous')
-            
-            # Subtitle
-            text_img_path = self.create_text_image(
-                segment['text'], 
-                fontsize=70 if self.mode == 'reel' else 50,
-                color='white',
-                max_width=int(self.width * 0.8),
-                use_bg_box=True,
-                bg_color='black',
-                bg_opacity=160, # Slightly more opaque
-                padding=40      # Increased padding (was 20)
+
+            if not self.captions['enabled']:
+                current_time += segment_duration
+                continue
+
+            # Split segment text into word-chunks with proportional durations
+            chunks = self._chunk_segment(
+                segment['text'], segment_duration, self.captions['words_per_caption']
             )
-            temp_images.append(text_img_path)
-            
-            # Create text clip first to get dimensions
-            txt_clip = (ImageClip(text_img_path)
-                       .set_start(current_time)
-                       .set_duration(segment_duration)
-                       .set_position(('center', 'center')))
-            
-            subtitle_clips.append(txt_clip)
-            
-            # Calculate absolute position of the centered subtitle clip
-            # MoviePy uses (center, center) so top-left is:
-            subtitle_w, subtitle_h = txt_clip.size
-            subtitle_x = (self.width - subtitle_w) // 2
-            subtitle_y = (self.height - subtitle_h) // 2
-            
-            # Attribution — show branding handle instead of OP for privacy
-            attr_text = f"u/{branding.strip()}" if branding and branding.strip() else None
+            chunk_start = current_time
+            first_chunk_xy = None
+            for chunk_text, chunk_dur in chunks:
+                if not chunk_text:
+                    chunk_start += chunk_dur
+                    continue
+                text_img_path = self._render_caption_image(chunk_text)
+                temp_images.append(text_img_path)
+                txt_clip_tmp = ImageClip(text_img_path)
+                cw, ch = txt_clip_tmp.size
+                cx, cy = self._caption_xy(cw, ch)
+                if first_chunk_xy is None:
+                    first_chunk_xy = (cx, cy)
+                txt_clip = (txt_clip_tmp
+                           .set_duration(chunk_dur)
+                           .set_position((cx, cy)))
+                txt_clip = self._animate_clip(txt_clip, chunk_dur).set_start(chunk_start)
+                subtitle_clips.append(txt_clip)
+                chunk_start += chunk_dur
+
+            subtitle_x, subtitle_y = first_chunk_xy if first_chunk_xy else (0, 0)
+
+            # Attribution — show branding handle instead of OP for privacy.
+            # Rendered once per segment, anchored above the first chunk.
+            attr_text = f"u/{branding.strip()}" if (self.captions['attribution'] and branding and branding.strip()) else None
             if attr_text:
                 attr_img_path = self.create_text_image(
                     attr_text,
@@ -331,22 +498,16 @@ class VideoGenerator:
             
             current_time += segment_duration
 
-        if tail_text and tail_duration and tail_duration > 0:
-            tail_img_path = self.create_text_image(
-                tail_text,
-                fontsize=70 if self.mode == 'reel' else 50,
-                color='white',
-                max_width=int(self.width * 0.8),
-                use_bg_box=True,
-                bg_color='black',
-                bg_opacity=160,
-                padding=40
-            )
+        if self.captions['enabled'] and tail_text and tail_duration and tail_duration > 0:
+            tail_img_path = self._render_caption_image(tail_text)
             temp_images.append(tail_img_path)
-            tail_clip = (ImageClip(tail_img_path)
-                        .set_start(current_time)
+            tail_clip_tmp = ImageClip(tail_img_path)
+            tw, th = tail_clip_tmp.size
+            tx, ty = self._caption_xy(tw, th)
+            tail_clip = (tail_clip_tmp
                         .set_duration(tail_duration)
-                        .set_position(('center', 'center')))
+                        .set_position((tx, ty)))
+            tail_clip = self._animate_clip(tail_clip, tail_duration).set_start(current_time)
             subtitle_clips.append(tail_clip)
         
         # 4. Branding watermark (persistent overlay)
@@ -438,91 +599,82 @@ class VideoGenerator:
             print(f"❌ Error writing video: {e}")
             return None
 
-    def create_full_frame_overlay(self, segment: dict, current_author: str, branding: str = "") -> str:
+    def create_full_frame_overlays(self, segment: dict, duration: float, branding: str = ""):
         """
-        Create a single full-frame transparent PNG containing both subtitle and attribution.
-        This is for the FFmpeg engine to overlay cleanly as a stream.
+        Create one or more full-frame transparent PNGs for a segment.
+        Returns a list of (png_path, duration) tuples so the FFmpeg concat stream
+        can render multiple caption chunks within a single audio segment.
+        Attribution and watermark are painted only on the first chunk's canvas.
         """
-        # 1. Create Subtitle Image
-        text_img_path = self.create_text_image(
-            segment['text'], 
-            fontsize=70 if self.mode == 'reel' else 50,
-            color='white',
-            max_width=int(self.width * 0.8),
-            use_bg_box=True,
-            bg_color='black',
-            bg_opacity=160,
-            padding=40
-        )
-        
-        # 2. Create Base Canvas
-        canvas = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
-        
-        # 3. Paste Subtitle (Center)
-        sub_img = Image.open(text_img_path).convert("RGBA")
-        sub_w, sub_h = sub_img.size
-        sub_x = (self.width - sub_w) // 2
-        sub_y = (self.height - sub_h) // 2
-        canvas.alpha_composite(sub_img, (sub_x, sub_y))
-        
-        # 4. Create Attribution Image — use branding handle instead of OP
-        include_attr = bool(branding and branding.strip())
-        if include_attr:
-            attr_text = f"u/{branding.strip()}"
-            attr_img_path = self.create_text_image(
-                attr_text,
-                fontsize=40 if self.mode == 'reel' else 30,
-                color='#FF4500',
-                max_width=int(self.width * 0.5),
-                use_bg_box=True,
-                bg_color='black',
-                bg_opacity=160,
-                padding=15
-            )
-        
-        # 5. Paste Attribution (Top-Left relative to subtitle)
-        if include_attr:
-            attr_img = Image.open(attr_img_path).convert("RGBA")
-            attr_w, attr_h = attr_img.size
-            attr_x = sub_x
-            attr_y = sub_y - attr_h - 10
-            canvas.alpha_composite(attr_img, (attr_x, attr_y))
-        
-        # 6. Branding watermark (bottom-right)
-        if branding and branding.strip():
-            brand_img_path = self.create_text_image(
-                branding.strip(),
-                fontsize=30,
-                color='white',
-                max_width=int(self.width * 0.4),
-                use_bg_box=True,
-                bg_color='black',
-                bg_opacity=120,
-                padding=12
-            )
-            brand_img = Image.open(brand_img_path).convert("RGBA")
-            bw, bh = brand_img.size
-            canvas.alpha_composite(brand_img, (self.width - bw - 20, self.height - bh - 20))
-            try:
-                os.remove(brand_img_path)
-            except:
-                pass
-
-        # Save Full Frame
         import tempfile
-        temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-        canvas.save(temp_file.name)
-        temp_file.close()
-        
-        # Cleanup small parts
-        try:
-            os.remove(text_img_path)
-            if include_attr:
-                os.remove(attr_img_path)
-        except:
-            pass
-            
-        return temp_file.name
+
+        captions_on = self.captions['enabled']
+        if captions_on:
+            chunks = self._chunk_segment(
+                segment.get('text', ''), duration, self.captions['words_per_caption']
+            )
+        else:
+            # One empty "chunk" so the segment still holds its time slot.
+            chunks = [('', duration)]
+        include_attr = bool(captions_on and self.captions['attribution'] and branding and branding.strip())
+        include_brand = bool(branding and branding.strip())
+
+        out = []
+        for idx, (chunk_text, chunk_dur) in enumerate(chunks):
+            canvas = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
+
+            if chunk_text:
+                sub_path = self._render_caption_image(chunk_text)
+                sub_img = Image.open(sub_path).convert("RGBA")
+                sw, sh = sub_img.size
+                sx, sy = self._caption_xy(sw, sh)
+                canvas.alpha_composite(sub_img, (sx, sy))
+                try: os.remove(sub_path)
+                except: pass
+            else:
+                sx = sy = 0
+
+            # Attribution: only on the first chunk so it doesn't flicker per chunk.
+            if idx == 0 and include_attr:
+                attr_path = self.create_text_image(
+                    f"u/{branding.strip()}",
+                    fontsize=40 if self.mode == 'reel' else 30,
+                    color='#FF4500',
+                    max_width=int(self.width * 0.5),
+                    use_bg_box=True,
+                    bg_color='black',
+                    bg_opacity=160,
+                    padding=15,
+                )
+                attr_img = Image.open(attr_path).convert("RGBA")
+                aw, ah = attr_img.size
+                canvas.alpha_composite(attr_img, (sx, max(0, sy - ah - 10)))
+                try: os.remove(attr_path)
+                except: pass
+
+            # Branding watermark (every chunk, since it's persistent).
+            if include_brand:
+                brand_path = self.create_text_image(
+                    branding.strip(),
+                    fontsize=30,
+                    color='white',
+                    max_width=int(self.width * 0.4),
+                    use_bg_box=True,
+                    bg_color='black',
+                    bg_opacity=120,
+                    padding=12,
+                )
+                brand_img = Image.open(brand_path).convert("RGBA")
+                bw, bh = brand_img.size
+                canvas.alpha_composite(brand_img, (self.width - bw - 20, self.height - bh - 20))
+                try: os.remove(brand_path)
+                except: pass
+
+            tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+            canvas.save(tmp.name)
+            tmp.close()
+            out.append((tmp.name, chunk_dur))
+        return out
 
     def generate_thumbnail(self, title: str, subreddit: str, part_number: int = 1,
                            total_parts: int = 1, output_path: str = "thumbnail.png",
@@ -699,7 +851,11 @@ class VideoGenerator:
         import subprocess
         
         temp_files = [] # Track for cleanup
-        
+
+        if self.captions['animation'] != 'none':
+            print(f"⚠️  Caption animation '{self.captions['animation']}' is ignored by the FFmpeg engine. "
+                  f"Set video.engine = 'moviepy' in config.json to enable animations.")
+
         # Resolve FFmpeg executable
         try:
             import imageio_ffmpeg
@@ -715,6 +871,7 @@ class VideoGenerator:
             total_duration = final_audio.duration + (tail_duration if (tail_text and tail_duration and tail_duration > 0) else 0)
             
             output_dir = os.path.dirname(output_path)
+            os.makedirs(output_dir, exist_ok=True)
             temp_audio_path = os.path.join(output_dir, "ffmpeg_audio_temp.m4a")
             final_audio.write_audiofile(temp_audio_path, codec='aac', logger=None)
             final_audio.close()
@@ -792,36 +949,36 @@ class VideoGenerator:
             temp_files.append(temp_bg_path)
             
             # 3. Generate Overlays
-            print(f"   Generating {len(audio_segments)} overlay frames...")
+            cp = self.captions
+            print(f"   Captions: enabled={cp['enabled']}, font={cp['font_path']}, size={cp['font_size']}, "
+                  f"wpc={cp['words_per_caption']}, pos={cp['position']}, uppercase={cp['uppercase']}")
+            print(f"   Generating overlays for {len(audio_segments)} segments...")
             concat_lines = []
-            
+            total_chunks = 0
+
             current_author = None
-            
+
             for i, segment in enumerate(audio_segments):
-                if i % 10 == 0: print(f"     Processing segment {i+1}/{len(audio_segments)}...")
-                
-                # Check Duration
+                text_preview = (segment.get('text', '') or '')[:60]
                 duration = audio_clips[i].duration
-                
-                # Create Full Frame Overlay
-                overlay_path = self.create_full_frame_overlay(segment, current_author, branding=branding)
-                temp_files.append(overlay_path)
-                
-                # Add to concat list
-                # Format:
-                # file 'path'
-                # duration X
-                escape_path = overlay_path.replace('\\', '/')
-                concat_lines.append(f"file '{escape_path}'")
-                concat_lines.append(f"duration {duration}")
+                chunks_for_seg = 0
+                for overlay_path, chunk_dur in self.create_full_frame_overlays(segment, duration, branding=branding):
+                    temp_files.append(overlay_path)
+                    escape_path = overlay_path.replace('\\', '/')
+                    concat_lines.append(f"file '{escape_path}'")
+                    concat_lines.append(f"duration {chunk_dur}")
+                    chunks_for_seg += 1
+                total_chunks += chunks_for_seg
+                print(f"     Segment {i+1}/{len(audio_segments)} → {chunks_for_seg} chunk(s), {duration:.2f}s · \"{text_preview}\"")
+            print(f"   Total overlay chunks: {total_chunks}")
 
             if tail_text and tail_duration and tail_duration > 0:
                 tail_segment = {'text': tail_text, 'author': ''}
-                tail_overlay_path = self.create_full_frame_overlay(tail_segment, current_author, branding=branding)
-                temp_files.append(tail_overlay_path)
-                escape_tail = tail_overlay_path.replace('\\', '/')
-                concat_lines.append(f"file '{escape_tail}'")
-                concat_lines.append(f"duration {tail_duration}")
+                for overlay_path, chunk_dur in self.create_full_frame_overlays(tail_segment, tail_duration, branding=branding):
+                    temp_files.append(overlay_path)
+                    escape_tail = overlay_path.replace('\\', '/')
+                    concat_lines.append(f"file '{escape_tail}'")
+                    concat_lines.append(f"duration {chunk_dur}")
                 
             # Create concat file
             concat_path = os.path.join(output_dir, "overlay_list.txt")

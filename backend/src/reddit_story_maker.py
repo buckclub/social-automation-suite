@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple
 if getattr(sys, "frozen", False):
     PROJECT_ROOT = os.path.dirname(sys.executable)
 else:
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class RedditStoryMaker:
     """
@@ -177,13 +177,36 @@ class RedditStoryMaker:
             print(f"\n📋 Filtering posts from r/{subreddit}...")
             print(f"   Already used: {len(self.used_posts)} posts")
             
+            # Fuzzy-dedupe against previously-used post titles.
+            from difflib import SequenceMatcher
+            import glob as _glob
+            used_titles = []
+            posts_root = os.path.join(PROJECT_ROOT, "posts")
+            if os.path.isdir(posts_root):
+                for s in _glob.glob(os.path.join(posts_root, "*", "summary.json")):
+                    try:
+                        with open(s, "r", encoding="utf-8") as _f:
+                            t = (json.load(_f).get("title") or "").strip()
+                        if t:
+                            used_titles.append(t.lower())
+                    except Exception:
+                        pass
+
             for post in posts:
                 post_id = post.get('id')
-                
-                # Skip if already used
+
+                # Skip if already used (by id)
                 if post_id in self.used_posts:
                     continue
-                
+
+                # Fuzzy title dedupe — catches reposts with different IDs.
+                title_lo = (post.get('title') or '').strip().lower()
+                if title_lo:
+                    dup = next((u for u in used_titles if SequenceMatcher(None, title_lo, u).ratio() >= 0.85), None)
+                    if dup:
+                        print(f"   Skipped {post_id}: title duplicate of '{dup[:60]}'")
+                        continue
+
                 # Check filters
                 meets_filters, reason = self._meets_filters(post)
                 

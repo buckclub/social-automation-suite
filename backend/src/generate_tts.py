@@ -12,7 +12,7 @@ from tts_engine import TTSManager
 if getattr(sys, "frozen", False):
     PROJECT_ROOT = os.path.dirname(sys.executable)
 else:
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def generate_audio_for_post(post_id: str, mode: str = 'qa', config_filename: str = "config.json"):

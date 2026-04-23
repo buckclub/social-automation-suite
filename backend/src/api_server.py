@@ -52,7 +52,7 @@ if getattr(sys, "frozen", False):
     if FRONTEND_DIST is None:
         FRONTEND_DIST = os.path.join(PROJECT_ROOT, "dist")
 else:
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     FRONTEND_DIST = os.path.join(PROJECT_ROOT, "dist")
 FRONTEND_ASSETS = os.path.join(FRONTEND_DIST, "assets")
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.json")
@@ -286,6 +286,26 @@ def _load_used_posts() -> List[str]:
     return []
 
 
+def _used_post_titles() -> List[str]:
+    """Collect titles of previously-used posts from their summary.json files."""
+    titles: List[str] = []
+    posts_root = os.path.join(PROJECT_ROOT, "posts")
+    if not os.path.isdir(posts_root):
+        return titles
+    for pid in os.listdir(posts_root):
+        summary = os.path.join(posts_root, pid, "summary.json")
+        if os.path.isfile(summary):
+            try:
+                with open(summary, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                t = (data.get("title") or "").strip()
+                if t:
+                    titles.append(t)
+            except Exception:
+                pass
+    return titles
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _ensure_config()
@@ -367,32 +387,68 @@ async def update_config(update: dict):
 
 @app.get("/api/posts/discover")
 async def discover_posts(sort: str = "hot"):
+    """
+    sort = hot | new | top | viral
+    - viral: Reddit sort stays 'hot' but posts ranked client-side by score-per-hour.
+    """
     try:
         maker = RedditStoryMaker()
+        reddit_sort = "hot" if sort == "viral" else sort
         subreddits = maker.config.get("subreddits", [])
         if not subreddits and "subreddit" in maker.config:
             subreddits = [maker.config["subreddit"]]
 
+        reddit_cfg = maker.config.get("reddit", {}) if isinstance(maker.config.get("reddit"), dict) else {}
+        per_sub_cap = int(reddit_cfg.get("max_per_subreddit_per_run", 10))
+        used_titles = _used_post_titles()
+
+        from difflib import SequenceMatcher
+        def _title_dup(title: str) -> Optional[str]:
+            lo = (title or "").strip().lower()
+            if not lo:
+                return None
+            for used in used_titles:
+                if SequenceMatcher(None, lo, used.lower()).ratio() >= 0.85:
+                    return used
+            return None
+
         all_posts = []
         for subreddit in subreddits:
-            posts = maker.fetch_subreddit_posts(subreddit=subreddit, limit=25, sort=sort)
-            for post in posts:
+            fetched = maker.fetch_subreddit_posts(subreddit=subreddit, limit=25, sort=reddit_sort)
+            sub_count = 0
+            for post in fetched:
                 meets, reason = maker._meets_filters(post)
                 created_utc = post.get("created_utc", 0)
-                age_hours = (time.time() - created_utc) / 3600
+                age_hours = max(0.1, (time.time() - created_utc) / 3600)
+                score = post.get("score", 0)
+                viral_score = round(score / age_hours, 2)
+                text = (post.get("title", "") + " " + (post.get("selftext", "") or "")).strip()
+                word_count = len(text.split())
+                # ~155 wpm average across Polly/ElevenLabs Turbo
+                est_duration_s = int(round(word_count / 155 * 60)) if word_count else 0
+                dup_of = _title_dup(post.get("title", ""))
                 all_posts.append({
                     "id": post.get("id"), "title": post.get("title", ""),
-                    "subreddit": post.get("subreddit", ""), "score": post.get("score", 0),
+                    "subreddit": post.get("subreddit", ""), "score": score,
                     "num_comments": post.get("num_comments", 0),
                     "selftext": (post.get("selftext", "") or "")[:300],
                     "url": post.get("url", ""), "permalink": post.get("permalink", ""),
                     "age_hours": round(age_hours, 1), "over_18": post.get("over_18", False),
+                    "viral_score": viral_score,
+                    "est_duration_s": est_duration_s,
+                    "word_count": word_count,
                     "meets_filters": meets,
                     "filter_reason": reason if not meets else None,
                     "already_used": post.get("id") in maker.used_posts,
+                    "title_dupe_of": dup_of,
                 })
+                sub_count += 1
+                if sub_count >= per_sub_cap:
+                    break
+        if sort == "viral":
+            all_posts.sort(key=lambda p: p["viral_score"], reverse=True)
         stats["posts_scanned"] += len(all_posts)
-        _log(f"Discovered {len(all_posts)} posts from {len(subreddits)} subreddits")
+        _log(f"Discovered {len(all_posts)} posts from {len(subreddits)} subreddits (sort={sort}, cap={per_sub_cap}/sub)")
         return {"posts": all_posts, "total": len(all_posts)}
     except Exception as e:
         _log(f"Discover error: {e}")
@@ -845,29 +901,42 @@ async def resume_video_from_audio(req: dict = {}):
 
     title = summary.get("title", post_id)
 
-    # Rebuild timeline from audio files
-    audio_files = sorted([f for f in os.listdir(audio_dir) if f.endswith(('.mp3', '.wav', '.m4a'))])
-    if not audio_files:
-        raise HTTPException(404, "No audio files found in audio directory")
+    # Prefer the authoritative timeline.json saved when TTS ran — its text ↔ audio
+    # mapping is guaranteed correct. Fall back to the old audio-file scan for older posts.
+    timeline_path = os.path.join(post_dir, "timeline.json")
+    timeline: list = []
+    if os.path.exists(timeline_path):
+        try:
+            with open(timeline_path, "r", encoding="utf-8") as _f:
+                timeline = json.load(_f)
+            # Validate audio paths still exist
+            timeline = [s for s in timeline if s.get("audio_path") and os.path.exists(s["audio_path"])]
+        except Exception as e:
+            _log(f"timeline.json unreadable, falling back to audio scan: {e}")
+            timeline = []
 
-    timeline = []
-    for af in audio_files:
-        timeline.append({
-            "text": "",  # Text not needed for video, just audio
-            "audio_path": os.path.join(audio_dir, af),
-            "author": summary.get("author", "Anonymous"),
-        })
+    if not timeline:
+        audio_files = sorted([f for f in os.listdir(audio_dir) if f.endswith(('.mp3', '.wav', '.m4a'))])
+        if not audio_files:
+            raise HTTPException(404, "No audio files found in audio directory")
 
-    # Try to load formatted text to populate segment texts
-    for mode_file in ["story_mode.txt", "qa_mode.txt"]:
-        txt_path = os.path.join(post_dir, mode_file)
-        if os.path.exists(txt_path):
-            with open(txt_path, "r", encoding="utf-8") as f:
-                lines = [l.strip() for l in f.readlines() if l.strip()]
-            for i, seg in enumerate(timeline):
-                if i < len(lines):
-                    seg["text"] = lines[i]
-            break
+        for af in audio_files:
+            timeline.append({
+                "text": "",
+                "audio_path": os.path.join(audio_dir, af),
+                "author": summary.get("author", "Anonymous"),
+            })
+
+        # Try to load formatted text to populate segment texts (best-effort)
+        for mode_file in ["story_mode.txt", "qa_mode.txt"]:
+            txt_path = os.path.join(post_dir, mode_file)
+            if os.path.exists(txt_path):
+                with open(txt_path, "r", encoding="utf-8") as f:
+                    lines = [l.strip() for l in f.readlines() if l.strip()]
+                for i, seg in enumerate(timeline):
+                    if i < len(lines):
+                        seg["text"] = lines[i]
+                break
 
     # Reset pipeline state
     for step in pipeline_state["steps"]:
@@ -916,7 +985,7 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
         _log("Rendering video (resumed)...")
 
         from video_generator import VideoGenerator
-        video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel)
+        video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}))
         output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
         if video_mode == "short_reel":
@@ -1295,6 +1364,42 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
 
                 post_body = selftext if mode == "story" or selftext else ""
 
+                # Pre-TTS normalization (Reddit-speak cleanup via local Ollama).
+                # Skips gracefully if Ollama isn't reachable.
+                pre_norm = bool(tts_config.get("pre_normalize", True))
+                if pre_norm:
+                    try:
+                        from tts_normalize import normalize_text
+                        gem_cfg = config.get("gemini", {}) or {}
+                        norm_url = gem_cfg.get("ollama_url") or config.get("ollama_url") or "http://localhost:11434"
+                        norm_model = tts_config.get("normalize_model") or gem_cfg.get("model") or "qwen2.5:14b"
+                        cache_path = os.path.join(PROJECT_ROOT, "posts", post_id, "normalized_cache.json")
+                        _log(f"Pre-TTS normalization: model={norm_model} (skips if Ollama is down)")
+                        _t0 = time.time()
+                        new_title = await asyncio.to_thread(
+                            normalize_text, title,
+                            ollama_url=norm_url, model=norm_model, cache_path=cache_path
+                        )
+                        new_body = await asyncio.to_thread(
+                            normalize_text, post_body,
+                            ollama_url=norm_url, model=norm_model, cache_path=cache_path
+                        )
+                        new_comments = []
+                        for c in comments:
+                            cb = c.get("body", "")
+                            nb = await asyncio.to_thread(
+                                normalize_text, cb,
+                                ollama_url=norm_url, model=norm_model, cache_path=cache_path
+                            )
+                            new_comments.append({**c, "body": nb})
+                        changed = int(new_title != title) + int(new_body != post_body) + sum(
+                            1 for a, b in zip(comments, new_comments) if a.get("body") != b.get("body")
+                        )
+                        title, post_body, comments = new_title, new_body, new_comments
+                        _log(f"Normalized {changed} text segment(s) in {time.time() - _t0:.1f}s")
+                    except Exception as _e:
+                        _log(f"Pre-TTS normalization skipped: {_e}")
+
                 # Initial sub-steps (will be replaced with real-time progress)
                 _set_step("tts", "running", f"Calculating segments · provider: {provider}", [
                     {"label": "Analyzing text...", "status": "running", "detail": ""}
@@ -1316,6 +1421,22 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                     audio_dir = os.path.join(PROJECT_ROOT, "posts", post_id, "audio")
                     tts_instance = LazyPyTikTokTTS(voice=main_voice, output_dir=audio_dir, cancel_check=_check_cancelled)
                     _log(f"Using TikTok TTS via LazyPy (voice={main_voice})")
+                elif provider == "elevenlabs":
+                    from tts_engine import ElevenLabsTTS
+                    audio_dir = os.path.join(PROJECT_ROOT, "posts", post_id, "audio")
+                    el_cfg = tts_config.get("elevenlabs", {}) if isinstance(tts_config.get("elevenlabs"), dict) else {}
+                    tts_instance = ElevenLabsTTS(
+                        voice=main_voice,
+                        output_dir=audio_dir,
+                        api_key=tts_config.get("elevenlabs_api_key") or el_cfg.get("api_key", ""),
+                        model_id=tts_config.get("elevenlabs_model_id") or el_cfg.get("model_id", "eleven_multilingual_v2"),
+                        stability=float(el_cfg.get("stability", 0.5)),
+                        similarity_boost=float(el_cfg.get("similarity_boost", 0.75)),
+                        style=float(el_cfg.get("style", 0.0)),
+                        use_speaker_boost=bool(el_cfg.get("use_speaker_boost", True)),
+                        cancel_check=_check_cancelled,
+                    )
+                    _log(f"Using ElevenLabs (voice={main_voice}, model={tts_instance.model_id})")
 
                 # Real-time progress tracking
                 tts_sub_steps_live = []
@@ -1346,7 +1467,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                     _set_step("tts", "running", f"Segment {current}/{total} · {phase}", list(tts_sub_steps_live))
 
                 # Use the appropriate TTS engine
-                if provider in ("vibevoice", "qwen3_tts", "lazypy_tiktok"):
+                if provider in ("vibevoice", "qwen3_tts", "lazypy_tiktok", "elevenlabs"):
                     # Local TTS or LazyPy TikTok: generate segments directly
                     timeline = await asyncio.to_thread(
                         _generate_local_tts_narrative,
@@ -1370,7 +1491,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
 
                     # Generate TTS for the hook using the same provider
                     hook_seg = None
-                    if provider in ("vibevoice", "qwen3_tts", "lazypy_tiktok"):
+                    if provider in ("vibevoice", "qwen3_tts", "lazypy_tiktok", "elevenlabs"):
                         hook_seg_list = await asyncio.to_thread(
                             tts_instance.generate_segments, gemini_hook_text, None, _check_cancelled
                         )
@@ -1398,6 +1519,13 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                         ss["status"] = "done"
                     _set_step("tts", "done", f"Generated {len(timeline)} audio segments", tts_sub_steps_live)
                     _log(f"TTS complete: {len(timeline)} segments")
+                    # Persist the authoritative timeline so Re-render can reuse exact caption text.
+                    try:
+                        tl_path = os.path.join(PROJECT_ROOT, "posts", post_id, "timeline.json")
+                        with open(tl_path, "w", encoding="utf-8") as _tf:
+                            json.dump(timeline, _tf, indent=2, ensure_ascii=False)
+                    except Exception as _e:
+                        _log(f"Could not save timeline.json: {_e}")
                 else:
                     for ss in tts_sub_steps_live:
                         ss["status"] = "error"
@@ -1432,7 +1560,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
         else:
             try:
                 from video_generator import VideoGenerator
-                video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel)
+                video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}))
                 output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
                 if video_mode == "short_reel":
@@ -1574,7 +1702,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
             try:
                 from video_generator import VideoGenerator
                 if 'video_gen' not in dir():
-                    video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel)
+                    video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}))
                 branding = config.get("video", {}).get("branding", "")
                 p_title = pipeline_state.get("current_post", {}).get("title", title) if pipeline_state.get("current_post") else title
                 p_sub = pipeline_state.get("current_post", {}).get("subreddit", "") if pipeline_state.get("current_post") else ""
@@ -1814,7 +1942,11 @@ async def get_thumbnail(video_id: str, part: int = 0):
         raise HTTPException(404, "No thumbnails found")
     if part < 0 or part >= len(thumbs):
         raise HTTPException(404, f"Thumbnail part {part} not found. Available: 0-{len(thumbs)-1}")
-    return FileResponse(thumbs[part], media_type="image/png")
+    return FileResponse(
+        thumbs[part],
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
+    )
 
 
 def _find_video_entry(video_id: str):
@@ -1860,7 +1992,12 @@ async def stream_video(video_id: str, part: int = 0):
         raise HTTPException(404, "Video file not found")
     if part < 0 or part >= len(all_files):
         raise HTTPException(404, f"Part {part} not found. Available: 0-{len(all_files)-1}")
-    return FileResponse(all_files[part], media_type="video/mp4")
+    # Disable caching so a re-rendered file is always picked up fresh.
+    return FileResponse(
+        all_files[part],
+        media_type="video/mp4",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/api/videos/{video_id}/download")
@@ -1933,6 +2070,235 @@ async def get_stats():
 
 # ── TTS Provider Management ─────────────────────────────────────────
 
+@app.get("/api/tts/elevenlabs/voices")
+async def elevenlabs_voices():
+    """
+    Fetch the ElevenLabs voice library for the currently configured API key.
+    Uses tts.elevenlabs_api_key (or tts.elevenlabs.api_key) from config.json.
+    """
+    import requests as _requests
+    cfg = _load_config()
+    tts_cfg = cfg.get("tts", {}) or {}
+    el_cfg = tts_cfg.get("elevenlabs", {}) if isinstance(tts_cfg.get("elevenlabs"), dict) else {}
+    api_key = tts_cfg.get("elevenlabs_api_key") or el_cfg.get("api_key") or ""
+    if not api_key:
+        return {"voices": [], "error": "missing_api_key"}
+    try:
+        r = _requests.get(
+            "https://api.elevenlabs.io/v2/voices",
+            headers={"xi-api-key": api_key, "Accept": "application/json"},
+            timeout=15,
+        )
+        if r.status_code == 401:
+            return {"voices": [], "error": "unauthorized"}
+        r.raise_for_status()
+        data = r.json()
+        voices = []
+        for v in data.get("voices", []):
+            voices.append({
+                "voice_id": v.get("voice_id"),
+                "name": v.get("name"),
+                "category": v.get("category"),  # premade / cloned / generated
+                "description": (v.get("labels") or {}).get("description") or v.get("description"),
+                "labels": v.get("labels") or {},
+                "preview_url": v.get("preview_url"),
+            })
+        voices.sort(key=lambda x: ((x.get("category") or "z"), (x.get("name") or "").lower()))
+        return {"voices": voices}
+    except _requests.exceptions.RequestException as e:
+        return {"voices": [], "error": f"request_failed: {e}"}
+
+
+@app.get("/api/posts/{post_id}/social")
+async def get_social_copy(post_id: str):
+    """Return saved social copy for a post, if any."""
+    path = os.path.join(PROJECT_ROOT, "posts", post_id, "social.json")
+    if not os.path.isfile(path):
+        return {"exists": False}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return {"exists": True, **json.load(f)}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read social.json: {e}")
+
+
+@app.post("/api/posts/{post_id}/generate-social")
+async def generate_social_copy(post_id: str):
+    """
+    Generate YouTube / TikTok / Instagram titles, captions and hashtags
+    for a rendered post using the configured AI provider. Saves to
+    posts/<post_id>/social.json.
+    """
+    post_dir = os.path.join(PROJECT_ROOT, "posts", post_id)
+    summary_path = os.path.join(post_dir, "summary.json")
+    if not os.path.isfile(summary_path):
+        raise HTTPException(404, f"summary.json not found for {post_id}")
+
+    with open(summary_path, "r", encoding="utf-8") as f:
+        summary = json.load(f)
+    title = summary.get("title", "")
+    subreddit = summary.get("subreddit", "")
+
+    # Prefer the rendered/story text so the AI has actual narration context.
+    story_text = ""
+    for candidate in ("story_mode.txt", "qa_mode.txt"):
+        p = os.path.join(post_dir, candidate)
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as f:
+                story_text = f.read()[:2000]
+            break
+    if not story_text:
+        story_text = summary.get("selftext", "")[:2000]
+
+    # Pick AI provider from config.gemini (same dispatcher used for hooks).
+    config = _load_config()
+    g = config.get("gemini", {}) or {}
+    provider = g.get("provider", "gemini")
+    api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    system = (
+        "You are a viral short-form video strategist. Return ONLY valid minified JSON — "
+        "no markdown, no commentary. Keep titles punchy, hooks-driven, curiosity-loaded."
+    )
+    prompt = f"""Generate social copy for a vertical short video based on this Reddit story.
+
+Subreddit: r/{subreddit}
+Original title: {title}
+
+Story excerpt:
+{story_text[:1500]}
+
+Return JSON with exactly this shape:
+{{
+  "youtube": {{
+    "titles": ["<variant 1, ≤70 chars, curiosity hook>", "<variant 2>", "<variant 3>"],
+    "description": "<2-3 lines, first line is a hook, end with 5-8 hashtags>",
+    "tags": ["<tag>", ...up to 12]
+  }},
+  "tiktok": {{
+    "caption": "<≤140 chars, 1-2 emojis, 5-8 hashtags inline>",
+    "hashtags": ["#reddit", "<topic>", ...up to 10]
+  }},
+  "instagram": {{
+    "caption": "<1-3 lines hook, then 10-20 hashtags on a new paragraph>",
+    "hashtags": ["<tag>", ...up to 20]
+  }}
+}}
+"""
+
+    try:
+        from gemini_hooks import _call_ai  # type: ignore
+        raw = _call_ai(provider, api_key, prompt, system, model, ollama_url)
+        if not raw:
+            raise HTTPException(502, f"AI provider '{provider}' returned empty response")
+        # Strip code fences if the model ignored our instructions.
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+            cleaned = cleaned.strip("`").strip()
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Try to salvage: find first { and last }
+            start = cleaned.find("{"); end = cleaned.rfind("}")
+            if start >= 0 and end > start:
+                parsed = json.loads(cleaned[start:end + 1])
+            else:
+                raise HTTPException(502, f"AI returned non-JSON: {cleaned[:200]}")
+
+        out = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "provider": provider,
+            "model": model,
+            "source_title": title,
+            "subreddit": subreddit,
+            **parsed,
+        }
+        os.makedirs(post_dir, exist_ok=True)
+        with open(os.path.join(post_dir, "social.json"), "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=2, ensure_ascii=False)
+        return {"exists": True, **out}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Social copy generation failed: {e}")
+
+
+@app.get("/api/fonts")
+async def list_fonts():
+    """
+    Enumerate installed system font files (.ttf/.otf) so the web UI can
+    offer a dropdown. Best-effort: reads family name from the font when
+    possible, falls back to filename.
+    """
+    import platform, glob as _glob
+
+    search_dirs: list[str] = []
+    system = platform.system()
+    home = os.path.expanduser("~")
+    if system == "Windows":
+        search_dirs += [
+            os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts"),
+            os.path.join(os.environ.get("LOCALAPPDATA", home), "Microsoft", "Windows", "Fonts"),
+        ]
+    elif system == "Darwin":
+        search_dirs += ["/Library/Fonts", "/System/Library/Fonts", os.path.join(home, "Library/Fonts")]
+    else:
+        search_dirs += ["/usr/share/fonts", "/usr/local/share/fonts", os.path.join(home, ".fonts"), os.path.join(home, ".local/share/fonts")]
+
+    try:
+        from PIL import ImageFont
+    except Exception:
+        ImageFont = None  # type: ignore
+
+    seen_files: set[str] = set()
+    fonts = []
+    for d in search_dirs:
+        if not d or not os.path.isdir(d):
+            continue
+        for ext in ("*.ttf", "*.otf", "*.ttc"):
+            for path in _glob.glob(os.path.join(d, "**", ext), recursive=True):
+                real = os.path.realpath(path)
+                if real in seen_files:
+                    continue
+                seen_files.add(real)
+                file_name = os.path.basename(path)
+                family = None
+                style = None
+                if ImageFont is not None:
+                    try:
+                        name = ImageFont.truetype(path, 12).getname()
+                        family = name[0] if name and len(name) > 0 else None
+                        style = name[1] if name and len(name) > 1 else None
+                    except Exception:
+                        pass
+                if not family:
+                    family = os.path.splitext(file_name)[0].replace("_", " ").replace("-", " ").title()
+                fonts.append({
+                    "family": family,
+                    "style": style or "",
+                    "file": file_name,
+                    "path": path,
+                })
+
+    # Sort by family then style, dedupe by (family, style) keeping shortest path.
+    fonts.sort(key=lambda f: (f["family"].lower(), f["style"].lower(), len(f["path"])))
+    dedup: dict[tuple, dict] = {}
+    for f in fonts:
+        key = (f["family"].lower(), f["style"].lower())
+        if key not in dedup:
+            dedup[key] = f
+    return {"fonts": list(dedup.values())}
+
+
 @app.get("/api/tts/providers")
 async def tts_providers():
     """List available TTS providers and their install status."""
@@ -1953,6 +2319,20 @@ async def tts_providers():
                 "installed": True,
                 "details": "Free TikTok voices via lazypy.ro, no setup required",
                 "voices": LazyPyTikTokTTS.AVAILABLE_VOICES,
+            },
+            {
+                "id": "elevenlabs",
+                "name": "ElevenLabs",
+                "type": "cloud",
+                "installed": True,
+                "details": "Premium realistic voices. Requires an API key from elevenlabs.io.",
+                "voices": list(__import__("tts_engine").ElevenLabsTTS.PRESET_VOICES.keys()),
+                "requires_api_key": True,
+                "models": [
+                    {"id": "eleven_multilingual_v2", "name": "Multilingual v2 (best quality)"},
+                    {"id": "eleven_turbo_v2_5",     "name": "Turbo v2.5 (fast, low latency)"},
+                    {"id": "eleven_monolingual_v1", "name": "Monolingual v1 (English only, classic)"},
+                ],
             },
             {
                 "id": "vibevoice",

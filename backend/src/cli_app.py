@@ -27,7 +27,7 @@ from datetime import datetime
 if getattr(sys, "frozen", False):
     PROJECT_ROOT = os.path.dirname(sys.executable)
 else:
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Ensure src is on the path so sibling modules can be imported
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))

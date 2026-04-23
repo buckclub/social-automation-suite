@@ -2,15 +2,16 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   Play, Clock, CheckCircle2, XCircle, Loader2, Film, Trash2,
-  Download, Eye, HardDrive, Layers
+  Download, Eye, HardDrive, Layers, RefreshCw, Share2
 } from "lucide-react";
+import { SocialCopyDialog } from "@/components/SocialCopyDialog";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter
 } from "@/components/ui/dialog";
-import { useVideos, useUsedPosts, useDeleteVideo } from "@/hooks/use-api";
+import { useVideos, useUsedPosts, useDeleteVideo, useResumeVideo } from "@/hooks/use-api";
 import { formatDistanceToNow } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import type { VideoRecord } from "@/lib/api";
@@ -31,6 +32,18 @@ function VideoCard({ video, index, onPreview, onDelete }: {
   onDelete: (video: VideoRecord) => void;
 }) {
   const partCount = video.part_files?.length || (video.parts ?? (video.has_video ? 1 : 0));
+  const resumeMutation = useResumeVideo();
+  const { toast } = useToast();
+  const [socialOpen, setSocialOpen] = useState(false);
+  const handleRerender = () => {
+    resumeMutation.mutate(video.id, {
+      onSuccess: () => toast({
+        title: "Re-rendering video",
+        description: "Using existing audio — new captions/video settings only. No TTS charges.",
+      }),
+      onError: (err) => toast({ title: "Re-render failed", description: err.message, variant: "destructive" }),
+    });
+  };
 
   // Extract display label and sort number from filename e.g. "xxx_part1.mp4" → "Part 1"
   const getPartLabel = (idx: number) => {
@@ -62,7 +75,7 @@ function VideoCard({ video, index, onPreview, onDelete }: {
         <div className="relative h-36 bg-secondary flex items-center justify-center overflow-hidden">
           {video.has_thumbnails ? (
             <img
-              src={`${API_BASE}/api/videos/${video.id}/thumbnail?part=0`}
+              src={`${API_BASE}/api/videos/${video.id}/thumbnail?part=0&v=${encodeURIComponent(video.created_at || "")}`}
               alt={video.title}
               className="absolute inset-0 w-full h-full object-cover"
               onError={(e) => { e.currentTarget.style.display = 'none'; }}
@@ -152,12 +165,45 @@ function VideoCard({ video, index, onPreview, onDelete }: {
             </div>
           )}
 
-          <div className="flex justify-end pt-1">
+          <div className="flex items-center justify-between pt-1 gap-1">
+            <div className="flex items-center gap-1">
+              {(video.has_audio || video.has_video) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px] gap-1 px-2 border-accent/40 text-accent hover:bg-accent/10"
+                  onClick={handleRerender}
+                  disabled={resumeMutation.isPending}
+                  title="Re-render this video using current caption & video settings. Reuses existing audio — no TTS charges."
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  {resumeMutation.isPending ? "Re-rendering..." : "Re-render"}
+                </Button>
+              )}
+              {video.has_video && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px] gap-1 px-2 border-primary/40 text-primary hover:bg-primary/10"
+                  onClick={() => setSocialOpen(true)}
+                  title="Generate YouTube / TikTok / Instagram captions & hashtags"
+                >
+                  <Share2 className="h-3 w-3" />
+                  Social Copy
+                </Button>
+              )}
+            </div>
             <Button size="sm" variant="ghost" className="h-7 px-2 text-destructive hover:text-destructive"
               onClick={() => onDelete(video)}>
               <Trash2 className="h-3 w-3" />
             </Button>
           </div>
+          <SocialCopyDialog
+            postId={video.id}
+            title={video.title}
+            open={socialOpen}
+            onOpenChange={setSocialOpen}
+          />
         </CardContent>
       </Card>
     </motion.div>
@@ -255,7 +301,7 @@ export default function VideosPage() {
                 key={`${preview.video.id}-${preview.part}`}
                 controls autoPlay
                 className="w-full rounded-lg bg-secondary max-h-[50vh]"
-                src={`${API_BASE}/api/videos/${preview.video.id}/stream?part=${preview.part}`}
+                src={`${API_BASE}/api/videos/${preview.video.id}/stream?part=${preview.part}&v=${encodeURIComponent(preview.video.created_at || "")}`}
               />
               <div className="flex flex-wrap items-center gap-2">
                 {(preview.video.part_files?.length ?? 0) > 1 && (

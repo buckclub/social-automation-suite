@@ -120,15 +120,43 @@ export function useResumeVideo() {
     mutationFn: (post_id: string) => api.resumeVideo(post_id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["pipeline"] });
-      setTimeout(() => {
-        qc.invalidateQueries({ queryKey: ["videos"] });
-        qc.invalidateQueries({ queryKey: ["stats"] });
-      }, 3000);
+      // Poll pipeline status until done, then hard-invalidate videos list so
+      // the preview picks up the new created_at (cache-buster) and refetches.
+      const started = Date.now();
+      const poll = setInterval(async () => {
+        try {
+          const s = await api.getPipelineStatus();
+          if (!s.is_running) {
+            clearInterval(poll);
+            qc.invalidateQueries({ queryKey: ["videos"] });
+            qc.invalidateQueries({ queryKey: ["stats"] });
+          }
+        } catch {}
+        // Give up after 5 minutes to avoid a leaked interval.
+        if (Date.now() - started > 5 * 60_000) clearInterval(poll);
+      }, 2000);
     },
   });
 }
 
 // ── TTS Providers ───────────────────────────────────────────────────
+export function useElevenLabsVoices(enabled: boolean) {
+  return useQuery({
+    queryKey: ["elevenlabs-voices"],
+    queryFn: api.listElevenLabsVoices,
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useSystemFonts() {
+  return useQuery({
+    queryKey: ["system-fonts"],
+    queryFn: api.listFonts,
+    staleTime: 5 * 60_000,
+  });
+}
+
 export function useTtsProviders() {
   return useQuery({
     queryKey: ["tts-providers"],

@@ -1,6 +1,69 @@
-# Reddit Video Engine
+# Reddit Video Engine — ReelsAutomation Fork
 
 Open source tool to generate vertical short videos from Reddit posts or AI generated scripts. Renders with FFmpeg, narrates with TTS, and can publish to YouTube Shorts, TikTok, Instagram Reels, and Snapchat Spotlight.
+
+This is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/reddit-to-reels) with a bunch of quality-of-life and feature additions — see [Fork Additions](#fork-additions) below.
+
+> **Upstream Notice**
+>
+> The original repo is **not actively maintained** per its author. This fork has diverged with feature work; the credits and author info at the bottom still apply to the original codebase.
+
+## Fork additions
+
+**New features on top of upstream:**
+
+- **ElevenLabs TTS provider** — full integration with live voice fetching from `/v2/voices` (no more stale hardcoded IDs), stability / similarity / style / speaker-boost sliders, model selection (Multilingual v2 / Turbo v2.5 / Monolingual v1).
+- **Pre-TTS cleanup with local Ollama** — expands Reddit shorthand (`tho`→`though`, `cuz`→`because`, etc.) and fixes typos before sending to paid TTS. Cached per-post. Skips silently if Ollama is offline. Saves money and improves ElevenLabs output quality.
+- **Configurable captions** — UI control over font, size, color, stroke, background box, position, words-per-caption chunking, uppercase, attribution. Pixel-accurate wrapping so wide display fonts don't overflow the frame.
+- **Caption animations (MoviePy engine)** — fade, pop (scale-in with overshoot), or both combined. With tunable duration and pop parameters. FFmpeg engine logs a warning and renders statically.
+- **Live caption preview** — 1080×1920 scaled mock frame on the Captions tab that updates as you drag sliders. Chunk cycling shows how multi-word splitting will look.
+- **System font dropdown** — enumerates installed `.ttf`/`.otf`/`.ttc` on the server and lets you pick from a searchable list, with each entry rendered in its own font.
+- **Tabbed config page** — sidebar navigation (General / Formatting / TTS / Video / Captions / AI Hooks / Output) instead of one long scroll.
+- **Social copy generator** — per-video button that uses your configured AI provider to generate YouTube Shorts titles (3 variants) + description + tags, TikTok caption + hashtags, Instagram caption + hashtags. Saved to `posts/<id>/social.json`.
+- **Re-render button** — re-runs just the video step on an existing post using the saved audio. Picks up new caption/video settings without spending TTS credits. Backed by a persisted `timeline.json` so caption text lines up exactly with the original audio segments.
+- **Post discovery upgrades** — virality score (upvotes/hour), duration estimate (~155 wpm), per-subreddit cap, fuzzy dedupe against previously-used post titles. New "Viral" sort.
+- **Cache-busting on preview** — video/thumbnail URLs include a `v=<mtime>` query string, and the stream endpoint sets `Cache-Control: no-cache`, so Re-render output shows up immediately in the preview.
+- **`start.ps1` dev loop** — wraps the server with Ctrl+C-restarts-server behavior (double-tap within 2s to exit).
+- **`run_server.py`** — single-entry dev launcher that mounts the built frontend and runs uvicorn.
+- **Upstream bug fix: `PROJECT_ROOT`** — every module in `backend/src/` computed this one `dirname` short of the repo root, which made the stock server silently read a stale `backend/config.json`. Fixed across all 13 modules.
+- **Upstream bug fix: caption overflow** — the original used a `fontsize * 0.5` estimate for wrap width; wide display fonts overflowed the frame. Rewrote with `font.getlength()` pixel-accurate wrapping and stroke-aware canvas sizing.
+
+**Config changes:**
+
+Copy `config.json.example` to `config.json` on first run. New keys (all optional, sane defaults):
+
+```jsonc
+"reddit": { "max_per_subreddit_per_run": 10 },
+"captions": { /* see example */ },
+"tts": {
+  "pre_normalize": true,
+  "elevenlabs_api_key": "",
+  "elevenlabs_model_id": "eleven_turbo_v2_5",
+  "elevenlabs": {
+    "stability": 0.5, "similarity_boost": 0.75, "style": 0.0, "use_speaker_boost": true
+  }
+}
+```
+
+**How to run (Windows):**
+
+```powershell
+# One-time: create venv + install backend deps
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+pnpm install
+pnpm build
+Copy-Item config.json.example config.json
+
+# Daily dev loop (Ctrl+C restarts, Ctrl+C x2 exits)
+.\start.ps1
+```
+
+Open http://localhost:8000.
+
+---
+
+## Upstream documentation
 
 > **Maintenance Notice**
 >

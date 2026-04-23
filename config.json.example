@@ -1,0 +1,131 @@
+{
+  "subreddits": [
+    "AskReddit",
+    "AmItheAsshole",
+    "tifu"
+  ],
+
+  "ai_provider": "ollama",
+  "ollama_url": "http://localhost:11434",
+  "ollama_model": "qwen2.5:14b",
+
+  "video": {
+    "engine": "ffmpeg",
+    "mode": "reel",
+    "split_duration": 60,
+    "auto_cleanup": true,
+    "hw_accel": "none",
+    "use_gpu": false,
+    "threads": 0,
+    "outro_text": "Follow for Part {next_part}",
+    "branding": ""
+  },
+
+  "formatting": {
+    "default_mode": "story",
+    "default_niche": "relationship_drama",
+    "max_comments": 10,
+    "min_comment_score": 10
+  },
+
+  "reddit": {
+    "min_score": 100,
+    "max_age_days": 30,
+    "min_length": 500,
+    "max_length": 4000,
+    "nsfw": false,
+    "max_per_subreddit_per_run": 10
+  },
+
+  "publishers": {
+    "youtube":   { "enabled": false },
+    "tiktok":    { "enabled": false },
+    "instagram": { "enabled": false },
+    "snapchat":  { "enabled": false }
+  },
+
+  "discord_webhook_url": "",
+  "bot": {
+    "posting_interval_minutes": 60,
+    "max_posts_per_day": 6
+  },
+
+  "request_delay": 2,
+  "filters": {
+    "min_upvotes": 500,
+    "min_comments": 10,
+    "max_comments": 500,
+    "min_age_hours": 1,
+    "max_age_hours": 168,
+    "allow_nsfw": false,
+    "require_selftext": true
+  },
+
+  "tts": {
+    "enabled": true,
+    "provider": "streamlabs_polly",
+    "main_voice": "Matthew",
+    "use_multiple_voices": true,
+    "comment_voices": ["Brian", "Amy", "Emma", "Joanna", "Matthew", "Joey", "Justin", "Kendra", "Kimberly", "Salli"],
+    "output_format": "mp3",
+    "speed": 1.0,
+    "pre_normalize": true,
+
+    "elevenlabs_api_key": "",
+    "elevenlabs_model_id": "eleven_multilingual_v2",
+    "elevenlabs": {
+      "api_key": "",
+      "model_id": "eleven_multilingual_v2",
+      "stability": 0.5,
+      "similarity_boost": 0.75,
+      "style": 0.0,
+      "use_speaker_boost": true
+    }
+  },
+
+  "captions": {
+    "font_path": "arial.ttf",
+    "font_size": 80,
+    "color": "white",
+    "stroke_color": "black",
+    "stroke_width": 4,
+    "bg_color": null,
+    "bg_opacity": 160,
+    "padding": 30,
+    "corner_radius": 20,
+    "max_width_pct": 0.85,
+    "position": "bottom",
+    "position_offset": 0,
+    "words_per_caption": 3,
+    "uppercase": true,
+    "attribution": false,
+    "animation": "none",
+    "animation_duration": 0.15,
+    "pop_overshoot": 1.12,
+    "pop_start_scale": 0.7,
+    "enabled": true
+  },
+
+  "output": {
+    "posts_directory": "posts",
+    "used_posts_file": "used_posts.json"
+  },
+
+  "discord": {
+    "enabled": false,
+    "webhook_url": "",
+    "upload_media": true
+  },
+
+  "gemini": {
+    "enabled": false,
+    "provider": "ollama",
+    "api_key": "",
+    "openrouter_api_key": "",
+    "nvidia_nim_api_key": "",
+    "model": "qwen2.5:14b",
+    "generate_hook": true,
+    "generate_thumbnail_text": true,
+    "ollama_url": "http://localhost:11434"
+  }
+}

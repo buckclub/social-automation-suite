@@ -62,6 +62,10 @@ export interface RedditPost {
   meets_filters: boolean;
   filter_reason: string | null;
   already_used: boolean;
+  viral_score?: number;
+  est_duration_s?: number;
+  word_count?: number;
+  title_dupe_of?: string | null;
 }
 
 export interface VideoRecord {
@@ -124,6 +128,18 @@ export interface TtsProvider extends TtsProviderStatus {
   models_downloaded?: string[];
 }
 
+export interface SocialCopy {
+  exists: boolean;
+  generated_at?: string;
+  provider?: string;
+  model?: string;
+  source_title?: string;
+  subreddit?: string;
+  youtube?: { titles?: string[]; description?: string; tags?: string[] };
+  tiktok?: { caption?: string; hashtags?: string[] };
+  instagram?: { caption?: string; hashtags?: string[] };
+}
+
 export interface FullConfig {
   subreddits: string[];
   request_delay: number;
@@ -171,6 +187,28 @@ export interface FullConfig {
     webhook_url: string;
     upload_media: boolean;
   };
+  captions?: {
+    enabled: boolean;
+    font_path: string;
+    font_size: number;
+    color: string;
+    stroke_color: string;
+    stroke_width: number;
+    bg_color: string | null;
+    bg_opacity: number;
+    padding: number;
+    corner_radius: number;
+    max_width_pct: number;
+    position: "center" | "bottom" | "top";
+    position_offset: number;
+    words_per_caption: number;
+    uppercase: boolean;
+    attribution: boolean;
+    animation: "none" | "fade" | "pop" | "fade_pop";
+    animation_duration: number;
+    pop_overshoot: number;
+    pop_start_scale: number;
+  };
   [key: string]: unknown;
 }
 
@@ -179,6 +217,22 @@ export interface FullConfig {
 export const api = {
   // Health
   health: () => request<{ status: string }>("/api/health"),
+
+  // System fonts
+  listFonts: () => request<{ fonts: { family: string; style: string; file: string; path: string }[] }>("/api/fonts"),
+
+  // Social copy (YouTube / TikTok / Instagram)
+  getSocialCopy: (postId: string) =>
+    request<SocialCopy>(`/api/posts/${postId}/social`),
+  generateSocialCopy: (postId: string) =>
+    request<SocialCopy>(`/api/posts/${postId}/generate-social`, { method: "POST" }),
+
+  // ElevenLabs voices (live, authenticated via server-side config.api_key)
+  listElevenLabsVoices: () =>
+    request<{
+      voices: { voice_id: string; name: string; category?: string; description?: string; labels?: Record<string, string>; preview_url?: string }[];
+      error?: string;
+    }>("/api/tts/elevenlabs/voices"),
 
   // Config — full config.json
   getConfig: () => request<FullConfig>("/api/config"),

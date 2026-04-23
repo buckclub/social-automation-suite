@@ -14,6 +14,7 @@ import type { RedditPost } from "@/lib/api";
 
 const REDDIT_SORTS = [
   { id: "hot", label: "Hot", icon: Flame },
+  { id: "viral", label: "Viral", icon: TrendingUp },
   { id: "best", label: "Best", icon: Star },
   { id: "new", label: "New", icon: Clock },
   { id: "rising", label: "Rising", icon: TrendingUp },
@@ -34,7 +35,7 @@ export default function PostsPage() {
   const [selectedPost, setSelectedPost] = useState<RedditPost | null>(null);
   const [search, setSearch] = useState("");
   const [filterEligible, setFilterEligible] = useState(false);
-  const [sortBy, setSortBy] = useState<"score" | "comments" | "age">("score");
+  const [sortBy, setSortBy] = useState<"score" | "comments" | "age" | "viral">("score");
 
   const posts = data?.posts ?? [];
 
@@ -50,6 +51,7 @@ export default function PostsPage() {
     .sort((a, b) => {
       if (sortBy === "score") return b.score - a.score;
       if (sortBy === "comments") return b.num_comments - a.num_comments;
+      if (sortBy === "viral") return (b.viral_score ?? 0) - (a.viral_score ?? 0);
       return a.age_hours - b.age_hours;
     });
 
@@ -111,7 +113,7 @@ export default function PostsPage() {
         </div>
         <div className="flex items-center gap-1.5">
           <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
-          {(["score", "comments", "age"] as const).map((s) => (
+          {(["score", "comments", "age", "viral"] as const).map((s) => (
             <Button
               key={s}
               size="sm"
@@ -181,11 +183,29 @@ export default function PostsPage() {
                     <p className="text-[10px] text-muted-foreground line-clamp-3 leading-relaxed">{post.selftext}</p>
                   )}
 
-                  <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+                  <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
                     <span>▲ {post.score.toLocaleString()}</span>
                     <span>💬 {post.num_comments}</span>
+                    {post.viral_score !== undefined && post.viral_score > 0 && (
+                      <span title="Score per hour since posted" className="flex items-center gap-0.5 text-primary">
+                        <TrendingUp className="h-3 w-3" />
+                        {post.viral_score.toFixed(0)}/h
+                      </span>
+                    )}
+                    {post.est_duration_s !== undefined && post.est_duration_s > 0 && (
+                      <span title="Estimated narration length at ~155 wpm">
+                        ~{post.est_duration_s}s
+                      </span>
+                    )}
                     {post.over_18 && <Badge variant="destructive" className="text-[9px] px-1 py-0">NSFW</Badge>}
                   </div>
+
+                  {post.title_dupe_of && !post.already_used && (
+                    <p className="text-[10px] text-warning font-mono flex items-center gap-1">
+                      <AlertTriangle className="h-3 w-3" />
+                      Similar to used: "{post.title_dupe_of.slice(0, 50)}..."
+                    </p>
+                  )}
 
                   {!isEligible && (
                     <p className="text-[10px] text-destructive font-mono">

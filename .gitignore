@@ -31,6 +31,13 @@ used_posts.json
 posts/
 backgrounds/
 config.json
+channels.json
 videos/
+audio/
 models/
 build/
+
+# AI / editor sessions
+.claude/
+.cursor/
+.vite/
