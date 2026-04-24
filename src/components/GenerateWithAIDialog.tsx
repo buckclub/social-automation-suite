@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  Sparkles, ArrowRight, ArrowLeft, Loader2,
+  Sparkles, ArrowRight, ArrowLeft, Loader2, AlertTriangle,
   Film, Scissors, Mic, MicOff, BookOpen, MessageSquare,
   Gamepad2, Flame, HandMetal, HelpCircle, Star, Brain, Images, User, Shuffle,
 } from "lucide-react";
@@ -78,8 +78,11 @@ export function GenerateWithAIDialog() {
   useEffect(() => {
     if (!open) return;
     api.listBackgroundFolders()
-      .then((r) => setBgFolders(r.folders))
-      .catch(() => setBgFolders([{ path: "", name: "(All — random)", video_count: 0 }]));
+      .then((r) => setBgFolders(Array.isArray(r?.folders) ? r.folders : []))
+      .catch((e) => {
+        console.warn("[GenerateWithAIDialog] listBackgroundFolders failed:", e);
+        setBgFolders([]);
+      });
   }, [open]);
 
   const ttsConfig = (config as any)?.tts ?? {};
@@ -89,20 +92,28 @@ export function GenerateWithAIDialog() {
   // Build the voice options for the current provider. Falls back to the
   // 21-voice ElevenLabs library when provider=elevenlabs so the dropdown
   // is useful even without a successful /v2/voices fetch.
+  //
+  // IMPORTANT: filter out any empty-id / empty-label entries. Radix Select
+  // throws "A <Select.Item /> must have a value prop that is not an empty
+  // string" at render time if ANY item has an empty value — which would
+  // crash the whole React tree and blank the page.
   const voiceOptions: { id: string; label: string }[] = useMemo(() => {
-    if (ttsProvider === "elevenlabs") {
-      return ELEVENLABS_LIBRARY.map((v) => ({
-        id: v.id, label: `${v.name} — ${v.category}`,
-      }));
-    }
-    const providers = providersData?.providers ?? [];
-    const pp = providers.find((p) => p.id === ttsProvider);
-    const detailed = pp?.voices_detailed ?? [];
-    const raw = pp?.voices ?? [];
-    return raw.map((vid) => {
-      const d = detailed.find((x: any) => x.id === vid);
-      return { id: vid, label: d ? `${d.name} (${d.lang}, ${d.gender})` : vid };
-    });
+    const raw: { id: string; label: string }[] = (() => {
+      if (ttsProvider === "elevenlabs") {
+        return ELEVENLABS_LIBRARY.map((v) => ({
+          id: v.id, label: `${v.name} — ${v.category}`,
+        }));
+      }
+      const providers = providersData?.providers ?? [];
+      const pp = providers.find((p) => p.id === ttsProvider);
+      const detailed = pp?.voices_detailed ?? [];
+      const vs = pp?.voices ?? [];
+      return vs.map((vid) => {
+        const d = detailed.find((x: any) => x.id === vid);
+        return { id: vid, label: d ? `${d.name} (${d.lang}, ${d.gender})` : vid };
+      });
+    })();
+    return raw.filter((v) => v && typeof v.id === "string" && v.id.trim() !== "");
   }, [ttsProvider, providersData]);
 
   const totalSteps = 5;
@@ -385,7 +396,7 @@ export function GenerateWithAIDialog() {
                 <SelectItem value="__all_random__">
                   <span className="flex items-center gap-1"><Shuffle className="h-3 w-3" /> All backgrounds — random</span>
                 </SelectItem>
-                {bgFolders.filter((f) => f.path).map((f) => (
+                {(bgFolders || []).filter((f) => f && typeof f.path === "string" && f.path.trim() !== "").map((f) => (
                   <SelectItem key={f.path} value={f.path}>
                     📁 {f.name} <span className="text-muted-foreground">({f.video_count})</span>
                   </SelectItem>
@@ -490,7 +501,7 @@ export function GenerateWithAIDialog() {
             />
           ))}
         </div>
-        {renderStep()}
+        <DialogErrorBoundary>{renderStep()}</DialogErrorBoundary>
       </DialogContent>
     </Dialog>
   );
@@ -503,4 +514,45 @@ function Row({ label, value, truncate }: { label: string; value?: React.ReactNod
       <span className={cn("font-medium text-right", truncate && "truncate max-w-[220px]")}>{value}</span>
     </div>
   );
+}
+
+// Dialog-local error boundary so a crash inside the wizard (a bad
+// SelectItem, a throwing Select value, a malformed config payload…) can't
+// take down the entire React tree into a black page. Shows the actual
+// error so the user can report it.
+class DialogErrorBoundary extends Component<
+  { children: ReactNode },
+  { err: Error | null }
+> {
+  state = { err: null as Error | null };
+  static getDerivedStateFromError(err: Error) {
+    return { err };
+  }
+  componentDidCatch(err: Error, info: unknown) {
+    console.error("[GenerateWithAIDialog] render crash:", err, info);
+  }
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="space-y-2 rounded-md border border-destructive/40 bg-destructive/10 p-3">
+          <div className="flex items-center gap-2 text-destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <p className="text-xs font-semibold">Dialog crashed — please report this.</p>
+          </div>
+          <pre className="text-[10px] whitespace-pre-wrap break-words text-muted-foreground bg-background/40 rounded p-2 max-h-40 overflow-auto">
+            {this.state.err.name}: {this.state.err.message}
+            {this.state.err.stack ? "\n\n" + this.state.err.stack : ""}
+          </pre>
+          <Button
+            size="sm" variant="outline"
+            className="h-7 text-[10px]"
+            onClick={() => this.setState({ err: null })}
+          >
+            Try again
+          </Button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
