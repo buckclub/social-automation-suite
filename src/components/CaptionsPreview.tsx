@@ -25,6 +25,7 @@ export interface CaptionsPreviewProps {
   highlightColor?: string;
   highlightScale?: number;
   highlightStrokeColor?: string;
+  singleLine?: boolean;
 }
 
 const SAMPLE =
@@ -231,8 +232,29 @@ export function CaptionsPreview(props: CaptionsPreviewProps) {
                   color: props.color,
                   textAlign: "center",
                   textShadow: strokeShadow,
-                  wordBreak: "break-word",
+                  // When "Fit on one line" is on, force a single row and let
+                  // the browser shrink the text via transform — visual proxy
+                  // for the backend's uniform-font-scale behavior.
+                  whiteSpace: props.singleLine ? "nowrap" : undefined,
+                  wordBreak: props.singleLine ? "keep-all" : "break-word",
                   fontWeight: 700,
+                  // Simulate the backend's auto-shrink: if nowrap content
+                  // would overflow the container, scale it down via CSS
+                  // transform so the mini-preview matches reality.
+                  transform: props.singleLine ? undefined : undefined,
+                  display: "inline-block",
+                }}
+                ref={(el) => {
+                  // Live measure-and-scale only for single-line mode.
+                  if (!el || !props.singleLine) return;
+                  el.style.transform = "";
+                  const parentW = (el.parentElement?.clientWidth || 0) - (scaledPadding * 2);
+                  const contentW = el.scrollWidth;
+                  if (contentW > parentW && contentW > 0) {
+                    const ratio = (parentW / contentW) * 0.97;
+                    el.style.transform = `scale(${ratio})`;
+                    el.style.transformOrigin = "center center";
+                  }
                 }}
               >
                 {words.map((w, i) => {

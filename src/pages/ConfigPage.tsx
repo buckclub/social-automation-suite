@@ -185,6 +185,7 @@ export default function ConfigPage() {
   const [capHighlightColor, setCapHighlightColor] = useState("#FFD93D");
   const [capHighlightScale, setCapHighlightScale] = useState(1.1);
   const [capHighlightStrokeColor, setCapHighlightStrokeColor] = useState("#000000");
+  const [capSingleLine, setCapSingleLine] = useState(false);
 
   // Output
   const [postsDir, setPostsDir] = useState("posts");
@@ -362,6 +363,7 @@ export default function ConfigPage() {
     setCapHighlightColor((cap as any).highlight_color ?? "#FFD93D");
     setCapHighlightScale((cap as any).highlight_scale ?? 1.1);
     setCapHighlightStrokeColor((cap as any).highlight_stroke_color ?? (cap.stroke_color ?? "#000000"));
+    setCapSingleLine((cap as any).single_line ?? false);
 
     const o = c.output ?? {} as FullConfig["output"];
     setPostsDir(o.posts_directory ?? "posts");
@@ -437,7 +439,7 @@ export default function ConfigPage() {
     capMaxWidthPct, capPosition, capPositionOffset, capWordsPerCaption,
     capUppercase, capAttribution, capAnimation, capAnimationDuration,
     capPopOvershoot, capPopStartScale, capForceAlign, capAlignModelSize,
-    capHighlightWord, capHighlightColor, capHighlightScale, capHighlightStrokeColor,
+    capHighlightWord, capHighlightColor, capHighlightScale, capHighlightStrokeColor, capSingleLine,
     videoMode, hwAccel, engine, splitDuration, outroText,
     branding, threads, autoCleanup,
   }),
@@ -458,7 +460,7 @@ export default function ConfigPage() {
       capMaxWidthPct, capPosition, capPositionOffset, capWordsPerCaption,
       capUppercase, capAttribution, capAnimation, capAnimationDuration,
       capPopOvershoot, capPopStartScale, capForceAlign, capAlignModelSize,
-      capHighlightWord, capHighlightColor, capHighlightScale, capHighlightStrokeColor,
+      capHighlightWord, capHighlightColor, capHighlightScale, capHighlightStrokeColor, capSingleLine,
       videoMode, hwAccel, engine, splitDuration, outroText,
       branding, threads, autoCleanup,
     ]
@@ -587,6 +589,7 @@ export default function ConfigPage() {
           highlight_color: capHighlightColor,
           highlight_scale: capHighlightScale,
           highlight_stroke_color: capHighlightStrokeColor,
+          single_line: capSingleLine,
         },
         output: {
           posts_directory: postsDir,
@@ -1590,6 +1593,16 @@ export default function ConfigPage() {
                 <Label className="text-xs text-muted-foreground">Max Width ({Math.round(capMaxWidthPct * 100)}% of frame)</Label>
                 <Slider value={[Math.round(capMaxWidthPct * 100)]} onValueChange={([v]) => setCapMaxWidthPct(v / 100)} min={20} max={100} step={1} />
               </div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex-1">
+                  <Label className="text-xs text-muted-foreground">Fit on one line</Label>
+                  <p className="text-[10px] text-muted-foreground leading-snug">
+                    Never wrap to a second line — if a chunk doesn't fit, scale the whole chunk's
+                    font down uniformly until it does. Fixes mid-word breaks.
+                  </p>
+                </div>
+                <Switch checked={capSingleLine} onCheckedChange={setCapSingleLine} />
+              </div>
 
               <Separator />
               <div className="space-y-1">
@@ -1737,6 +1750,7 @@ export default function ConfigPage() {
             highlightColor={capHighlightColor}
             highlightScale={capHighlightScale}
             highlightStrokeColor={capHighlightStrokeColor}
+            singleLine={capSingleLine}
           />
         </div>
         </div>

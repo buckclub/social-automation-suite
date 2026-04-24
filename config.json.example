@@ -134,7 +134,8 @@
     "align_model_size": "base",
 
     "max_chunk_duration": 2.5,
-    "lead_in_grace": 1.0
+    "lead_in_grace": 1.0,
+    "single_line": false
   },
 
   "output": {

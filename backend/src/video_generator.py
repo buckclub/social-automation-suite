@@ -514,6 +514,11 @@ class VideoGenerator:
             # Safety rails against runaway captions when whisper has gaps in the audio.
             'max_chunk_duration': float(cfg.get('max_chunk_duration', 2.5)),  # seconds per chunk
             'lead_in_grace':      float(cfg.get('lead_in_grace', 1.0)),       # seconds of lead before first word
+            # When true: every chunk renders on a single line. If the chunk
+            # doesn't fit at the base font size, we uniformly scale the entire
+            # chunk's font down until it fits — never wrap mid-word or to a
+            # second row. Off by default for backward compatibility.
+            'single_line':        bool(cfg.get('single_line', False)),
         }
 
     def _caption_xy(self, w: int, h: int) -> tuple:
@@ -830,7 +835,7 @@ class VideoGenerator:
                          use_bg_box: bool = False, bg_opacity: int = 255, padding: int = 40,
                          font_path: Optional[str] = None, stroke_color: str = 'black',
                          stroke_width: Optional[int] = None, corner_radius: int = 20,
-                         uppercase: bool = False) -> str:
+                         uppercase: bool = False, single_line: bool = False) -> str:
         """
         Create an image with text using Pillow.
         Returns path to temporary image file.
@@ -860,6 +865,23 @@ class VideoGenerator:
         lines: list[str] = []
         if not words:
             lines = [""]
+        elif single_line:
+            # Single-line mode — measure the whole chunk, scale the font down
+            # uniformly if it's over budget, never wrap. Mirrors the logic in
+            # _render_highlighted_caption so both paths behave the same when
+            # the user flips 'Fit on one line'.
+            joined = " ".join(words)
+            total = font.getlength(joined)
+            if total > budget:
+                ratio = (budget / total) * 0.97
+                new_size = max(10, int(round(fontsize * ratio)))
+                if new_size != fontsize:
+                    fontsize = new_size
+                    try:
+                        font = ImageFont.truetype(font_path or 'arial.ttf', fontsize)
+                    except OSError:
+                        font = ImageFont.load_default()
+            lines = [joined]
         else:
             current = words[0]
             # If a single word exceeds the budget, shrink the font until it fits.
@@ -1023,35 +1045,65 @@ class VideoGenerator:
         space_w = int(font_normal.getlength(' '))
         budget  = max(1, max_width - 2 * padding - 2 * stroke_w)
 
-        # Wrap words into lines. Track each token's geometry + whether it's active.
-        # If a single word is wider than `budget` at its base font, shrink
-        # JUST THAT WORD so it fits — other words stay at normal/highlight size.
-        lines: list[list[dict]] = [[]]
-        cur_w = 0
-        for i, word in enumerate(words):
-            is_active = (i == active_idx)
-            base_font = font_hi if is_active else font_normal
-            base_size_for_word = int(base_font.size)
-            f = base_font
-            ww = int(f.getlength(word))
-            # Shrink if oversized. 0.97 safety factor to avoid 1-pixel overflow
-            # from rounding in glyph advance widths.
-            if ww > budget:
-                scale = (budget / ww) * 0.97
-                new_size = max(10, int(round(base_size_for_word * scale)))
-                f = self._load_font(p['font_path'], new_size)
+        # ── Single-line mode ──────────────────────────────────────────
+        # When the user has "Fit on one line" on, measure the entire chunk at
+        # the base font and, if it overflows the budget, uniformly scale every
+        # word's font down by the same ratio so the whole chunk lands on a
+        # single row. This beats wrapping for short-form captions where a
+        # second row pushes the content off-screen or makes mid-word breaks.
+        if p.get('single_line'):
+            def _measure(fn: ImageFont.FreeTypeFont, fh: ImageFont.FreeTypeFont) -> int:
+                w = 0
+                for i, word in enumerate(words):
+                    is_active = (i == active_idx)
+                    w += int((fh if is_active else fn).getlength(word))
+                w += space_w * max(0, len(words) - 1)
+                return w
+
+            total = _measure(font_normal, font_hi)
+            if total > budget:
+                # 0.97 safety factor for glyph-advance rounding.
+                ratio = (budget / total) * 0.97
+                new_normal_px = max(10, int(round(font_normal.size * ratio)))
+                new_hi_px     = max(10, int(round(font_hi.size     * ratio)))
+                font_normal   = self._load_font(p['font_path'], new_normal_px)
+                font_hi       = self._load_font(p['font_path'], new_hi_px)
+                space_w       = int(font_normal.getlength(' '))
+
+            # Build a single line with no wrap logic.
+            line: list[dict] = []
+            for i, word in enumerate(words):
+                is_active = (i == active_idx)
+                f = font_hi if is_active else font_normal
+                line.append({"word": word, "active": is_active, "font": f, "w": int(f.getlength(word))})
+            lines: list[list[dict]] = [line] if line else [[]]
+        else:
+            # ── Wrap mode (legacy default) ────────────────────────────
+            # If a single word is wider than `budget` at its base font, shrink
+            # JUST THAT WORD so it fits — other words stay at normal/highlight size.
+            lines = [[]]
+            cur_w = 0
+            for i, word in enumerate(words):
+                is_active = (i == active_idx)
+                base_font = font_hi if is_active else font_normal
+                base_size_for_word = int(base_font.size)
+                f = base_font
                 ww = int(f.getlength(word))
-                # Corner case: even at min size 10px still wider — cap at 10.
+                # 0.97 safety factor to avoid 1-pixel overflow from glyph-advance rounding.
                 if ww > budget:
-                    # Last resort: hard clamp.
-                    ww = budget
-            gap = space_w if lines[-1] else 0
-            if lines[-1] and cur_w + gap + ww > budget:
-                lines.append([])
-                cur_w = 0
-                gap = 0
-            lines[-1].append({"word": word, "active": is_active, "font": f, "w": ww})
-            cur_w += gap + ww
+                    scale = (budget / ww) * 0.97
+                    new_size = max(10, int(round(base_size_for_word * scale)))
+                    f = self._load_font(p['font_path'], new_size)
+                    ww = int(f.getlength(word))
+                    if ww > budget:
+                        ww = budget
+                gap = space_w if lines[-1] else 0
+                if lines[-1] and cur_w + gap + ww > budget:
+                    lines.append([])
+                    cur_w = 0
+                    gap = 0
+                lines[-1].append({"word": word, "active": is_active, "font": f, "w": ww})
+                cur_w += gap + ww
 
         # Compute line heights from the actual fonts used on that line (each
         # word may have its own size now), so line spacing is correct even when
@@ -1136,6 +1188,7 @@ class VideoGenerator:
             stroke_width=p['stroke_width'],
             corner_radius=p['corner_radius'],
             uppercase=p['uppercase'],
+            single_line=p.get('single_line', False),
         )
 
     def get_random_background(self, duration: float) -> VideoFileClip:
