@@ -685,6 +685,14 @@ async def lifespan(app: FastAPI):
         init_on_startup(PROJECT_ROOT)
     except Exception as e:
         _log(f"Run queue recovery failed: {e}")
+    # Same recovery for the social-copy queue.
+    try:
+        from social_queue import init_on_startup as social_init
+        n = social_init(PROJECT_ROOT)
+        if n:
+            _log(f"Social copy queue: recovered {n} orphaned running item(s)")
+    except Exception as e:
+        _log(f"Social copy queue recovery failed: {e}")
     # AI-score cache housekeeping: one-time migrate legacy per-post rows,
     # then prune anything not touched in the TTL window so stale models
     # don't linger forever.
@@ -700,17 +708,19 @@ async def lifespan(app: FastAPI):
             _log(f"AI-score cache: pruned {pruned} stale entr{'y' if pruned == 1 else 'ies'} (>{ttl}d unused)")
     except Exception as e:
         _log(f"AI-score cache init failed: {e}")
-    # Kick off the background worker.
+    # Kick off the background workers.
     task = asyncio.create_task(_queue_worker())
+    social_task = asyncio.create_task(_social_queue_worker())
     _log("Server started")
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+        for t in (task, social_task):
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 # ── App ──────────────────────────────────────────────────────────────
@@ -3813,6 +3823,11 @@ async def list_videos():
             first_dir = os.path.dirname(paths[0]) if paths[0] else None
             if first_dir and os.path.isdir(first_dir):
                 entry["has_thumbnails"] = any(f.endswith(".png") and "thumbnail" in f for f in os.listdir(first_dir))
+        # Social copy: exists on disk already? The card renders a ✓ badge
+        # so the user can tell at a glance which ones still need copy.
+        entry["has_social"] = os.path.isfile(
+            os.path.join(PROJECT_ROOT, "posts", str(v.get("id") or ""), "social.json")
+        )
         safe.append(entry)
     return {"videos": safe}
 
@@ -4095,12 +4110,13 @@ async def get_social_copy(post_id: str):
         raise HTTPException(500, f"Failed to read social.json: {e}")
 
 
-@app.post("/api/posts/{post_id}/generate-social")
-async def generate_social_copy(post_id: str):
+def _do_generate_social_copy(post_id: str) -> dict:
     """
-    Generate YouTube / TikTok / Instagram titles, captions and hashtags
-    for a rendered post using the configured AI provider. Saves to
-    posts/<post_id>/social.json.
+    Core social-copy generation — extracted from the HTTP endpoint so
+    the background queue worker can call it. Returns the saved payload
+    dict on success. Raises HTTPException (so the HTTP endpoint can
+    forward the status) or plain Exception (worker catches and reports
+    to the queue) on failure.
     """
     post_dir = os.path.join(PROJECT_ROOT, "posts", post_id)
     summary_path = os.path.join(post_dir, "summary.json")
@@ -4356,6 +4372,98 @@ Return JSON with exactly this shape:
         raise
     except Exception as e:
         raise HTTPException(500, f"Social copy generation failed: {e}")
+
+
+@app.post("/api/posts/{post_id}/generate-social")
+async def generate_social_copy(post_id: str):
+    """
+    Synchronous one-shot generation — blocks until the LLM responds.
+    The batch-queue endpoint below is the non-blocking alternative for
+    when the user wants to generate many at once and come back later.
+    """
+    return _do_generate_social_copy(post_id)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Social-copy batch queue — background generation for N posts at once.
+# ──────────────────────────────────────────────────────────────────────
+
+@app.post("/api/social/batch-generate")
+async def batch_generate_social(req: dict):
+    """
+    Enqueue multiple posts for background social-copy generation. The
+    user returns to the Videos page; a small status chip shows queue
+    progress. Items already running/queued for the same post_id are
+    skipped so a double-click doesn't duplicate work.
+
+    Body: { "items": [{"post_id": "abc", "title": "..."}, ...] }
+    Returns the queue rows that were actually added.
+    """
+    from social_queue import enqueue_many
+    items_in = req.get("items") or []
+    if not isinstance(items_in, list) or not items_in:
+        raise HTTPException(400, "items[] required")
+    added = enqueue_many(PROJECT_ROOT, items_in)
+    _log(f"Social copy queue: +{len(added)} item(s) (skipped {len(items_in) - len(added)} dup/empty)")
+    return {"added": added, "count": len(added)}
+
+
+@app.get("/api/social/queue")
+async def social_queue_snapshot():
+    """Return the full queue state (pending/running/history)."""
+    from social_queue import snapshot
+    return snapshot(PROJECT_ROOT)
+
+
+@app.delete("/api/social/queue/{queue_id}")
+async def social_queue_cancel(queue_id: str):
+    """Cancel a queued entry (running entries can't be cancelled mid-call)."""
+    from social_queue import cancel
+    ok = cancel(PROJECT_ROOT, queue_id)
+    if not ok:
+        raise HTTPException(409, "Can't cancel — item is currently running")
+    return {"cancelled": True}
+
+
+@app.delete("/api/social/queue")
+async def social_queue_clear_history():
+    """Clear finished / failed / cancelled rows from the queue view."""
+    from social_queue import clear_history
+    removed = clear_history(PROJECT_ROOT)
+    return {"removed": removed}
+
+
+# The background worker — one iteration per queued item. Spawned by
+# lifespan(), cancelled on server shutdown. Processes strictly serially
+# so LLM rate limits aren't hit.
+async def _social_queue_worker():
+    import asyncio
+    while True:
+        try:
+            from social_queue import pop_next, finish
+            row = pop_next(PROJECT_ROOT)
+            if not row:
+                await asyncio.sleep(2.0)
+                continue
+            qid = row["queue_id"]; pid = row["post_id"]
+            _log(f"Social copy queue → generating for {pid} ({row.get('title', '')[:60]})")
+            try:
+                await asyncio.to_thread(_do_generate_social_copy, pid)
+                finish(PROJECT_ROOT, qid, ok=True)
+                _log(f"Social copy queue ✓ {pid}")
+            except HTTPException as he:
+                msg = f"{he.status_code}: {he.detail}"
+                finish(PROJECT_ROOT, qid, ok=False, error=msg)
+                _log(f"Social copy queue ✗ {pid} — {msg}")
+            except Exception as e:
+                finish(PROJECT_ROOT, qid, ok=False, error=str(e))
+                _log(f"Social copy queue ✗ {pid} — {e}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Don't let an outer fault kill the worker.
+            _log(f"Social copy worker tick failed: {e}")
+            await asyncio.sleep(5.0)
 
 
 # ──────────────────────────────────────────────────────────────────────

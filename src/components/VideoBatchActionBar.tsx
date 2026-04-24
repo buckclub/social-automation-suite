@@ -72,21 +72,26 @@ export function VideoBatchActionBar({ videos, selectedIds, onClear, onAllSelecte
 
   const runSocialCopy = async () => {
     setBusy("social");
-    let ok = 0, fail = 0;
-    for (const v of selectedVideos) {
-      try {
-        await api.generateSocialCopy(v.id);
-        ok++;
-      } catch {
-        fail++;
-      }
+    try {
+      const r = await api.batchGenerateSocial(
+        selectedVideos.map((v) => ({ post_id: v.id, title: v.title })),
+      );
+      toast({
+        title: `Queued ${r.count} video${r.count === 1 ? "" : "s"}`,
+        description: r.count < selectedVideos.length
+          ? `${selectedVideos.length - r.count} already queued or running — skipped.`
+          : "Background worker is processing them. Watch the Social Copy Queue chip for progress.",
+      });
+      onClear();
+    } catch (e: any) {
+      toast({
+        title: "Queue failed",
+        description: e.message || "Check AI provider config and try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setBusy(null);
     }
-    setBusy(null);
-    toast({
-      title: `Generated copy for ${ok} video${ok === 1 ? "" : "s"}`,
-      description: fail ? `${fail} failed — check AI provider config.` : undefined,
-      variant: fail ? "destructive" : "default",
-    });
   };
 
   if (!visible) return null;

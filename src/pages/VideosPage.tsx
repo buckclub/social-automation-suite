@@ -161,6 +161,15 @@ function VideoCard({ video, index, onPreview, onDelete, selected, onSelectChange
           <div className="flex flex-wrap gap-1.5 pt-1">
             {video.has_audio && <Badge variant="outline" className="text-[9px] px-1.5 py-0">Audio</Badge>}
             {video.has_video && <Badge variant="outline" className="text-[9px] px-1.5 py-0">Video</Badge>}
+            {video.has_social && (
+              <Badge
+                variant="outline"
+                className="text-[9px] px-1.5 py-0 border-primary/40 text-primary"
+                title="Social copy already generated and saved to disk"
+              >
+                ✨ Social
+              </Badge>
+            )}
           </div>
 
           {/* Per-part buttons */}

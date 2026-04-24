@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { CommandPaletteProvider, useCommandPalette } from "@/components/CommandPalette";
 import { KeyboardShortcuts } from "@/components/KeyboardShortcuts";
 import { StatusBar } from "@/components/StatusBar";
+import { SocialCopyQueueChip } from "@/components/SocialCopyQueueChip";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -20,6 +21,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     <CommandPaletteProvider>
       <KeyboardShortcuts />
       <AppLayoutInner>{children}</AppLayoutInner>
+      <SocialCopyQueueChip />
       <StatusBar />
     </CommandPaletteProvider>
   );

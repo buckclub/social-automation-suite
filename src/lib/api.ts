@@ -91,6 +91,8 @@ export interface VideoRecord {
   file_size_bytes?: number;
   part_files?: string[];
   has_thumbnails?: boolean;
+  /** True when posts/<id>/social.json exists on disk. */
+  has_social?: boolean;
 }
 
 export interface Stats {
@@ -163,6 +165,22 @@ export interface SocialCopy {
     view_count: number;
     video_id: string;
   }>;
+}
+
+// Background queue for batch social-copy generation.
+export interface SocialQueueItem {
+  queue_id: string;
+  post_id: string;
+  title: string;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  added_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+}
+export interface SocialQueueSnapshot {
+  items: SocialQueueItem[];
+  history_cap: number;
 }
 
 // ── Clip Maker ───────────────────────────────────────────────────
@@ -383,6 +401,23 @@ export const api = {
     request<SocialCopy>(`/api/posts/${postId}/social`),
   generateSocialCopy: (postId: string) =>
     request<SocialCopy>(`/api/posts/${postId}/generate-social`, { method: "POST" }),
+
+  // Batch background generation — enqueues N posts for the server-side
+  // social-copy worker to grind through while the browser goes elsewhere.
+  batchGenerateSocial: (items: { post_id: string; title?: string }[]) =>
+    request<{ added: SocialQueueItem[]; count: number }>(
+      `/api/social/batch-generate`,
+      { method: "POST", body: JSON.stringify({ items }) },
+    ),
+  getSocialQueue: () =>
+    request<SocialQueueSnapshot>(`/api/social/queue`),
+  cancelSocialQueueItem: (queueId: string) =>
+    request<{ cancelled: boolean }>(
+      `/api/social/queue/${encodeURIComponent(queueId)}`,
+      { method: "DELETE" },
+    ),
+  clearSocialQueueHistory: () =>
+    request<{ removed: number }>(`/api/social/queue`, { method: "DELETE" }),
 
   // Publishing — YouTube
   youtubeStatus: () =>
