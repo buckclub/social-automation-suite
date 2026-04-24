@@ -1,4 +1,4 @@
-# Reels Automation - Python dependencies
+# Social Automation Suite - Python dependencies
 # Author: Faheem Alvi <faheemalvi2000@gmail.com>
 # Install with: pip install -r backend/requirements.txt
 

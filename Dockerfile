@@ -1,4 +1,4 @@
-# Reels Automation
+# Social Automation Suite (fork of reels-automation)
 # Author: Faheem Alvi <faheemalvi2000@gmail.com>
 # GitHub: https://github.com/FaheemAlvii
 

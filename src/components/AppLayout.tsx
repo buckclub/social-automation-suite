@@ -43,8 +43,8 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
                 <Video className="h-4 w-4 text-primary" />
               </div>
               <h1 className="text-lg font-bold tracking-tight">
-                <span className="text-gradient">Reels</span>
-                <span className="text-foreground"> Automation</span>
+                <span className="text-gradient">Social</span>
+                <span className="text-foreground"> Automation Suite</span>
               </h1>
             </NavLink>
 

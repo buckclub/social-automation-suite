@@ -1,6 +1,6 @@
 /**
- * Reels Automation
- * Author: Faheem Alvi <faheemalvi2000@gmail.com>
+ * Social Automation Suite (fork of reels-automation)
+ * Upstream Author: Faheem Alvi <faheemalvi2000@gmail.com>
  * GitHub: https://github.com/FaheemAlvii
  * LinkedIn: https://www.linkedin.com/in/faheem-alvi
  * License: CC BY-NC 4.0

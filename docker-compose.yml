@@ -1,10 +1,10 @@
-# Reels Automation
+# Social Automation Suite (fork of reels-automation)
 # Author: Faheem Alvi <faheemalvi2000@gmail.com>
 
 services:
-  reddit-video-engine:
+  social-automation-suite:
     build: .
-    container_name: reddit-video-engine
+    container_name: social-automation-suite
     restart: unless-stopped
     ports:
       - "8000:8000"

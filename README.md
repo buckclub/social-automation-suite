@@ -1,8 +1,15 @@
-# Reels Automation
+# Social Automation Suite
 
-Open source tool to generate vertical short videos from Reddit posts or AI generated scripts. Renders with FFmpeg, narrates with TTS, and can publish to YouTube Shorts, TikTok, Instagram Reels, and Snapchat Spotlight.
+End-to-end short-form content automation. What started as a Reddit-to-Reels pipeline has grown into a full suite for faceless-video operators:
 
-This is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/reddit-to-reels) with a bunch of quality-of-life and feature additions — see [Fork Additions](#fork-additions) below.
+- **Reels** — Reddit posts or AI-generated scripts → vertical 1080×1920 video with TTS narration, word-level captions, and optional auto-publishing to YouTube Shorts / TikTok / Instagram Reels / Snapchat Spotlight.
+- **Clip Maker** — long-form YouTube URL or uploaded mp4 → AI-picked Shorts-worthy clips. Event-driven mode detects in-game moments (gunshots, goals, HUD events) in footage without a transcript.
+- **Text Posts** — generate tweets, Reddit comments, YouTube / TikTok / Instagram community posts, LinkedIn updates; with brand-voice presets and batch variants.
+- **Social Copy** — per-video YouTube title/description + unified Reels/TikTok caption with a background batch queue; click "Social copy" on N videos and come back later.
+
+All rendering is local (FFmpeg). Narration uses your choice of ElevenLabs / Streamlabs Polly / LazyPy TikTok / VibeVoice / Qwen3 TTS. Content generation uses your configured LLM (Gemini / OpenRouter / Ollama / Nvidia NIM).
+
+This project is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/reddit-to-reels) — credit for the original Reddit-to-Reels codebase belongs there. See [Fork Additions](#fork-additions) below for the feature work that turned it into the Social Automation Suite.
 
 > **Upstream Notice**
 >
@@ -206,7 +213,7 @@ wmic computersystem set AutomaticManagedPagefile=True
 
 ## What it does
 
-Reels Automation fetches content from Reddit or generates original scripts using a configured AI provider, converts the text to speech, and renders a vertical 1080x1920 short video with synchronized subtitles and a background clip. It includes a web dashboard, a CLI for terminals (including A-Shell on iOS), and a desktop build for Windows.
+Social Automation Suite fetches content from Reddit or generates original scripts with a configured LLM, converts the text to speech, and renders vertical 1080×1920 shorts with word-level captions over a background clip. Beyond the Reddit-reels pipeline, it ships a **Clip Maker** (long-form → Shorts with AI / heuristic / event-driven proposal modes), a **Text Posts** page (tweets / comments / community posts / LinkedIn, with brand-voice presets and variant batches), a **background Social Copy queue** (YouTube + unified Reels/TikTok caption generated for N videos at once), and auto-publishing to YouTube Shorts with scheduled release. It includes a web dashboard, a CLI for terminals (including A-Shell on iOS), and a desktop build for Windows.
 
 ## Features
 
@@ -552,7 +559,7 @@ README.md
 
 ## FAQ
 
-### How do I run Reels Automation locally?
+### How do I run Social Automation Suite locally?
 
 Install Node 20, pnpm, Python 3.11, and FFmpeg. Run `pnpm install && pnpm dev` for the frontend and `pip install -r backend/requirements.txt && uvicorn api_server:app --app-dir backend/src --reload` for the backend.
 

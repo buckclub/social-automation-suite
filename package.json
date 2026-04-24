@@ -1,9 +1,9 @@
 {
-  "name": "reddit-video-engine",
+  "name": "social-automation-suite",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Generate vertical short videos from Reddit posts and AI prompts with TTS and FFmpeg.",
+  "description": "End-to-end short-form content automation: Reddit-story reels, long-form Clip Maker, text posts (tweets/comments/community), background social-copy queue, and auto-publishing to YouTube Shorts / TikTok / Reels / Snapchat.",
   "author": "Faheem Alvi <faheemalvi2000@gmail.com> (https://github.com/FaheemAlvii)",
   "license": "CC-BY-NC-4.0",
   "scripts": {

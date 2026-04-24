@@ -1,6 +1,6 @@
 /**
- * Reels Automation - API client
- * Author: Faheem Alvi <faheemalvi2000@gmail.com>
+ * Social Automation Suite — API client (fork of reels-automation)
+ * Upstream Author: Faheem Alvi <faheemalvi2000@gmail.com>
  * GitHub: https://github.com/FaheemAlvii
  * License: CC BY-NC 4.0
  */
