@@ -194,7 +194,20 @@
       "max_count":             10,
       "bin_s":                 2.0,
       "min_gap_s":             8.0,
-      "top_n":                 20
+      "top_n":                 20,
+
+      "//yamnet":              "Optional: YAMNet audio-event classifier (521 AudioSet classes). Requires tflite-runtime OR tensorflow. Model auto-downloads to models/ on first use.",
+      "yamnet": {
+        "enabled":              false,
+        "preset":               "general_action",
+        "//preset_options":     "fps | sports | racing | general_action | \"\" (use target_classes)",
+        "target_classes":       [],
+        "//target_classes_example": ["Gunshot, gunfire", "Explosion", "Cheering", "Whistling"],
+        "min_confidence":       0.25
+      },
+
+      "//reference_sounds":    "Optional: per-game reference sound templates (short WAVs). Each match fires when normalized cross-correlation exceeds min_ncc. Manage through the Clip Maker UI.",
+      "reference_sounds":      []
     }
   },
 

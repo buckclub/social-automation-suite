@@ -1386,12 +1386,16 @@ async def propose_clip_project(project_id: str, req: dict = {}):
     # file to compute audio / visual signals. None is fine for ai_only /
     # manual.
     source_path_for_heuristics = proj.get("source_file") or None
-    # Per-request override > config default. Frontend can pass a fully
-    # spec'd event_detect block (pre_roll, post_roll, hud_region, etc)
-    # for one-off runs without saving it to config.json.
-    event_cfg = (req.get("event_detect")
-                 if isinstance(req.get("event_detect"), dict)
-                 else cm.get("event_detect"))
+    # Precedence (lowest → highest): config.json → project-stored
+    # event_detect (where per-project ref sounds live) → per-request
+    # override (pre/post roll tweaked on the Propose button).
+    event_cfg: dict = {}
+    if isinstance(cm.get("event_detect"), dict):
+        event_cfg.update(cm["event_detect"])
+    if isinstance(proj.get("event_detect"), dict):
+        event_cfg.update(proj["event_detect"])
+    if isinstance(req.get("event_detect"), dict):
+        event_cfg.update(req["event_detect"])
     def _run():
         return propose_clips(
             segs,
@@ -1473,6 +1477,94 @@ async def add_proposal(project_id: str, req: dict):
     proj["status"] = "ready_to_review"
     save_project(PROJECT_ROOT, proj)
     return {"proposal": new}
+
+
+@app.post("/api/clips/{project_id}/references")
+async def upload_clip_reference(project_id: str,
+                                 file: UploadFile = File(...),
+                                 label: str = "",
+                                 min_ncc: float = 0.5):
+    """
+    Upload a reference sound (short WAV/MP3) for template matching in
+    event_driven mode. Stored under `clips/<project_id>/refs/`. The
+    project's event_detect.reference_sounds list is updated.
+    """
+    from clip_projects import load_project, save_project, project_dir
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Clip project not found")
+    # Simple extension guard — FFmpeg decodes inside, so we're lenient.
+    safe_name = os.path.basename(file.filename or "ref.wav")
+    # Strip any path-escape attempts; keep a plain filename.
+    safe_name = re.sub(r"[^\w\.\-]+", "_", safe_name).strip("._") or "ref.wav"
+    refs_dir = os.path.join(project_dir(PROJECT_ROOT, project_id), "refs")
+    os.makedirs(refs_dir, exist_ok=True)
+    dest = os.path.join(refs_dir, safe_name)
+    # De-dup: if the name is taken, suffix with _2, _3, …
+    stem, ext = os.path.splitext(safe_name)
+    n = 2
+    while os.path.exists(dest):
+        dest = os.path.join(refs_dir, f"{stem}_{n}{ext}")
+        n += 1
+    content = await file.read()
+    with open(dest, "wb") as f:
+        f.write(content)
+    # Persist into the project's event_detect config.
+    ed = proj.setdefault("event_detect", {})
+    refs = ed.setdefault("reference_sounds", [])
+    refs.append({
+        "path":    dest,
+        "label":   label or os.path.splitext(os.path.basename(dest))[0],
+        "min_ncc": max(0.2, min(0.95, float(min_ncc))),
+    })
+    save_project(PROJECT_ROOT, proj)
+    return {"added": True, "ref": refs[-1]}
+
+
+@app.get("/api/clips/{project_id}/references")
+async def list_clip_references(project_id: str):
+    """Return all reference sounds attached to this project."""
+    from clip_projects import load_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Clip project not found")
+    refs = (proj.get("event_detect") or {}).get("reference_sounds") or []
+    # Only expose safe shape to UI — basename + label + threshold.
+    return {
+        "references": [
+            {
+                "name":    os.path.basename(r.get("path") or ""),
+                "label":   r.get("label") or "",
+                "min_ncc": r.get("min_ncc", 0.5),
+                "exists":  bool(r.get("path") and os.path.isfile(r.get("path"))),
+            }
+            for r in refs if isinstance(r, dict)
+        ]
+    }
+
+
+@app.delete("/api/clips/{project_id}/references/{name}")
+async def delete_clip_reference(project_id: str, name: str):
+    """Remove a reference sound by basename."""
+    from clip_projects import load_project, save_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Clip project not found")
+    ed = proj.setdefault("event_detect", {})
+    refs = ed.get("reference_sounds") or []
+    keep = []
+    removed_path = None
+    for r in refs:
+        if isinstance(r, dict) and os.path.basename(r.get("path") or "") == name:
+            removed_path = r.get("path")
+            continue
+        keep.append(r)
+    ed["reference_sounds"] = keep
+    save_project(PROJECT_ROOT, proj)
+    if removed_path and os.path.isfile(removed_path):
+        try: os.remove(removed_path)
+        except OSError: pass
+    return {"deleted": True}
 
 
 @app.delete("/api/clips/{project_id}/proposals/{proposal_id}")

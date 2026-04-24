@@ -506,6 +506,8 @@ DEFAULT_WEIGHTS = {
     "hud":       1.2,   # HUD events are semantically very precise
     "scene":     0.3,   # scene cuts are weak on their own
     "energy":    0.4,   # absolute energy is supportive, not decisive
+    "yamnet":    1.5,   # class-specific acoustic match — very high signal
+    "ref_sound": 1.6,   # exact-sound template match — highest confidence
 }
 
 
@@ -564,6 +566,48 @@ def detect_events(source_path: str,
             signals.extend(audio_energy(source_path))
         except Exception as e:
             print(f"⚠️  audio_energy failed: {e}")
+
+    # YAMNet class-specific audio events (Layer 2). Optional runtime —
+    # silently skipped if tflite-runtime / tensorflow isn't installed.
+    yam_cfg = cfg.get("yamnet") or {}
+    if yam_cfg.get("enabled"):
+        try:
+            from yamnet_detect import yamnet_detect, preset_classes, is_available
+            if is_available():
+                classes = list(yam_cfg.get("target_classes") or [])
+                if not classes:
+                    classes = preset_classes(yam_cfg.get("preset") or "general_action")
+                yam_hits = yamnet_detect(
+                    source_path,
+                    classes,
+                    min_confidence=float(yam_cfg.get("min_confidence", 0.25)),
+                    top_n=int(yam_cfg.get("top_n", 60)),
+                    min_gap_s=float(yam_cfg.get("min_gap_s", 3.0)),
+                    model_path=yam_cfg.get("model_path") or None,
+                    labels_path=yam_cfg.get("labels_path") or None,
+                )
+                signals.extend(yam_hits)
+                if yam_hits:
+                    print(f"   YAMNet: {len(yam_hits)} events on {len(set(classes))} classes")
+        except Exception as e:
+            print(f"⚠️  YAMNet failed: {e}")
+
+    # Reference-sound template matches (Layer 3b).
+    for ref in (cfg.get("reference_sounds") or []):
+        rp = ref.get("path") if isinstance(ref, dict) else ref
+        if not rp:
+            continue
+        try:
+            hits = reference_sound_match(
+                source_path, rp,
+                min_ncc=float(ref.get("min_ncc", 0.5)) if isinstance(ref, dict) else 0.5,
+                top_n=int(ref.get("top_n", 30)) if isinstance(ref, dict) else 30,
+            )
+            signals.extend(hits)
+            if hits:
+                print(f"   ref-sound '{os.path.basename(rp)}': {len(hits)} matches")
+        except Exception as e:
+            print(f"⚠️  reference_sound_match('{rp}') failed: {e}")
 
     if not signals:
         return []
@@ -736,6 +780,18 @@ DEFAULT_EVENT_CFG: dict = {
     "min_len_s":            10.0,
     "max_len_s":            60.0,
     "max_count":            10,
+    # YAMNet class-based audio tagging. Disabled by default so users
+    # don't need the tflite runtime for basic event detection.
+    "yamnet": {
+        "enabled":        False,
+        "preset":         "general_action",   # fps | sports | racing | general_action | ""
+        "target_classes": [],                  # explicit override — substrings match
+        "min_confidence": 0.25,
+    },
+    # Per-project reference sounds. Each is:
+    #   { "path": "<abs>", "min_ncc": 0.5, "top_n": 30 }
+    # See reference_sound_match() for details.
+    "reference_sounds":     [],
 }
 
 
@@ -745,3 +801,147 @@ def merged_event_cfg(user_cfg: Optional[dict]) -> dict:
     if user_cfg:
         out.update({k: v for k, v in user_cfg.items() if v is not None})
     return out
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Reference-sound template matching (Layer 3b)
+#
+# Given a short reference WAV (goal horn, killstreak jingle, victory
+# sting) find every position in the source where it plays. Uses normalized
+# cross-correlation computed by chunked FFT so it stays fast on hour-long
+# inputs. Works at 4 kHz to cut compute 4×; enough headroom for any
+# non-musical sound effect.
+# ═══════════════════════════════════════════════════════════════════════
+
+_REF_SR = 4000    # downsample target for both streams
+
+
+def _extract_pcm_4k(source_path: str) -> Optional[list[int]]:
+    """Decode to mono 4 kHz int16 PCM. Returns a list (cheap indexing) or None."""
+    import array
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.close()
+    try:
+        cmd = [
+            _ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
+            "-i", source_path,
+            "-vn", "-ac", "1", "-ar", str(_REF_SR), "-sample_fmt", "s16",
+            tmp.name,
+        ]
+        r = subprocess.run(cmd, capture_output=True)
+        if r.returncode != 0:
+            return None
+        with wave.open(tmp.name, "rb") as w:
+            raw = w.readframes(w.getnframes())
+        a = array.array("h"); a.frombytes(raw)
+        return list(a)
+    finally:
+        try: os.remove(tmp.name)
+        except OSError: pass
+
+
+def reference_sound_match(source_path: str,
+                          ref_path: str,
+                          *,
+                          min_ncc: float = 0.5,
+                          top_n: int = 30,
+                          min_gap_s: float = 3.0) -> list[dict]:
+    """
+    Slide `ref_path` across `source_path` and return every position where
+    the normalized cross-correlation exceeds `min_ncc`.
+
+    NCC is bounded 0..1, where:
+      0.40  = loose match — a similar-sounding event
+      0.55  = confident match
+      0.75+ = near-perfect acoustic copy
+
+    Output: [{time, score 0..1, kind: "ref_sound", ref: <basename>}, …]
+    """
+    if not source_path or not os.path.isfile(source_path):
+        return []
+    if not ref_path or not os.path.isfile(ref_path):
+        return []
+
+    try:
+        import numpy as np
+    except Exception:
+        print("⚠️  numpy unavailable — reference-sound matching skipped")
+        return []
+
+    src_pcm = _extract_pcm_4k(source_path)
+    ref_pcm = _extract_pcm_4k(ref_path)
+    if not src_pcm or not ref_pcm:
+        return []
+
+    source = np.asarray(src_pcm, dtype=np.float32) / 32768.0
+    template = np.asarray(ref_pcm, dtype=np.float32) / 32768.0
+    M = len(template)
+    if M < 200 or len(source) < M + 10:
+        return []
+    # Cap template length: >30 s templates wouldn't make sense and bloat FFTs.
+    if M > _REF_SR * 30:
+        template = template[:_REF_SR * 30]
+        M = len(template)
+
+    # Zero-mean + unit-norm template so NCC denominator folds cleanly.
+    tpl = template - template.mean()
+    tpl_norm = float(np.linalg.norm(tpl)) or 1.0
+    tpl /= tpl_norm
+
+    # Chunked FFT correlation. Chunk size = 8*M (balance between FFT cost
+    # and redundant overlap). Overlap = M-1 so boundary matches aren't
+    # missed at chunk seams.
+    chunk = max(32768, 8 * M)
+    step = chunk - M + 1
+
+    hits: list[dict] = []
+    ref_name = os.path.basename(ref_path)
+    # Reversed template so rfft(conv) == correlate.
+    tpl_rev = tpl[::-1]
+
+    i = 0
+    while i + M <= len(source):
+        end = min(len(source), i + chunk)
+        seg = source[i:end]
+        if len(seg) < M:
+            break
+        fft_size = 1 << int(math.ceil(math.log2(len(seg) + M - 1)))
+        S = np.fft.rfft(seg, fft_size)
+        T = np.fft.rfft(tpl_rev, fft_size)
+        conv = np.fft.irfft(S * T, fft_size)
+        valid_len = len(seg) - M + 1
+        valid = conv[M - 1:M - 1 + valid_len]
+
+        # Per-position source-window norm, via cumulative sum of squares.
+        cs = np.concatenate([[0.0], np.cumsum(seg * seg)])
+        win_ss = cs[M:M + valid_len] - cs[:valid_len]
+        win_norm = np.sqrt(np.maximum(0.0, win_ss)) + 1e-8
+        ncc = valid / win_norm   # bounded ≈ [-1, 1]
+
+        # Harvest peaks.
+        above = np.where(ncc >= min_ncc)[0]
+        for k in above:
+            t_abs = (i + int(k)) / _REF_SR
+            hits.append({
+                "time":  round(t_abs, 3),
+                "score": round(float(min(1.0, ncc[k])), 3),
+                "kind":  "ref_sound",
+                "ref":   ref_name,
+            })
+        i += step
+
+    if not hits:
+        return []
+
+    # Greedy top-N with min gap.
+    hits.sort(key=lambda h: h["score"], reverse=True)
+    picked: list[dict] = []
+    for h in hits:
+        if len(picked) >= top_n:
+            break
+        if any(abs(h["time"] - p["time"]) < min_gap_s for p in picked):
+            continue
+        picked.append(h)
+    picked.sort(key=lambda h: h["time"])
+    return picked

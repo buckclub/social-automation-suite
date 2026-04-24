@@ -51,6 +51,18 @@ export default function ClipProjectPage() {
   const [eventPreRoll,  setEventPreRoll]  = useState(15);
   const [eventPostRoll, setEventPostRoll] = useState(3);
   const [eventHudRegion, setEventHudRegion] = useState<string>("");  // "x1,y1,x2,y2" fractions
+  const [pickingHud, setPickingHud] = useState(false);                 // drag overlay active?
+
+  // YAMNet (Layer 2) controls
+  const [yamnetEnabled, setYamnetEnabled] = useState(false);
+  const [yamnetPreset,  setYamnetPreset]  = useState<"fps" | "sports" | "racing" | "general_action" | "custom">("general_action");
+  const [yamnetClasses, setYamnetClasses] = useState<string>("");       // only used when preset=custom
+  const [yamnetMinConf, setYamnetMinConf] = useState<number>(0.25);
+
+  // Reference sounds (Layer 3b) — list from backend, uploader input
+  type RefSound = { name: string; label: string; min_ncc: number; exists: boolean };
+  const [refSounds, setRefSounds] = useState<RefSound[]>([]);
+  const refFileInput = useRef<HTMLInputElement | null>(null);
 
   // Action-in-flight flags
   const [transcribing, setTranscribing] = useState(false);
@@ -118,10 +130,20 @@ export default function ClipProjectPage() {
         const region = eventHudRegion
           .split(",").map((s) => parseFloat(s.trim()))
           .filter((n) => !Number.isNaN(n));
+        const customClasses = yamnetClasses
+          .split(",").map((s) => s.trim()).filter(Boolean);
         event_detect = {
           pre_roll_s:  eventPreRoll,
           post_roll_s: eventPostRoll,
           hud_region:  region.length === 4 ? region : null,
+          yamnet: yamnetEnabled ? {
+            enabled:        true,
+            preset:         yamnetPreset === "custom" ? "" : yamnetPreset,
+            target_classes: yamnetPreset === "custom" ? customClasses : [],
+            min_confidence: yamnetMinConf,
+          } : { enabled: false },
+          // Ref sounds live on the project itself (uploaded separately)
+          // so we don't send them here — backend merges them in.
         };
       }
       const r = await api.proposeClips(proj.id, {
@@ -135,6 +157,81 @@ export default function ClipProjectPage() {
     } finally {
       setProposing(false);
     }
+  };
+
+  // ── Reference-sound management ───────────────────────────────────
+  const refreshRefs = async () => {
+    if (!proj?.id) return;
+    try {
+      const r = await api.listClipReferences(proj.id);
+      setRefSounds(r.references);
+    } catch { /* silent — shown as empty list */ }
+  };
+  useEffect(() => { if (mode === "event_driven") refreshRefs(); }, [mode, proj?.id]);
+
+  const uploadRef = async (file: File) => {
+    try {
+      const label = file.name.replace(/\.[^.]+$/, "");
+      await api.uploadClipReference(proj.id, file, label);
+      toast({ title: "Reference sound added", description: label });
+      refreshRefs();
+    } catch (e: any) {
+      toast({ title: "Upload failed", description: e.message, variant: "destructive" });
+    }
+  };
+  const removeRef = async (name: string) => {
+    try {
+      await api.deleteClipReference(proj.id, name);
+      refreshRefs();
+    } catch (e: any) {
+      toast({ title: "Delete failed", description: e.message, variant: "destructive" });
+    }
+  };
+
+  // ── HUD picker — drag a rectangle on the source video ────────────
+  // The overlay lives inside the <video> container (see render below).
+  // On mouseup we convert pixel coords to 0-1 fractions relative to the
+  // video element's client rect and commit to eventHudRegion.
+  const hudDrag = useRef<{ startX: number; startY: number; w: number; h: number; left: number; top: number } | null>(null);
+  const [hudPreview, setHudPreview] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+
+  const onHudDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pickingHud) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    hudDrag.current = {
+      startX: e.clientX, startY: e.clientY,
+      w: rect.width, h: rect.height, left: rect.left, top: rect.top,
+    };
+    setHudPreview({ x: e.clientX - rect.left, y: e.clientY - rect.top, w: 0, h: 0 });
+    e.currentTarget.setPointerCapture(e.pointerId);
+    videoRef.current?.pause();
+  };
+  const onHudMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pickingHud || !hudDrag.current) return;
+    const d = hudDrag.current;
+    const x1 = Math.min(e.clientX, d.startX) - d.left;
+    const y1 = Math.min(e.clientY, d.startY) - d.top;
+    const x2 = Math.max(e.clientX, d.startX) - d.left;
+    const y2 = Math.max(e.clientY, d.startY) - d.top;
+    setHudPreview({ x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
+  };
+  const onHudUp = () => {
+    if (!pickingHud || !hudDrag.current || !hudPreview) { setPickingHud(false); return; }
+    const d = hudDrag.current;
+    if (hudPreview.w < 10 || hudPreview.h < 10) {
+      setPickingHud(false); hudDrag.current = null; setHudPreview(null);
+      return;
+    }
+    const x1 = Math.max(0, Math.min(1, hudPreview.x / d.w));
+    const y1 = Math.max(0, Math.min(1, hudPreview.y / d.h));
+    const x2 = Math.max(0, Math.min(1, (hudPreview.x + hudPreview.w) / d.w));
+    const y2 = Math.max(0, Math.min(1, (hudPreview.y + hudPreview.h) / d.h));
+    const str = [x1, y1, x2, y2].map((n) => n.toFixed(3)).join(",");
+    setEventHudRegion(str);
+    toast({ title: "HUD region set", description: str });
+    setPickingHud(false);
+    hudDrag.current = null;
+    setHudPreview(null);
   };
 
   const doRender = async () => {
@@ -199,13 +296,39 @@ export default function ClipProjectPage() {
         {/* Left: source player + actions */}
         <div className="space-y-3">
           {proj.source_file ? (
-            <video
-              ref={videoRef}
-              src={api.clipSourceVideoUrl(proj.id)}
-              controls
-              className="w-full rounded-md bg-black aspect-video"
-              preload="metadata"
-            />
+            <div className="relative">
+              <video
+                ref={videoRef}
+                src={api.clipSourceVideoUrl(proj.id)}
+                controls={!pickingHud}
+                className="w-full rounded-md bg-black aspect-video"
+                preload="metadata"
+              />
+              {/* HUD-picker overlay — swallows pointer events while active */}
+              {pickingHud && (
+                <div
+                  onPointerDown={onHudDown}
+                  onPointerMove={onHudMove}
+                  onPointerUp={onHudUp}
+                  onPointerCancel={onHudUp}
+                  className="absolute inset-0 rounded-md cursor-crosshair bg-black/30 ring-2 ring-accent"
+                  style={{ touchAction: "none" }}
+                >
+                  <div className="absolute top-2 left-2 right-2 text-[11px] text-white bg-black/60 px-2 py-1 rounded pointer-events-none">
+                    Drag a rectangle around the HUD region (kill feed, scoreboard, etc). Click-drag to cancel.
+                  </div>
+                  {hudPreview && (
+                    <div
+                      className="absolute border-2 border-accent bg-accent/20 pointer-events-none"
+                      style={{
+                        left: hudPreview.x, top: hudPreview.y,
+                        width: hudPreview.w, height: hudPreview.h,
+                      }}
+                    />
+                  )}
+                </div>
+              )}
+            </div>
           ) : (
             <Card className="border-border bg-card">
               <CardContent className="py-10 text-center text-xs text-muted-foreground">
@@ -286,13 +409,16 @@ export default function ClipProjectPage() {
                 </div>
 
                 {mode === "event_driven" && (
-                  <div className="space-y-2 rounded-md border border-border/60 bg-secondary/30 p-2">
+                  <div className="space-y-3 rounded-md border border-border/60 bg-secondary/30 p-2">
                     <p className="text-[10px] text-muted-foreground leading-snug">
                       Detects action moments with audio transients (gunshots, horns, hits) + visual
-                      flashes (muzzle flashes, damage overlays, explosions). Each detected event
+                      flashes (muzzle flashes, damage overlays, explosions) + optionally YAMNet
+                      audio classification + reference-sound template matching. Each detected event
                       becomes a clip with <b>pre-roll</b> seconds of lead-up and <b>post-roll</b>
                       seconds after. No transcript required.
                     </p>
+
+                    {/* Pre/Post roll */}
                     <div className="grid grid-cols-2 gap-2">
                       <div className="space-y-0.5">
                         <Label className="text-[10px] text-muted-foreground">Pre-roll (s)</Label>
@@ -307,20 +433,137 @@ export default function ClipProjectPage() {
                           className="h-7 text-[11px] bg-secondary border-border font-mono" />
                       </div>
                     </div>
+
+                    {/* HUD region */}
                     <div className="space-y-0.5">
-                      <Label className="text-[10px] text-muted-foreground">
-                        HUD region (optional, x1,y1,x2,y2 as 0-1 fractions)
-                      </Label>
+                      <div className="flex items-center justify-between gap-2">
+                        <Label className="text-[10px] text-muted-foreground">HUD region</Label>
+                        <Button
+                          size="sm"
+                          variant={pickingHud ? "default" : "outline"}
+                          className="h-6 text-[10px] px-2"
+                          onClick={() => setPickingHud(!pickingHud)}
+                        >
+                          {pickingHud ? "Cancel" : "Draw on video"}
+                        </Button>
+                      </div>
                       <Input
-                        placeholder="e.g. 0.70,0.00,1.00,0.25   — top-right kill-feed"
+                        placeholder="x1,y1,x2,y2  (e.g. 0.70,0.00,1.00,0.25)"
                         value={eventHudRegion}
                         onChange={(e) => setEventHudRegion(e.target.value)}
                         className="h-7 text-[11px] bg-secondary border-border font-mono"
                       />
                       <p className="text-[9px] text-muted-foreground leading-snug">
-                        Restricts visual change detection to a HUD box. Leave empty for
-                        whole-frame detection.
+                        Restricts visual-change detection to the kill-feed / scoreboard region.
+                        Click <b>Draw on video</b> to pick it visually, or leave empty.
                       </p>
+                      {eventHudRegion && (
+                        <Button
+                          size="sm" variant="ghost"
+                          className="h-5 text-[10px] text-muted-foreground"
+                          onClick={() => setEventHudRegion("")}
+                        >Clear</Button>
+                      )}
+                    </div>
+
+                    {/* YAMNet (Layer 2) */}
+                    <div className="space-y-1 rounded border border-border/60 bg-background/30 p-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[10px] font-semibold">YAMNet audio classes</Label>
+                        <Button
+                          size="sm"
+                          variant={yamnetEnabled ? "default" : "outline"}
+                          className="h-6 text-[10px] px-2"
+                          onClick={() => setYamnetEnabled(!yamnetEnabled)}
+                        >{yamnetEnabled ? "On" : "Off"}</Button>
+                      </div>
+                      <p className="text-[9px] text-muted-foreground leading-snug">
+                        521-class audio tagger (gunshots, cheering, whistles, explosions, sirens…).
+                        Needs <code>tflite-runtime</code> or <code>tensorflow</code> installed;
+                        model auto-downloads on first use (~15 MB).
+                      </p>
+                      {yamnetEnabled && (
+                        <div className="space-y-1">
+                          <Select value={yamnetPreset} onValueChange={(v) => setYamnetPreset(v as any)}>
+                            <SelectTrigger className="h-7 text-[11px] bg-secondary border-border">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="fps">FPS (gunshots, explosions)</SelectItem>
+                              <SelectItem value="sports">Sports (cheering, whistles, bells)</SelectItem>
+                              <SelectItem value="racing">Racing (engines, skidding)</SelectItem>
+                              <SelectItem value="general_action">General action</SelectItem>
+                              <SelectItem value="custom">Custom classes…</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          {yamnetPreset === "custom" && (
+                            <Input
+                              placeholder="Gunshot, gunfire, Explosion, Cheering"
+                              value={yamnetClasses}
+                              onChange={(e) => setYamnetClasses(e.target.value)}
+                              className="h-7 text-[11px] bg-secondary border-border font-mono"
+                            />
+                          )}
+                          <div className="flex items-center gap-2">
+                            <Label className="text-[10px] text-muted-foreground shrink-0">Min conf</Label>
+                            <Slider
+                              min={0.05} max={0.8} step={0.05}
+                              value={[yamnetMinConf]}
+                              onValueChange={(v) => setYamnetMinConf(v[0])}
+                              className="flex-1"
+                            />
+                            <span className="text-[10px] font-mono w-8 text-right">{yamnetMinConf.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Reference sounds (Layer 3b) */}
+                    <div className="space-y-1 rounded border border-border/60 bg-background/30 p-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[10px] font-semibold">Reference sounds</Label>
+                        <Button
+                          size="sm" variant="outline"
+                          className="h-6 text-[10px] px-2 gap-1"
+                          onClick={() => refFileInput.current?.click()}
+                        >
+                          <Upload className="h-3 w-3" /> Upload
+                        </Button>
+                        <input
+                          ref={refFileInput}
+                          type="file"
+                          accept="audio/*,.wav,.mp3,.m4a,.ogg"
+                          hidden
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) uploadRef(f);
+                            if (refFileInput.current) refFileInput.current.value = "";
+                          }}
+                        />
+                      </div>
+                      <p className="text-[9px] text-muted-foreground leading-snug">
+                        Upload a short clip of the exact sound to catch (goal horn, killstreak
+                        sting, victory chime). Every match in the source fires an event — near-perfect
+                        recall for specific cues.
+                      </p>
+                      {refSounds.length === 0 ? (
+                        <p className="text-[10px] text-muted-foreground italic">No reference sounds yet.</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {refSounds.map((r) => (
+                            <div key={r.name} className="flex items-center gap-2 text-[10px]">
+                              <span className="truncate flex-1 font-mono">
+                                {r.label || r.name}
+                                <span className="text-muted-foreground ml-1">({r.min_ncc.toFixed(2)})</span>
+                              </span>
+                              <Button size="sm" variant="ghost" className="h-5 w-5 p-0"
+                                onClick={() => removeRef(r.name)}>
+                                <Trash2 className="h-3 w-3 text-muted-foreground" />
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

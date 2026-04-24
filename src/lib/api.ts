@@ -487,6 +487,35 @@ export const api = {
     request<{ proposals: ClipProposal[] }>(`/api/clips/${id}/propose`, {
       method: "POST", body: JSON.stringify(opts || {}),
     }),
+
+  // Per-project reference sounds (event_driven template matching)
+  listClipReferences: (id: string) =>
+    request<{ references: { name: string; label: string; min_ncc: number; exists: boolean }[] }>(
+      `/api/clips/${id}/references`,
+    ),
+  uploadClipReference: (id: string, file: File, label = "", minNcc = 0.5) =>
+    new Promise<{ added: boolean }>((resolve, reject) => {
+      const form = new FormData();
+      form.append("file", file);
+      if (label) form.append("label", label);
+      form.append("min_ncc", String(minNcc));
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/api/clips/${id}/references`);
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+          else reject(new Error(data.detail || data.error || xhr.statusText));
+        } catch (e) { reject(e); }
+      };
+      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.send(form);
+    }),
+  deleteClipReference: (id: string, name: string) =>
+    request<{ deleted: boolean }>(
+      `/api/clips/${id}/references/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
   updateClipProposal: (id: string, pid: string, patch: Partial<ClipProposal>) =>
     request<{ proposal: ClipProposal }>(`/api/clips/${id}/proposals/${pid}`, {
       method: "POST", body: JSON.stringify(patch),
