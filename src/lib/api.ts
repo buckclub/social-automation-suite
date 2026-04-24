@@ -352,6 +352,21 @@ export const api = {
       body: JSON.stringify({ posts }),
     }),
 
+  // Cached-only bulk read — no AI calls, just returns whatever's on disk
+  // matching the current model. Used to preload cached scores on Posts
+  // page mount so the user sees them before clicking Score with AI.
+  getCachedAiScores: (posts: { id: string; title?: string; selftext?: string }[]) =>
+    request<{ scores: Record<string, AiScore> }>("/api/posts/ai-scores/bulk-get", {
+      method: "POST",
+      body: JSON.stringify({ posts }),
+    }),
+
+  getAiScoreCacheSummary: () =>
+    request<{ count: number; path: string; ttl_days: number }>("/api/posts/ai-scores/summary"),
+
+  clearAiScoreCache: () =>
+    request<{ cleared: number }>("/api/posts/ai-scores/clear", { method: "POST" }),
+
   // Social copy (YouTube / TikTok / Instagram)
   getSocialCopy: (postId: string) =>
     request<SocialCopy>(`/api/posts/${postId}/social`),

@@ -134,6 +134,28 @@ export default function PostsPage() {
 
   const posts = data?.posts ?? [];
 
+  // Preload cached AI scores whenever the visible post list changes. Never
+  // re-fetches scores that are already in local state, and only queries the
+  // cache endpoint (no fresh AI calls), so this is free to run on every
+  // scan / refresh. Catches both: (a) server restart — cache on disk but
+  // local state empty, (b) new posts appearing from a re-scan.
+  useEffect(() => {
+    if (!posts.length) return;
+    const missing = posts.filter((p) => !aiScores[p.id]);
+    if (!missing.length) return;
+    const body = missing.map((p) => ({
+      id: p.id, title: p.title, selftext: p.selftext,
+    }));
+    api.getCachedAiScores(body)
+      .then((r) => {
+        if (Object.keys(r.scores).length) {
+          setAiScores((prev) => ({ ...prev, ...r.scores }));
+        }
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posts.map((p) => p.id).join(",")]);
+
   const filtered = useMemo(() => {
     const excl = tokens(f.excludeKeywords);
     const must = tokens(f.mustContain);
@@ -352,6 +374,7 @@ export default function PostsPage() {
           {aiLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
           Score with AI ({Math.min(filtered.length, 40)})
         </Button>
+        <AiScoreCacheHint />
       </div>
 
       {/* Advanced filters + presets */}
@@ -693,6 +716,50 @@ export default function PostsPage() {
 }
 
 // ── AI Score UI helpers ─────────────────────────────────────────────────────
+
+function AiScoreCacheHint() {
+  const { toast } = useToast();
+  const [info, setInfo] = useState<{ count: number; ttl_days: number } | null>(null);
+  const [clearing, setClearing] = useState(false);
+
+  const refresh = () =>
+    api.getAiScoreCacheSummary()
+      .then((r) => setInfo({ count: r.count, ttl_days: r.ttl_days }))
+      .catch(() => setInfo(null));
+  useEffect(() => { refresh(); }, []);
+
+  if (!info || info.count === 0) return null;
+
+  const onClear = async () => {
+    if (!confirm(`Clear the AI-score cache (${info.count} entries)? Next Score-with-AI pass will rescore everything.`)) return;
+    setClearing(true);
+    try {
+      const r = await api.clearAiScoreCache();
+      toast({ title: `Cleared ${r.cleared} cached score${r.cleared === 1 ? "" : "s"}` });
+      refresh();
+    } catch (e: any) {
+      toast({ title: "Clear failed", description: e.message, variant: "destructive" });
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  return (
+    <span
+      className="flex items-center gap-1 text-[10px] text-muted-foreground"
+      title={`AI scores for ${info.count} post${info.count === 1 ? "" : "s"} are cached on disk. Unused entries are pruned after ${info.ttl_days} days.`}
+    >
+      <span>{info.count} cached</span>
+      <button
+        onClick={onClear}
+        disabled={clearing}
+        className="underline decoration-dotted hover:text-destructive disabled:opacity-50"
+      >
+        {clearing ? "clearing…" : "clear"}
+      </button>
+    </span>
+  );
+}
 
 function emotionEmoji(emotion: string | null | undefined): string {
   if (!emotion) return "";

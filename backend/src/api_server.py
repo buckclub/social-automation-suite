@@ -674,6 +674,21 @@ async def lifespan(app: FastAPI):
         init_on_startup(PROJECT_ROOT)
     except Exception as e:
         _log(f"Run queue recovery failed: {e}")
+    # AI-score cache housekeeping: one-time migrate legacy per-post rows,
+    # then prune anything not touched in the TTL window so stale models
+    # don't linger forever.
+    try:
+        from ai_score_cache import migrate_from_legacy_per_post, prune
+        mig = migrate_from_legacy_per_post(PROJECT_ROOT)
+        if mig:
+            _log(f"AI-score cache: migrated {mig} legacy per-post row(s)")
+        cfg = _load_config()
+        ttl = int((cfg.get("ai_scoring") or {}).get("cache_ttl_days", 7))
+        pruned = prune(PROJECT_ROOT, ttl_days=ttl)
+        if pruned:
+            _log(f"AI-score cache: pruned {pruned} stale entr{'y' if pruned == 1 else 'ies'} (>{ttl}d unused)")
+    except Exception as e:
+        _log(f"AI-score cache init failed: {e}")
     # Kick off the background worker.
     task = asyncio.create_task(_queue_worker())
     _log("Server started")
@@ -1756,6 +1771,14 @@ async def discover_posts(sort: str = "hot"):
         if sort == "viral":
             all_posts.sort(key=lambda p: p["viral_score"], reverse=True)
         stats["posts_scanned"] += len(all_posts)
+        # Keep AI-score cache entries warm for every post that showed up in
+        # discovery, so a post that's been sitting in the feed for a week
+        # but never rendered doesn't lose its cached score to the TTL prune.
+        try:
+            from ai_score_cache import touch as _cache_touch
+            _cache_touch(PROJECT_ROOT, [p["id"] for p in all_posts if p.get("id")])
+        except Exception:
+            pass
         _log(
             f"Discovered {len(all_posts)} posts from {len(subreddits)} subreddit(s) "
             f"(sort={sort}, fetch={fetch_limit}/page, up to {max_pages} pages/sub, target={per_sub_cap} eligible/sub)"
@@ -4513,6 +4536,64 @@ async def clear_all_data(req: dict = {}):
     return {"success": True, **summary}
 
 
+@app.post("/api/posts/ai-scores/bulk-get")
+async def ai_scores_bulk_get(req: dict):
+    """
+    Cheap cache lookup for the Posts page: give a list of post summaries,
+    get back scores for any that are cached under the currently-configured
+    model. No AI calls, no disk writes to per-post folders. Used by the
+    frontend on mount so cached scores show up without a fresh button click.
+
+    Body:
+      { posts: [{id, title?, selftext?}, ...] }
+    Response:
+      { scores: { post_id: AiScore, ... } }
+    """
+    posts_in = req.get("posts") or []
+    if not posts_in:
+        return {"scores": {}}
+    cfg = _load_config()
+    g = cfg.get("gemini") or {}
+    model = g.get("model") or "gemini-2.0-flash"
+    from ai_score_cache import get as _cache_get
+    out: dict[str, dict] = {}
+    for p in posts_in:
+        pid = (p.get("id") or "").strip()
+        if not pid:
+            continue
+        cached = _cache_get(
+            PROJECT_ROOT, pid,
+            current_title=p.get("title", ""),
+            current_body=p.get("selftext", ""),
+            current_model=model,
+        )
+        if cached is not None:
+            out[pid] = cached
+    return {"scores": out}
+
+
+@app.get("/api/posts/ai-scores/summary")
+async def ai_scores_summary():
+    """Diagnostics for the cache panel — current count, file path, TTL."""
+    from ai_score_cache import size as _cache_size, _cache_path as _cp
+    cfg = _load_config()
+    ttl = int((cfg.get("ai_scoring") or {}).get("cache_ttl_days", 7))
+    return {
+        "count":     _cache_size(PROJECT_ROOT),
+        "path":      _cp(PROJECT_ROOT),
+        "ttl_days":  ttl,
+    }
+
+
+@app.post("/api/posts/ai-scores/clear")
+async def ai_scores_clear():
+    """Nuke the cache — useful after switching AI models or when results drift."""
+    from ai_score_cache import clear as _cache_clear
+    n = _cache_clear(PROJECT_ROOT)
+    _log(f"AI-score cache cleared ({n} entries)")
+    return {"cleared": n}
+
+
 @app.post("/api/posts/score-viral")
 async def score_viral_batch(req: dict):
     """
@@ -4539,7 +4620,9 @@ async def score_viral_batch(req: dict):
 
     from gemini_hooks import _call_ai  # type: ignore
 
-    # Bumped when the result schema changes — old caches are ignored.
+    # Cache schema lives in ai_score_cache module — this constant was the
+    # legacy per-post cache version and is now only used for the
+    # `.cache/ai_scores.json` write format. Kept for reference / logs.
     CACHE_VERSION = 3
 
     # Best-effort regex detector from narrator_gender.py. Used as a fallback
@@ -4651,35 +4734,34 @@ async def score_viral_batch(req: dict):
     def _persist_cache(pid: str, post: dict, result: dict):
         if not pid:
             return
-        cache_file = os.path.join(cache_root, pid, "viral_score.json")
         try:
-            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-            with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump({
-                    "v": CACHE_VERSION,
-                    "model": model,
-                    "title": post.get("title"),
-                    "result": result,
-                }, f)
+            from ai_score_cache import put as _cache_put
+            _cache_put(
+                PROJECT_ROOT, pid,
+                title=post.get("title", ""),
+                selftext=post.get("selftext", ""),
+                model=model,
+                result=result,
+            )
         except Exception:
             pass
 
     # ── Cache pass ──────────────────────────────────────────────────────
+    # Reads from the central .cache/ai_scores.json (survives posts/ cleanup).
+    from ai_score_cache import get as _cache_get
     to_score: list[dict] = []
     for post in posts_in[:40]:
         pid = post.get("id") or ""
-        cache_file = os.path.join(cache_root, pid, "viral_score.json") if pid else None
-        if cache_file and os.path.isfile(cache_file):
-            try:
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    cached = json.load(f)
-                if (cached.get("v") == CACHE_VERSION
-                        and cached.get("model") == model
-                        and cached.get("title") == post.get("title")):
-                    out[pid] = cached["result"]
-                    continue
-            except Exception:
-                pass
+        if pid:
+            cached = _cache_get(
+                PROJECT_ROOT, pid,
+                current_title=post.get("title", ""),
+                current_body=post.get("selftext", ""),
+                current_model=model,
+            )
+            if cached is not None:
+                out[pid] = cached
+                continue
         to_score.append(post)
 
     if not to_score:
