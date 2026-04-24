@@ -13,6 +13,7 @@ This is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/r
 ### TTS
 
 - **ElevenLabs provider** — live voice fetching from `/v2/voices` (no stale hardcoded IDs); stability / similarity / style / speaker-boost sliders; model selection (Multilingual v2 / Turbo v2.5 / Monolingual v1); configs that stored a name instead of a voice_id self-heal on next run. Includes a 21-voice ElevenLabs library preset list so common voices (Rachel, Adam, Bella, Brian, etc.) are always pickable even when the API hasn't been queried yet.
+- **Native per-word timestamps from ElevenLabs** — synthesis goes through the `/v1/text-to-speech/{voice_id}/with-timestamps` endpoint, which returns the audio PLUS per-character start/end times. We aggregate those into per-word timings and attach them directly to each segment, **skipping the whisper re-alignment step entirely**. Eliminates the chronic caption-sync drift that whisper's listen-back approach produces on short articles, numbers, and unusual names. Prefers `normalized_alignment` over raw so "25M" read aloud as "twenty-five million" stays synced. ~15–30s faster per render on large-v3. Cached as a `<audio>.words.json` sidecar so Re-render / Resume reuse them without re-hitting the API. Graceful fallback to whisper if `/with-timestamps` ever errors on a segment. Toggle off via `tts.elevenlabs.use_native_timestamps: false`.
 - **Gendered voice presets** — per-provider male/female defaults in the TTS tab. The Run dialog auto-detects narrator gender from the post title/body (regex on `(M32)` / `28f` / `as a 24F` / `my wife|husband`) and picks the matching preset. Can be overridden per-run.
 - **Pre-TTS cleanup with local Ollama** — expands Reddit shorthand (`tho`→`though`, `cuz`→`because`) and fixes typos before sending to paid TTS. Cached per-post. Silently skipped if Ollama is offline.
 - **Pre-TTS prefilter** (dedicated module, no LLM call) — expands age/gender tokens (`25M` → "twenty five male", only real ages so `M3` / `F1` don't get mangled), TL;DR → "too long; didn't read", and Reddit-subreddit acronyms (AITA/NTA/YTA/ESH/NAH, MIL/FIL/BIL/SIL/DH/DW). Smart-quotes are normalized to ASCII and `U+FFFD` is stripped so TTS engines don't choke.
@@ -29,8 +30,10 @@ This is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/r
 - **Per-word highlight** — current spoken word rendered in a configurable color, optionally scaled up 100–150% for a TikTok-style bounce. Requires alignment.
 - **Per-word shrink-to-fit** — if one word would overflow the caption width, just that word is scaled down (baseline-aligned with its neighbors); the rest stay at normal size.
 - **Runaway-caption cap** — `max_chunk_duration` prevents a single chunk from staying on screen for 15+ seconds when whisper leaves a gap. `lead_in_grace` covers brief TTS leading silence.
+- **"Fit on one line" mode** — captions.single_line toggle. When a chunk doesn't fit at the base font, uniformly scales the whole chunk's font down until it does instead of wrapping. Fixes mid-word breaks like "CAPTION / S".
+- **Reddit vs Clip caption presets** — `captions` and `clip_captions` are independent config keys with their own full settings. A preset switcher at the top of Config → Captions flips which one you're editing; both save together. Clip Maker renders use `clip_captions` (falls back to `captions` when null).
 - **Title card over live background** — during the hook + title TTS segments, the Reddit-style card widget is overlaid on top of the running background video (transparent surrounds, so the background keeps moving). Captions start once the body begins.
-- **Live caption preview** — 9:16 mock frame on the Captions tab that reflects every setting in real time, including cycling active-word highlight.
+- **Live caption preview** — 9:16 mock frame on the Captions tab that reflects every setting in real time, including cycling active-word highlight. Also live-simulates `single_line` mode with a CSS `transform: scale()` that matches what the backend will actually render.
 
 ### Post discovery
 
@@ -38,6 +41,19 @@ This is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/r
 - **Virality (upvotes/hour), duration estimate (~155 wpm), per-subreddit cap**, and **fuzzy dedupe** of titles against previously-used posts.
 - **Expanded filter bar** — exclude keywords, must-contain, deny-subreddit list, min upvotes, min comments, min viral/hr, max duration, min AI score, hide near-duplicates.
 - **Filter presets** — save/load/delete named filter bundles (persisted per browser).
+
+### Clip Maker — turn long-form media into Shorts
+
+- **New top-level `Clip Maker` page** (`/clips`, keyboard `g l`). Paste a YouTube URL or upload an mp4; the app auto-downloads via yt-dlp (with a duration cap at `clipmaker.max_duration_s`, default 1 hour), and pulls English auto-captions when YouTube has them — skipping a whisper pass on the source entirely. Falls back to local faster-whisper transcription when captions are unavailable.
+- **AI clip proposals** — the configured LLM reads the transcript with timecodes and returns its top N Shorts-worthy windows with `{start, end, hook_line, reason, score}`. Four modes in the dialog:
+  - `ai_only` — transcript → LLM (default)
+  - `ai_plus` — transcript + **audio-energy peaks** (RMS over 1s windows, FFmpeg-extracted, no numpy) so laughter / shouting / dramatic beats inform the LLM's picks
+  - `ai_visual` — adds **scene cuts** (FFmpeg's `select='gt(scene,0.3)',showinfo` filter, no vision model needed) so the LLM prefers clips that start/end on natural visual cuts
+  - `manual` — skip AI, curate yourself
+- **Review UI** — embedded source player, clickable transcript cues that seek the player, per-proposal cards with score badge + hook line, inline edit for start/end/title, approve/reject toggle, "Add manual clip @ player time" button, and a **live inline preview** of each rendered clip without opening a tab.
+- **Modular render pipeline** on the backend (`clip_pipeline.py`, composed from `pipeline_core`): `SliceSourceStep` (FFmpeg fast-seek + 9:16 crop) → `WhisperAlignClipStep` (word-level timings on the slice) → `RenderClipStep` (captions over original audio, no TTS) → `ClipThumbnailStep` → `PersistStep`. Each clip renders via the shared run queue — clips and Reddit posts drain through the same worker, with `kind: "clip"` discrimination so the Dashboard timeline + status bar show clip renders identically.
+- **Independent caption config for clips** — `clip_captions` key mirrors `captions`. A preset switcher at the top of Config → Captions flips which one the controls edit; both save together.
+- **Persistent projects** — everything lives under `clips/<project_id>/` (source mp4, `transcript.json`, `project.json`, `renders/`). Comes back exactly where you left it after a server restart.
 
 ### Video / backgrounds
 
