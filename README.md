@@ -215,6 +215,7 @@ Real, in code features. No filler.
 * Fetch Reddit posts from configured subreddits with filters for length, score, and age.
 * AI content generation in four styles: Story, Q&A, Interactive "put a finger down", and Hot Take. Each run is shaped by an orthogonal **content filter** (Safe / Normal / Edgy), **tone** (Dramatic / Funny / Heartfelt / Shocking / Cringe), and free-text **target audience** (e.g. "women 18-35", "teenagers").
 * Save any style + niche + filter + tone + audience combo as a named **preset** for one-click reuse, and optionally generate 3 variants in parallel to pick the best before committing to TTS + render.
+* **Text Posts** page for generating tweets, X threads, Reddit comments/posts, YouTube community posts, LinkedIn/Facebook/Instagram/TikTok posts, and long-form openers — 11 built-in formats with platform-aware character limits. Same filter/tone/audience axes as the video pipeline. Ground posts in real sources by pasting text or fetching a URL. Save reusable **brand voices** (your persona, recurring bits, words to avoid) for one-click consistency across runs. Generate 3 variants at once, rewrite any draft with a feedback instruction ("punchier hook", "drop the hashtags"), and visualize X threads as individual tweet-shaped cards with per-post character counts.
 * Multiple AI providers: Google Gemini, OpenRouter, Ollama (local and cloud), and Nvidia NIM.
 * Handles Ollama reasoning models that return answers in the `thinking` field.
 * TTS via Streamlabs Polly (cloud, free) or VibeVoice (local).

@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Video, LayoutDashboard, Newspaper, Settings2, Film, Command, Images, Scissors } from "lucide-react";
+import { Video, LayoutDashboard, Newspaper, Settings2, Film, Command, Images, Scissors, PenLine } from "lucide-react";
 import { useHealth } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
 import { CommandPaletteProvider, useCommandPalette } from "@/components/CommandPalette";
@@ -12,6 +12,7 @@ const navItems = [
   { to: "/posts", label: "Posts", icon: Newspaper },
   { to: "/videos", label: "Videos", icon: Film },
   { to: "/clips", label: "Clip Maker", icon: Scissors },
+  { to: "/text-posts", label: "Text Posts", icon: PenLine },
   { to: "/backgrounds", label: "Backgrounds", icon: Images },
   { to: "/config", label: "Configuration", icon: Settings2 },
 ];

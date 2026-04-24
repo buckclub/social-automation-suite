@@ -5438,6 +5438,387 @@ async def tts_providers():
     }
 
 
+# ────────────────────────────────────────────────────────────────────
+# Text Posts — tweets, community posts, Reddit comments, LinkedIn, etc.
+# Shares content_filter / tone / target_audience with the video pipeline
+# but produces raw text and is persisted separately in text_posts.json.
+# ────────────────────────────────────────────────────────────────────
+
+from html.parser import HTMLParser as _HTMLParser
+
+
+class _ReadableTextParser(_HTMLParser):
+    """
+    Minimal HTML-to-readable-text extractor using only the stdlib.
+    Not as smart as readability-lxml but enough for news articles and
+    blog posts — user can always paste text manually if a site defeats it.
+    """
+    _BLOCK_TAGS = {"p", "br", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "blockquote"}
+    _SKIP_CONTAINERS = {"script", "style", "noscript", "svg", "head", "header", "footer", "nav", "aside", "form"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._parts: List[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        if t in self._SKIP_CONTAINERS:
+            self._skip_depth += 1
+            return
+        if t in self._BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        if t in self._SKIP_CONTAINERS and self._skip_depth > 0:
+            self._skip_depth -= 1
+
+    def handle_data(self, data):
+        if self._skip_depth > 0:
+            return
+        self._parts.append(data)
+
+    def extract(self) -> str:
+        raw = "".join(self._parts)
+        # Collapse whitespace within lines, preserve paragraph breaks
+        lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in raw.split("\n")]
+        nonblank = [ln for ln in lines if ln]
+        return "\n\n".join(nonblank)
+
+
+def _text_posts_generator(config: dict):
+    # Lazy import so circular/early-import issues don't block app startup
+    from text_post_generator import TextPostGenerator
+    return TextPostGenerator(config)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _new_post_id() -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    # Small random suffix to avoid collisions when the UI fires two requests in the same second
+    suffix = f"{time.time_ns() % 100000:05d}"
+    return f"tp_{ts}_{suffix}"
+
+
+@app.get("/api/text-posts/formats")
+async def text_posts_formats():
+    """List supported post formats and their default char limits."""
+    from text_post_generator import get_available_formats, get_available_tones
+    return {"formats": get_available_formats(), "tones": get_available_tones()}
+
+
+@app.post("/api/text-posts/generate")
+async def text_posts_generate(req: dict = {}):
+    """
+    Generate a fresh text post. Does NOT persist — the frontend calls
+    /api/text-posts (POST) after the user decides to save.
+    """
+    config = _load_config()
+    if not config.get("gemini", {}).get("enabled", False):
+        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
+
+    fmt_key = (req.get("format") or "tweet").strip()
+    topic = (req.get("topic") or "").strip() or None
+    source_material = (req.get("source_material") or "").strip() or None
+    brand_voice = (req.get("brand_voice") or "").strip() or None
+
+    tp_cfg = config.get("text_posts", {}) or {}
+    content_filter = (req.get("content_filter") or tp_cfg.get("content_filter_default") or "normal").strip().lower()
+    if content_filter not in ("safe", "normal", "edgy"):
+        content_filter = "normal"
+    target_audience = (req.get("target_audience") or tp_cfg.get("target_audience_default") or "").strip() or None
+
+    from text_post_generator import VALID_TONES
+    tone = (req.get("tone") or tp_cfg.get("tone_default") or "professional").strip().lower()
+    if tone not in VALID_TONES:
+        tone = "professional"
+
+    char_limit = req.get("char_limit")
+    if isinstance(char_limit, str):
+        try:
+            char_limit = int(char_limit)
+        except ValueError:
+            char_limit = None
+    if not isinstance(char_limit, int) or char_limit <= 0:
+        char_limit = None
+
+    generator = _text_posts_generator(config)
+    try:
+        text = await asyncio.to_thread(
+            generator.generate, fmt_key, topic, content_filter, target_audience, tone,
+            char_limit, source_material, brand_voice,
+        )
+    except Exception as e:
+        _log(f"[text-posts] generate failed: {e}")
+        raise HTTPException(502, f"AI generation failed: {e}")
+
+    if not text:
+        raise HTTPException(502, "AI returned empty content after retries.")
+
+    return {
+        "text": text,
+        "format": fmt_key,
+        "filter": content_filter,
+        "tone": tone,
+        "target_audience": target_audience or "",
+        "char_limit": char_limit,
+    }
+
+
+@app.post("/api/text-posts/generate-variants")
+async def text_posts_generate_variants(req: dict = {}):
+    """
+    Generate N candidate variants in parallel. UI uses this to let the user
+    pick the best of N before committing to a draft.
+    """
+    config = _load_config()
+    if not config.get("gemini", {}).get("enabled", False):
+        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
+
+    fmt_key = (req.get("format") or "tweet").strip()
+    topic = (req.get("topic") or "").strip() or None
+    source_material = (req.get("source_material") or "").strip() or None
+    brand_voice = (req.get("brand_voice") or "").strip() or None
+
+    tp_cfg = config.get("text_posts", {}) or {}
+    content_filter = (req.get("content_filter") or tp_cfg.get("content_filter_default") or "normal").strip().lower()
+    if content_filter not in ("safe", "normal", "edgy"):
+        content_filter = "normal"
+    target_audience = (req.get("target_audience") or tp_cfg.get("target_audience_default") or "").strip() or None
+
+    from text_post_generator import VALID_TONES
+    tone = (req.get("tone") or tp_cfg.get("tone_default") or "professional").strip().lower()
+    if tone not in VALID_TONES:
+        tone = "professional"
+
+    char_limit = req.get("char_limit")
+    if isinstance(char_limit, str):
+        try:
+            char_limit = int(char_limit)
+        except ValueError:
+            char_limit = None
+    if not isinstance(char_limit, int) or char_limit <= 0:
+        char_limit = None
+
+    try:
+        count = max(1, min(5, int(req.get("count", 3))))
+    except (TypeError, ValueError):
+        count = 3
+
+    generator = _text_posts_generator(config)
+
+    def _one():
+        return generator.generate(
+            fmt_key, topic, content_filter, target_audience, tone,
+            char_limit, source_material, brand_voice,
+        )
+
+    tasks = [asyncio.to_thread(_one) for _ in range(count)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    variants: list[str] = []
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            _log(f"[text-posts] variant {i+1} raised: {r}")
+            continue
+        if r:
+            variants.append(r)
+
+    if not variants:
+        raise HTTPException(502, "All variants failed to generate. Check AI provider logs.")
+
+    return {"variants": variants, "count": len(variants)}
+
+
+@app.post("/api/text-posts/rewrite")
+async def text_posts_rewrite(req: dict = {}):
+    """Rewrite an existing post given a feedback instruction."""
+    config = _load_config()
+    if not config.get("gemini", {}).get("enabled", False):
+        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
+
+    original = (req.get("original") or "").strip()
+    instruction = (req.get("instruction") or "").strip()
+    if not original:
+        raise HTTPException(400, "Field 'original' is required.")
+    if not instruction:
+        raise HTTPException(400, "Field 'instruction' is required.")
+
+    fmt_key = (req.get("format") or "tweet").strip()
+    source_material = (req.get("source_material") or "").strip() or None
+    brand_voice = (req.get("brand_voice") or "").strip() or None
+
+    tp_cfg = config.get("text_posts", {}) or {}
+    content_filter = (req.get("content_filter") or tp_cfg.get("content_filter_default") or "normal").strip().lower()
+    if content_filter not in ("safe", "normal", "edgy"):
+        content_filter = "normal"
+    target_audience = (req.get("target_audience") or "").strip() or None
+
+    from text_post_generator import VALID_TONES
+    tone = (req.get("tone") or "professional").strip().lower()
+    if tone not in VALID_TONES:
+        tone = "professional"
+
+    char_limit = req.get("char_limit")
+    if isinstance(char_limit, str):
+        try:
+            char_limit = int(char_limit)
+        except ValueError:
+            char_limit = None
+    if not isinstance(char_limit, int) or char_limit <= 0:
+        char_limit = None
+
+    generator = _text_posts_generator(config)
+    try:
+        new_text = await asyncio.to_thread(
+            generator.rewrite, fmt_key, original, instruction,
+            content_filter, target_audience, tone, char_limit, source_material, brand_voice,
+        )
+    except Exception as e:
+        _log(f"[text-posts] rewrite failed: {e}")
+        raise HTTPException(502, f"AI rewrite failed: {e}")
+
+    if not new_text:
+        raise HTTPException(502, "AI returned empty content after retries.")
+
+    return {"text": new_text}
+
+
+@app.get("/api/text-posts")
+async def text_posts_list():
+    import text_posts_db
+    posts = text_posts_db.load_posts(PROJECT_ROOT)
+    # Newest first
+    return {"posts": sorted(posts, key=lambda p: p.get("updated_at") or p.get("created_at") or "", reverse=True)}
+
+
+@app.get("/api/text-posts/{post_id}")
+async def text_posts_get(post_id: str):
+    import text_posts_db
+    post = text_posts_db.find(PROJECT_ROOT, post_id)
+    if not post:
+        raise HTTPException(404, "Not found")
+    return post
+
+
+@app.post("/api/text-posts")
+async def text_posts_save(req: dict = {}):
+    """
+    Save or update a post. If `id` is absent a new one is minted.
+    When the body text differs from the stored `current`, a new revision
+    is appended with the supplied `instruction` (may be empty).
+    """
+    import text_posts_db
+
+    text = (req.get("text") or req.get("current") or "").strip()
+    if not text:
+        raise HTTPException(400, "Field 'text' is required.")
+
+    pid = (req.get("id") or "").strip()
+    now = _now_iso()
+
+    if pid:
+        existing = text_posts_db.find(PROJECT_ROOT, pid)
+    else:
+        existing = None
+        pid = _new_post_id()
+
+    if existing:
+        # Preserve history, append revision if text changed
+        post = dict(existing)
+        if post.get("current") != text:
+            post.setdefault("revisions", []).append({
+                "text": post.get("current", ""),
+                "instruction": req.get("instruction") or None,
+                "at": now,
+            })
+        post["current"] = text
+        post["updated_at"] = now
+    else:
+        post = {
+            "id": pid,
+            "created_at": now,
+            "updated_at": now,
+            "revisions": [],
+            "current": text,
+        }
+
+    # Shallow-copy whichever metadata fields the caller supplied
+    for field in ("format", "filter", "tone", "target_audience", "topic", "source_material", "char_limit"):
+        if field in req:
+            post[field] = req.get(field)
+
+    text_posts_db.upsert(PROJECT_ROOT, post)
+    return {"post": post}
+
+
+@app.delete("/api/text-posts/{post_id}")
+async def text_posts_delete(post_id: str):
+    import text_posts_db
+    removed = text_posts_db.remove(PROJECT_ROOT, post_id)
+    if not removed:
+        raise HTTPException(404, "Not found")
+    return {"deleted": True, "id": post_id}
+
+
+@app.post("/api/text-posts/fetch-url")
+async def text_posts_fetch_url(req: dict = {}):
+    """
+    Fetch a URL and return readable text content. Used to ground posts in
+    news articles without the user having to copy/paste the body.
+    """
+    import requests as _rq
+    url = (req.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "Field 'url' is required.")
+    if not re.match(r"^https?://", url, re.IGNORECASE):
+        raise HTTPException(400, "URL must start with http:// or https://")
+
+    try:
+        resp = _rq.get(
+            url, timeout=12,
+            headers={
+                # Some sites 403 default python-requests; pretend to be a browser.
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Fetch failed: {e}")
+
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Fetch returned HTTP {resp.status_code}")
+
+    ctype = resp.headers.get("content-type", "")
+    if "html" not in ctype.lower() and "xml" not in ctype.lower():
+        # Plain text / markdown — just return it as-is (capped)
+        return {"url": url, "title": "", "text": resp.text[:20000]}
+
+    html = resp.text
+    # Title extraction (cheap)
+    title_m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    title = re.sub(r"\s+", " ", title_m.group(1)).strip() if title_m else ""
+
+    parser = _ReadableTextParser()
+    try:
+        parser.feed(html)
+    except Exception as e:
+        raise HTTPException(502, f"HTML parse failed: {e}")
+
+    text = parser.extract()[:20000]
+    if not text.strip():
+        raise HTTPException(502, "No readable text extracted. Paste the article content manually.")
+    return {"url": url, "title": title, "text": text}
+
+
 @app.get("/", include_in_schema=False)
 async def frontend_index():
     index_path = os.path.join(FRONTEND_DIST, "index.html")

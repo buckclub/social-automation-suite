@@ -177,6 +177,16 @@
     "cache_ttl_days": 7
   },
 
+  "text_posts": {
+    "//":                       "Defaults for the Text Posts page (tweets, community posts, Reddit comments, LinkedIn, etc). Per-run picks in the UI override these.",
+    "content_filter_default":   "normal",
+    "tone_default":             "professional",
+    "//tone_options":           "dramatic | funny | heartfelt | shocking | cringe | professional | informative",
+    "target_audience_default":  "",
+    "brand_voices":             [],
+    "//brand_voices_format":    "User-saved personas: [{id, name, content}]. 'content' is a free-text paragraph describing the voice — the page manages this, don't hand-edit."
+  },
+
   "ai_content_generation": {
     "//":                       "Defaults for the 'Generate with AI' dialog. Per-run picks in the dialog override these without modifying config.",
     "content_filter_default":   "normal",

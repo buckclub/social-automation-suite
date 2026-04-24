@@ -862,4 +862,111 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ post_id }),
     }),
+
+  // ── Text Posts ────────────────────────────────────────────────
+  listTextPostFormats: () =>
+    request<{
+      formats: Array<{ id: string; label: string; char_limit: number }>;
+      tones: string[];
+    }>("/api/text-posts/formats"),
+
+  listTextPosts: () =>
+    request<{ posts: TextPost[] }>("/api/text-posts"),
+
+  generateTextPost: (params: {
+    format: string;
+    topic?: string;
+    source_material?: string;
+    brand_voice?: string;
+    content_filter?: "safe" | "normal" | "edgy";
+    target_audience?: string;
+    tone?: string;
+    char_limit?: number;
+  }) =>
+    request<{
+      text: string; format: string; filter: string; tone: string;
+      target_audience: string; char_limit: number | null;
+    }>("/api/text-posts/generate", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+
+  generateTextPostVariants: (params: {
+    format: string;
+    topic?: string;
+    source_material?: string;
+    brand_voice?: string;
+    content_filter?: "safe" | "normal" | "edgy";
+    target_audience?: string;
+    tone?: string;
+    char_limit?: number;
+    count?: number;
+  }) =>
+    request<{ variants: string[]; count: number }>(
+      "/api/text-posts/generate-variants",
+      { method: "POST", body: JSON.stringify(params) },
+    ),
+
+  rewriteTextPost: (params: {
+    format: string;
+    original: string;
+    instruction: string;
+    source_material?: string;
+    brand_voice?: string;
+    content_filter?: "safe" | "normal" | "edgy";
+    target_audience?: string;
+    tone?: string;
+    char_limit?: number;
+  }) =>
+    request<{ text: string }>("/api/text-posts/rewrite", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+
+  saveTextPost: (params: {
+    id?: string;
+    text: string;
+    instruction?: string;
+    format?: string;
+    filter?: string;
+    tone?: string;
+    target_audience?: string;
+    topic?: string;
+    source_material?: string;
+    char_limit?: number | null;
+  }) =>
+    request<{ post: TextPost }>("/api/text-posts", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+
+  deleteTextPost: (id: string) =>
+    request<{ deleted: boolean; id: string }>(`/api/text-posts/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
+  fetchUrlForTextPost: (url: string) =>
+    request<{ url: string; title: string; text: string }>("/api/text-posts/fetch-url", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
 };
+
+export interface TextPost {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  current: string;
+  format?: string;
+  filter?: string;
+  tone?: string;
+  target_audience?: string;
+  topic?: string;
+  source_material?: string;
+  char_limit?: number | null;
+  revisions?: Array<{
+    text: string;
+    instruction?: string | null;
+    at: string;
+  }>;
+}

@@ -18,6 +18,7 @@ import BackgroundsPage from "./pages/BackgroundsPage";
 import ClipsPage from "./pages/ClipsPage";
 import ClipProjectPage from "./pages/ClipProjectPage";
 import ConfigPage from "./pages/ConfigPage";
+import TextPostsPage from "./pages/TextPostsPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -36,6 +37,7 @@ const App = () => (
             <Route path="/backgrounds" element={<BackgroundsPage />} />
             <Route path="/clips" element={<ClipsPage />} />
             <Route path="/clips/:id" element={<ClipProjectPage />} />
+            <Route path="/text-posts" element={<TextPostsPage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
