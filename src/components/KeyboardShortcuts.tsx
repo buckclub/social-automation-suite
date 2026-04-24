@@ -48,6 +48,7 @@ export function KeyboardShortcuts() {
           case "h": nav("/");            e.preventDefault(); return;
           case "p": nav("/posts");       e.preventDefault(); return;
           case "v": nav("/videos");      e.preventDefault(); return;
+          case "l": nav("/clips");       e.preventDefault(); return;
           case "b": nav("/backgrounds"); e.preventDefault(); return;
           case "c": nav("/config");      e.preventDefault(); return;
           default: return;
@@ -99,6 +100,7 @@ export function KeyboardShortcuts() {
           <Row keys={["g", "h"]} label="Go to Dashboard" />
           <Row keys={["g", "p"]} label="Go to Posts" />
           <Row keys={["g", "v"]} label="Go to Videos" />
+          <Row keys={["g", "l"]} label="Go to Clip Maker" />
           <Row keys={["g", "b"]} label="Go to Backgrounds" />
           <Row keys={["g", "c"]} label="Go to Config" />
           <Row keys={["/"]} label="Focus search / filter input" />

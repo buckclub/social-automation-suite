@@ -15,6 +15,8 @@ import Index from "./pages/Index";
 import PostsPage from "./pages/PostsPage";
 import VideosPage from "./pages/VideosPage";
 import BackgroundsPage from "./pages/BackgroundsPage";
+import ClipsPage from "./pages/ClipsPage";
+import ClipProjectPage from "./pages/ClipProjectPage";
 import ConfigPage from "./pages/ConfigPage";
 import NotFound from "./pages/NotFound";
 
@@ -32,6 +34,8 @@ const App = () => (
             <Route path="/posts" element={<PostsPage />} />
             <Route path="/videos" element={<VideosPage />} />
             <Route path="/backgrounds" element={<BackgroundsPage />} />
+            <Route path="/clips" element={<ClipsPage />} />
+            <Route path="/clips/:id" element={<ClipProjectPage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

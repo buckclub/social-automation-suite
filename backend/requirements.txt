@@ -20,3 +20,6 @@ rich>=13.0.0
 # Optional: local word-level caption alignment (captions.force_align)
 # Pulls ctranslate2 + tokenizers as deps; CUDA automatically used if available.
 faster-whisper>=1.0.0
+
+# Clip Maker: YouTube download + auto-caption extraction
+yt-dlp>=2024.4.9

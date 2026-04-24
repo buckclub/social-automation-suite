@@ -163,5 +163,16 @@
 
   "youtube": {
     "api_key": ""
-  }
+  },
+
+  "clipmaker": {
+    "max_duration_s":  3600,
+    "target_count":    5,
+    "min_len_s":       15,
+    "max_len_s":       60,
+    "mode":            "ai_only",
+    "transcribe_model": "base"
+  },
+
+  "clip_captions": null
 }

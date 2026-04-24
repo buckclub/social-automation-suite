@@ -154,6 +154,65 @@ export interface SocialCopy {
   }>;
 }
 
+// ── Clip Maker ───────────────────────────────────────────────────
+
+export interface ClipProposal {
+  id: string;
+  start: number;
+  end: number;
+  hook_line: string;
+  reason: string;
+  score: number;
+  approved: boolean;
+  user_adjusted: boolean;
+  custom_title: string | null;
+}
+
+export interface RenderedClip {
+  proposal_id: string;
+  video_path: string;
+  thumbnail_path: string | null;
+  created_at: string;
+  render_time_s: number;
+  title: string;
+  start: number;
+  end: number;
+}
+
+export interface TranscriptSegment {
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface ClipProjectSummary {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  source_type: "youtube" | "upload";
+  source_url?: string | null;
+  duration_s: number;
+  status: string;
+  status_detail: string;
+  proposal_count: number;
+  approved_count: number;
+  rendered_count: number;
+}
+
+export interface ClipProject extends ClipProjectSummary {
+  source_file: string | null;
+  source_thumb: string | null;
+  error: string | null;
+  transcript: {
+    source: string;
+    lang: string;
+    segments: TranscriptSegment[];
+  } | null;
+  proposals: ClipProposal[];
+  rendered_clips: RenderedClip[];
+}
+
 export interface QueueItem {
   queue_id: string;
   post_id: string;
@@ -362,6 +421,74 @@ export const api = {
       voices: { voice_id: string; name: string; category?: string; description?: string; labels?: Record<string, string>; preview_url?: string }[];
       error?: string;
     }>("/api/tts/elevenlabs/voices"),
+
+  // ── Clip Maker ────────────────────────────────────────────────
+  listClipProjects: () =>
+    request<{ projects: ClipProjectSummary[] }>("/api/clips"),
+  getClipProject: (id: string) =>
+    request<ClipProject>(`/api/clips/${id}`),
+  deleteClipProject: (id: string) =>
+    request<{ deleted: boolean }>(`/api/clips/${id}`, { method: "DELETE" }),
+  probeClipSource: (url: string) =>
+    request<{
+      title: string; duration_s: number; uploader: string;
+      thumbnail: string; has_en_captions: boolean; manual_en: boolean;
+      webpage_url: string;
+    }>("/api/clips/metadata", {
+      method: "POST", body: JSON.stringify({ url }),
+    }),
+  createClipFromYoutube: (url: string, name = "") =>
+    request<ClipProject>("/api/clips/from-youtube", {
+      method: "POST", body: JSON.stringify({ url, name }),
+    }),
+  uploadClipSource: (file: File, name = "", onProgress?: (pct: number) => void) =>
+    new Promise<ClipProject>((resolve, reject) => {
+      const form = new FormData();
+      form.append("file", file);
+      if (name) form.append("name", name);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/api/clips/from-upload`);
+      xhr.upload.onprogress = (e) => {
+        if (onProgress && e.lengthComputable) onProgress(e.loaded / e.total);
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); }
+          catch { reject(new Error("Bad upload response")); }
+        } else {
+          try { reject(new Error(JSON.parse(xhr.responseText).detail || xhr.statusText)); }
+          catch { reject(new Error(xhr.statusText || "Upload failed")); }
+        }
+      };
+      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.send(form);
+    }),
+  transcribeClipProject: (id: string) =>
+    request<{ started: boolean }>(`/api/clips/${id}/transcribe`, { method: "POST" }),
+  proposeClips: (id: string, opts?: {
+    target_count?: number; min_len_s?: number; max_len_s?: number; mode?: string;
+  }) =>
+    request<{ proposals: ClipProposal[] }>(`/api/clips/${id}/propose`, {
+      method: "POST", body: JSON.stringify(opts || {}),
+    }),
+  updateClipProposal: (id: string, pid: string, patch: Partial<ClipProposal>) =>
+    request<{ proposal: ClipProposal }>(`/api/clips/${id}/proposals/${pid}`, {
+      method: "POST", body: JSON.stringify(patch),
+    }),
+  addClipProposal: (id: string, body: { start: number; end: number; hook_line?: string; custom_title?: string }) =>
+    request<{ proposal: ClipProposal }>(`/api/clips/${id}/proposals/add`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  deleteClipProposal: (id: string, pid: string) =>
+    request<{ deleted: boolean }>(`/api/clips/${id}/proposals/${pid}`, { method: "DELETE" }),
+  renderClipProject: (id: string, only_ids?: string[]) =>
+    request<{ queued: number; items: QueueItem[] }>(`/api/clips/${id}/render`, {
+      method: "POST", body: JSON.stringify({ only_ids: only_ids || [] }),
+    }),
+  clipSourceVideoUrl: (id: string) =>
+    `${API_BASE}/api/clips/${id}/source-video`,
+  clipRenderedVideoUrl: (id: string, proposalId: string) =>
+    `${API_BASE}/api/clips/${id}/clip-video?proposal_id=${encodeURIComponent(proposalId)}`,
 
   // Backgrounds library
   listBackgrounds: (path = "") =>

@@ -531,6 +531,81 @@ def _used_post_titles() -> List[str]:
     return titles
 
 
+async def _run_clip_render_async(project_id: str, proposal_id: str):
+    """
+    Render one approved proposal from a Clip Maker project. Drives the
+    modular CLIP_PIPELINE and mirrors its step progress into pipeline_state
+    so the Dashboard timeline + status bar update just like a Reddit run.
+    """
+    from clip_projects import load_project, save_project, set_status
+    from clip_pipeline import CLIP_PIPELINE
+    from pipeline_core import PipelineContext
+
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        pipeline_state["error"] = f"Clip project not found: {project_id}"
+        return
+    prop = next((p for p in (proj.get("proposals") or []) if p.get("id") == proposal_id), None)
+    if not prop:
+        pipeline_state["error"] = f"Proposal not found: {proposal_id}"
+        return
+
+    # Lay out the step list in pipeline_state so the UI can show it.
+    pipeline_state["is_running"] = True
+    pipeline_state["error"] = None
+    pipeline_state["steps"] = CLIP_PIPELINE.step_summaries
+    pipeline_state["current_post"] = {
+        "id": f"clip:{project_id}:{proposal_id}",
+        "title": (prop.get("custom_title") or prop.get("hook_line") or proj.get("name") or "clip")[:120],
+        "subreddit": "clipmaker",
+        "score": int(prop.get("score") or 0),
+    }
+    pipeline_state["started_at"] = datetime.now(timezone.utc).isoformat()
+    pipeline_state["completed_at"] = None
+    _log(f"Clip render starting: {project_id}/{proposal_id}")
+
+    def _mirror(step_id: str, status: str, detail: str = "", _extra=None):
+        now_s = datetime.now(timezone.utc).isoformat()
+        for step in pipeline_state["steps"]:
+            if step["id"] == step_id:
+                if status == "running":
+                    step["started_at"] = now_s
+                    step["finished_at"] = None
+                elif status in ("done", "error", "skipped") and step.get("started_at"):
+                    step["finished_at"] = now_s
+                step["status"] = "running" if status == "sub" else status
+                if detail:
+                    step["detail"] = detail
+                break
+        if status == "error":
+            _log(f"Clip step {step_id} error: {detail}")
+
+    # Captions — prefer the dedicated clip_captions block, fall back to the
+    # Reddit captions so new configs don't break existing ones.
+    cfg = _load_config()
+    clip_caps = (cfg.get("clip_captions") or cfg.get("captions") or {})
+
+    ctx = PipelineContext({
+        "project_root": PROJECT_ROOT,
+        "project":      proj,
+        "proposal":     prop,
+        "config":       cfg,
+        "captions":     clip_caps,
+    })
+
+    try:
+        await CLIP_PIPELINE.run(ctx, _mirror)
+        set_status(PROJECT_ROOT, project_id, "done", "render finished")
+        _log(f"Clip render done: {project_id}/{proposal_id} → {ctx.get('final_path')}")
+    except Exception as e:
+        pipeline_state["error"] = str(e)
+        set_status(PROJECT_ROOT, project_id, "failed", "", error=str(e))
+        _log(f"Clip render FAILED: {project_id}/{proposal_id}: {e}")
+    finally:
+        pipeline_state["is_running"] = False
+        pipeline_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+
 async def _queue_worker():
     """
     Background task that drains the run queue. Sleeps when the pipeline
@@ -553,22 +628,35 @@ async def _queue_worker():
             qid = item["queue_id"]
             pid = item.get("post_id") or ""
             params = item.get("params") or {}
-            _log(f"Queue: starting {pid} — {item.get('title','')[:60]} ({qid[:8]})")
+            kind = (params.get("kind") or "post").lower()
+            _log(f"Queue: starting {kind}:{pid} — {item.get('title','')[:60]} ({qid[:8]})")
             mark_running(PROJECT_ROOT, qid)
 
-            # Dispatch into the existing pipeline runner.
-            await _run_pipeline_async(
-                specific_post_id=pid,
-                selected_comments=params.get("selected_comments"),
-                max_comment_chars=int(params.get("max_comment_chars") or 0),
-                narrator_gender=params.get("narrator_gender"),
-                voice_override=params.get("voice_override"),
-            )
+            err_out: Optional[str] = None
+            if kind == "clip":
+                # Clip Maker render — uses the modular pipeline in clip_pipeline.
+                try:
+                    await _run_clip_render_async(
+                        params.get("clip_project") or "",
+                        params.get("clip_proposal") or "",
+                    )
+                    err_out = pipeline_state.get("error")
+                except Exception as e:
+                    err_out = str(e)
+            else:
+                # Legacy Reddit post pipeline.
+                await _run_pipeline_async(
+                    specific_post_id=pid,
+                    selected_comments=params.get("selected_comments"),
+                    max_comment_chars=int(params.get("max_comment_chars") or 0),
+                    narrator_gender=params.get("narrator_gender"),
+                    voice_override=params.get("voice_override"),
+                )
+                err_out = pipeline_state.get("error")
 
-            err = pipeline_state.get("error")
-            success = not err
-            mark_finished(PROJECT_ROOT, qid, success=success, error=err if err else None)
-            _log(f"Queue: finished {pid} ({'OK' if success else 'FAILED'})")
+            success = not err_out
+            mark_finished(PROJECT_ROOT, qid, success=success, error=err_out if err_out else None)
+            _log(f"Queue: finished {kind}:{pid} ({'OK' if success else 'FAILED'})")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1024,6 +1112,406 @@ async def cost_elevenlabs_balance():
     if not info:
         return {"available": False, "reason": "fetch_failed"}
     return {"available": True, **info}
+
+
+# ── Clip Maker ──────────────────────────────────────────────────────
+# Feature: long-form media → whisper → LLM finds the best Shorts-worthy
+# windows → user adjusts → render 9:16 with captions. Source is either
+# an uploaded file or a YouTube URL (yt-dlp).
+
+@app.get("/api/clips")
+async def list_clip_projects():
+    from clip_projects import load_registry
+    return {"projects": load_registry(PROJECT_ROOT)}
+
+
+@app.get("/api/clips/{project_id}")
+async def get_clip_project(project_id: str):
+    from clip_projects import load_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Clip project not found")
+    return proj
+
+
+@app.delete("/api/clips/{project_id}")
+async def delete_clip_project(project_id: str):
+    from clip_projects import delete_project
+    ok = delete_project(PROJECT_ROOT, project_id)
+    if not ok:
+        raise HTTPException(404, "Clip project not found")
+    return {"deleted": True}
+
+
+@app.post("/api/clips/metadata")
+async def probe_clip_source(req: dict):
+    """Cheap 'what's this URL?' probe. Shown pre-download."""
+    url = (req.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "url is required")
+    from yt_ingest import fetch_metadata, IngestError
+    try:
+        return await asyncio.to_thread(fetch_metadata, url)
+    except IngestError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/clips/from-youtube")
+async def create_clip_project_youtube(req: dict):
+    """
+    Create a project from a YouTube URL. Spawns a background task that
+    downloads + probes duration; returns the new project record
+    immediately with status='ingesting'.
+    """
+    url = (req.get("url") or "").strip()
+    name = (req.get("name") or "").strip()
+    if not url:
+        raise HTTPException(400, "url is required")
+    from clip_projects import create_project
+    proj = create_project(PROJECT_ROOT, name=name or "", source_type="youtube", source_url=url)
+    asyncio.create_task(_ingest_youtube_async(proj["id"], url))
+    return proj
+
+
+@app.post("/api/clips/from-upload")
+async def create_clip_project_upload(file: UploadFile = File(...), name: str = ""):
+    """Create a project from an uploaded mp4 — streams to disk."""
+    fn = os.path.basename(file.filename or "")
+    ext = os.path.splitext(fn)[1].lower() or ".mp4"
+    if ext not in (".mp4", ".mov", ".mkv", ".webm", ".avi"):
+        raise HTTPException(400, "Unsupported video format — use mp4 / mov / mkv / webm / avi")
+
+    from clip_projects import create_project, save_project, project_dir
+    proj = create_project(PROJECT_ROOT, name=name or os.path.splitext(fn)[0],
+                          source_type="upload")
+    dest = os.path.join(project_dir(PROJECT_ROOT, proj["id"]), f"source{ext}")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+
+    size = 0
+    with open(dest, "wb") as f:
+        while True:
+            chunk = await file.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            size += len(chunk)
+
+    # Probe duration via ffprobe.
+    try:
+        import imageio_ffmpeg
+        ff = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        ff = "ffmpeg"
+    probe = subprocess.run(
+        [ff, "-i", dest, "-hide_banner"], capture_output=True, text=True
+    )
+    duration = 0.0
+    m = re.search(r"Duration: (\d+):(\d+):([\d.]+)", probe.stderr or "")
+    if m:
+        h, mm, ss = m.groups()
+        duration = int(h) * 3600 + int(mm) * 60 + float(ss)
+
+    proj["source_file"] = dest
+    proj["duration_s"] = duration
+    proj["status"] = "ready_to_transcribe"
+    proj["status_detail"] = f"uploaded {size / 1024 / 1024:.1f} MB"
+    save_project(PROJECT_ROOT, proj)
+    return proj
+
+
+async def _ingest_youtube_async(project_id: str, url: str):
+    from clip_projects import load_project, save_project, project_dir, set_status
+    from yt_ingest import download, parse_vtt_to_segments, IngestError
+
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        return
+    try:
+        cfg = _load_config()
+        cm_cfg = cfg.get("clipmaker") or {}
+        max_dur = int(cm_cfg.get("max_duration_s", 3600))
+        set_status(PROJECT_ROOT, project_id, "ingesting", f"downloading (cap {max_dur // 60}m)")
+        dest_dir = project_dir(PROJECT_ROOT, project_id)
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, "source.mp4")
+
+        def _dl():
+            return download(url, dest, max_duration_s=max_dur)
+        info = await asyncio.to_thread(_dl)
+
+        proj = load_project(PROJECT_ROOT, project_id)
+        if not proj:
+            return
+        proj["source_file"] = info["video_path"]
+        proj["duration_s"]  = info["duration_s"]
+        proj["name"]        = proj["name"] or info["title"]
+        proj["source_thumb"] = info["thumbnail"]
+
+        # If yt-dlp grabbed auto-captions, we can skip whisper entirely.
+        if info["caption_vtt_path"]:
+            segs = parse_vtt_to_segments(info["caption_vtt_path"])
+            if segs:
+                proj["transcript"] = {
+                    "source":   f"youtube-{info['caption_source']}",
+                    "lang":     "en",
+                    "segments": segs,
+                }
+                proj["status"] = "ready_to_propose"
+                proj["status_detail"] = f"{len(segs)} caption cues via YouTube"
+                save_project(PROJECT_ROOT, proj)
+                _log(f"Clip project {project_id}: YT captions imported ({len(segs)} cues)")
+                return
+        # No captions — defer to a whisper pass when the user asks.
+        proj["status"] = "ready_to_transcribe"
+        proj["status_detail"] = "downloaded; needs whisper for transcript"
+        save_project(PROJECT_ROOT, proj)
+        _log(f"Clip project {project_id}: downloaded, awaiting transcription")
+    except IngestError as e:
+        set_status(PROJECT_ROOT, project_id, "failed", "", error=str(e))
+    except Exception as e:
+        set_status(PROJECT_ROOT, project_id, "failed", "", error=f"ingest error: {e}")
+
+
+@app.post("/api/clips/{project_id}/transcribe")
+async def transcribe_clip_project(project_id: str):
+    """Run faster-whisper over the source when auto-captions aren't available."""
+    from clip_projects import load_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Clip project not found")
+    if not proj.get("source_file"):
+        raise HTTPException(400, "Source file not ready yet")
+    asyncio.create_task(_transcribe_clip_async(project_id))
+    return {"started": True}
+
+
+async def _transcribe_clip_async(project_id: str):
+    from clip_projects import load_project, save_project, set_status
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        return
+    try:
+        set_status(PROJECT_ROOT, project_id, "transcribing", "faster-whisper on source")
+        from whisper_align import is_available, _get_model, _resolve_device
+        if not is_available():
+            set_status(PROJECT_ROOT, project_id, "failed", "", error="faster-whisper not installed")
+            return
+
+        cfg = _load_config()
+        cm_cfg = cfg.get("clipmaker") or {}
+        model_size = cm_cfg.get("transcribe_model") or "base"
+        device, compute = _resolve_device("auto", "default")
+
+        def _run():
+            model = _get_model(model_size, device, compute)
+            segments_iter, _info = model.transcribe(proj["source_file"], language="en")
+            out = []
+            for seg in segments_iter:
+                out.append({
+                    "start": float(seg.start or 0),
+                    "end":   float(seg.end or 0),
+                    "text":  (seg.text or "").strip(),
+                })
+            return out
+
+        segs = await asyncio.to_thread(_run)
+        proj = load_project(PROJECT_ROOT, project_id)
+        if not proj:
+            return
+        proj["transcript"] = {"source": f"whisper-{model_size}", "lang": "en", "segments": segs}
+        proj["status"] = "ready_to_propose"
+        proj["status_detail"] = f"{len(segs)} transcript cues"
+        save_project(PROJECT_ROOT, proj)
+        _log(f"Clip project {project_id}: whisper transcribed {len(segs)} segments")
+    except Exception as e:
+        set_status(PROJECT_ROOT, project_id, "failed", "", error=f"transcribe error: {e}")
+
+
+@app.post("/api/clips/{project_id}/propose")
+async def propose_clip_project(project_id: str, req: dict = {}):
+    """Ask the LLM for the top N clip windows."""
+    from clip_projects import load_project, save_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Clip project not found")
+    tr = proj.get("transcript") or {}
+    segs = tr.get("segments") or []
+    if not segs:
+        raise HTTPException(400, "No transcript yet — run /transcribe first (or use a YouTube link with captions).")
+
+    cfg = _load_config()
+    g = cfg.get("gemini") or {}
+    cm = cfg.get("clipmaker") or {}
+    provider = g.get("provider", "gemini")
+    api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    from clip_propose import propose_clips
+    def _run():
+        return propose_clips(
+            segs,
+            duration_s=proj.get("duration_s", 0),
+            provider=provider, api_key=api_key, model=model, ollama_url=ollama_url,
+            target_count=int(req.get("target_count") or cm.get("target_count", 5)),
+            min_len_s=int(req.get("min_len_s") or cm.get("min_len_s", 15)),
+            max_len_s=int(req.get("max_len_s") or cm.get("max_len_s", 60)),
+            mode=req.get("mode") or cm.get("mode", "ai_only"),
+        )
+
+    proposals = await asyncio.to_thread(_run)
+    proj["proposals"] = proposals
+    proj["status"] = "ready_to_review"
+    proj["status_detail"] = f"{len(proposals)} proposals"
+    save_project(PROJECT_ROOT, proj)
+    _log(f"Clip project {project_id}: {len(proposals)} proposals via {provider}")
+    return {"proposals": proposals}
+
+
+@app.post("/api/clips/{project_id}/proposals/{proposal_id}")
+async def update_proposal(project_id: str, proposal_id: str, req: dict):
+    """Edit a proposal's start/end/title/approval."""
+    from clip_projects import load_project, save_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Clip project not found")
+    props = proj.get("proposals") or []
+    found = None
+    for p in props:
+        if p.get("id") == proposal_id:
+            found = p
+            break
+    if not found:
+        raise HTTPException(404, "Proposal not found")
+    if "start" in req:
+        found["start"] = max(0.0, float(req["start"] or 0))
+        found["user_adjusted"] = True
+    if "end" in req:
+        found["end"] = max(found["start"] + 1.0, float(req["end"] or 0))
+        found["user_adjusted"] = True
+    if "approved" in req:
+        found["approved"] = bool(req["approved"])
+    if "custom_title" in req:
+        found["custom_title"] = (req["custom_title"] or "")[:200] or None
+    save_project(PROJECT_ROOT, proj)
+    return {"proposal": found}
+
+
+@app.post("/api/clips/{project_id}/proposals/add")
+async def add_proposal(project_id: str, req: dict):
+    """Add a manually-specified clip window."""
+    from clip_projects import load_project, save_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Clip project not found")
+    start = max(0.0, float(req.get("start") or 0))
+    end   = max(start + 1.0, float(req.get("end") or 0))
+    existing = proj.get("proposals") or []
+    # Pick a unique id — next pN after the current max.
+    n = len(existing) + 1
+    while any(p.get("id") == f"p{n}" for p in existing):
+        n += 1
+    new = {
+        "id":            f"p{n}",
+        "start":         start,
+        "end":           end,
+        "hook_line":     (req.get("hook_line") or "").strip()[:200],
+        "reason":        "manual",
+        "score":         0,
+        "approved":      True,
+        "user_adjusted": True,
+        "custom_title":  (req.get("custom_title") or "").strip()[:200] or None,
+    }
+    existing.append(new)
+    proj["proposals"] = existing
+    proj["status"] = "ready_to_review"
+    save_project(PROJECT_ROOT, proj)
+    return {"proposal": new}
+
+
+@app.delete("/api/clips/{project_id}/proposals/{proposal_id}")
+async def delete_proposal(project_id: str, proposal_id: str):
+    from clip_projects import load_project, save_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Clip project not found")
+    proj["proposals"] = [p for p in (proj.get("proposals") or []) if p.get("id") != proposal_id]
+    save_project(PROJECT_ROOT, proj)
+    return {"deleted": True}
+
+
+@app.post("/api/clips/{project_id}/render")
+async def render_clip_project(project_id: str, req: dict = {}):
+    """
+    Queue every APPROVED proposal for rendering. Each becomes its own
+    queue item so the run queue UI shows per-clip progress.
+    """
+    from clip_projects import load_project, save_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Clip project not found")
+
+    only_ids = req.get("only_ids") or []
+    approved = [
+        p for p in (proj.get("proposals") or [])
+        if p.get("approved") and (not only_ids or p.get("id") in only_ids)
+    ]
+    if not approved:
+        raise HTTPException(400, "No approved proposals to render")
+
+    from run_queue import enqueue
+    queued = []
+    for prop in approved:
+        title = (prop.get("custom_title") or prop.get("hook_line") or
+                 f"{proj['name']} — {prop['id']}")[:100]
+        item = enqueue(
+            PROJECT_ROOT,
+            post_id=f"clip:{project_id}:{prop['id']}",
+            title=title,
+            subreddit="clipmaker",
+            params={
+                "kind":        "clip",
+                "clip_project": project_id,
+                "clip_proposal": prop["id"],
+            },
+        )
+        queued.append(item)
+
+    proj["status"] = "rendering"
+    proj["status_detail"] = f"{len(queued)} clip(s) queued"
+    save_project(PROJECT_ROOT, proj)
+    return {"queued": len(queued), "items": queued}
+
+
+@app.get("/api/clips/{project_id}/source-video")
+async def clip_source_stream(project_id: str):
+    """Stream the source file back for the in-browser review player."""
+    from fastapi.responses import FileResponse
+    from clip_projects import load_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj or not proj.get("source_file") or not os.path.isfile(proj["source_file"]):
+        raise HTTPException(404, "Source not available")
+    return FileResponse(proj["source_file"], media_type="video/mp4")
+
+
+@app.get("/api/clips/{project_id}/clip-video")
+async def rendered_clip_stream(project_id: str, proposal_id: str):
+    """Stream a rendered clip back."""
+    from fastapi.responses import FileResponse
+    from clip_projects import load_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Not found")
+    for r in (proj.get("rendered_clips") or []):
+        if r.get("proposal_id") == proposal_id:
+            vp = r.get("video_path")
+            if vp and os.path.isfile(vp):
+                return FileResponse(vp, media_type="video/mp4")
+    raise HTTPException(404, "Rendered clip not found")
 
 
 @app.get("/api/render-history")
