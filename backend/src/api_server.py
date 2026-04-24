@@ -2480,10 +2480,9 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
 
         from video_generator import VideoGenerator
         video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
-        # Honor the per-run background override if the Generate-with-AI
-        # dialog specified one — otherwise fall back to the config default.
-        _bg_sel = background_override if background_override is not None else (config.get("video", {}) or {}).get("background_selector", "")
-        video_gen.set_background_selector(_bg_sel)
+        # Resume path has no per-run override — follow whatever the config
+        # currently says for the default background selector.
+        video_gen.set_background_selector((config.get("video", {}) or {}).get("background_selector", ""))
         output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
         # Load post metadata for title card rendering during resume.
