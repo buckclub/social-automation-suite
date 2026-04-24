@@ -652,12 +652,17 @@ class ElevenLabsTTS:
             "model_id": self.model_id,
             "voice_settings": self.voice_settings,
         }
+        preview = (text[:60] + "…") if len(text) > 60 else text
         for attempt in range(max_retries):
             if self.cancel_check:
                 self.cancel_check()
             try:
                 if attempt > 0 or self.delay_between_requests > 0:
                     time.sleep(self.delay_between_requests * (2 ** attempt))
+                t0 = time.time()
+                # Per-call log BEFORE the request — if ElevenLabs hangs, the
+                # user sees which segment is stuck instead of a silent wait.
+                print(f"   → ElevenLabs (attempt {attempt + 1}/{max_retries}): \"{preview}\"", flush=True)
                 resp = requests.post(url, headers=headers, json=body, timeout=60)
                 if resp.status_code == 401:
                     print("❌ ElevenLabs: 401 unauthorized — check api_key")
@@ -677,7 +682,8 @@ class ElevenLabsTTS:
                 resp.raise_for_status()
                 with open(output_path, 'wb') as f:
                     f.write(resp.content)
-                print(f"✓ Generated TTS: {output_filename} (ElevenLabs/{self.voice})")
+                elapsed = time.time() - t0
+                print(f"✓ Generated TTS: {output_filename} (ElevenLabs/{self.voice}, {elapsed:.1f}s)", flush=True)
                 # Bill this call's character count into the local cost ledger.
                 try:
                     from cost_tracker import record_tts

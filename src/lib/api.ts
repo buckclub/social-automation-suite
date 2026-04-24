@@ -736,6 +736,10 @@ export const api = {
   runPipelineAI: (params: {
     content_style: string; niche: string; custom_topic?: string;
     interactive_format?: string; video_mode: string; tts_enabled: boolean;
+    voice_override?: string;
+    narrator_gender?: "auto" | "male" | "female";
+    background_selector?: string;
+    custom_title?: string;
   }) =>
     request<{ started: boolean }>("/api/pipeline/run-ai", {
       method: "POST",

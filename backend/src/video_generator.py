@@ -1478,6 +1478,18 @@ class VideoGenerator:
         """
         import tempfile
 
+        # Pause segments (silence filler from StreamlabsTTS / ElevenLabsTTS
+        # when the AI content generator yields a [PAUSE:N] marker). Emit a
+        # single fully-transparent frame so the audio silence has matching
+        # video time — never render captions like "[3s pause]" on screen.
+        if segment.get('is_pause'):
+            import tempfile
+            blank = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
+            tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+            blank.save(tmp.name)
+            tmp.close()
+            return [(tmp.name, duration)]
+
         # Diagnostic: title-role without a prepared card means the pipeline
         # didn't populate post_title or the thumbnail render failed.
         if segment.get('segment_role') == 'title' and not getattr(self, '_title_card_path', None):

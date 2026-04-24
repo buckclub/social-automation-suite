@@ -1,15 +1,18 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  Sparkles, ArrowRight, ArrowLeft, Play, Loader2,
+  Sparkles, ArrowRight, ArrowLeft, Loader2,
   Film, Scissors, Mic, MicOff, BookOpen, MessageSquare,
-  Gamepad2, Flame, HandMetal, HelpCircle, Star, Brain,
+  Gamepad2, Flame, HandMetal, HelpCircle, Star, Brain, Images, User, Shuffle,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { useConfig, useTtsProviders } from "@/hooks/use-api";
+import { ELEVENLABS_LIBRARY } from "@/components/ElevenLabsLibraryPresets";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -52,15 +55,57 @@ export function GenerateWithAIDialog() {
   const [contentStyle, setContentStyle] = useState("story");
   const [niche, setNiche] = useState("relationship_drama");
   const [customTopic, setCustomTopic] = useState("");
+  const [customTitle, setCustomTitle] = useState("");
   const [interactiveFormat, setInteractiveFormat] = useState("put_a_finger_down");
   const [videoMode, setVideoMode] = useState("short_reel");
   const [ttsEnabled, setTtsEnabled] = useState(true);
+
+  // NEW per-run overrides
+  const [narratorGender, setNarratorGender] = useState<"auto" | "male" | "female">("auto");
+  const [voiceOverride, setVoiceOverride] = useState<string>("__config__");    // __config__ = use config default
+  const [bgSelector, setBgSelector] = useState<string>("__config__");          // __config__ = use config default
+
   const [submitting, setSubmitting] = useState(false);
 
   const { toast } = useToast();
   const qc = useQueryClient();
 
-  const totalSteps = 4;
+  // Live config + providers for the voice/background dropdowns
+  const { data: config } = useConfig();
+  const { data: providersData } = useTtsProviders();
+  const [bgFolders, setBgFolders] = useState<{ path: string; name: string; video_count: number }[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    api.listBackgroundFolders()
+      .then((r) => setBgFolders(r.folders))
+      .catch(() => setBgFolders([{ path: "", name: "(All — random)", video_count: 0 }]));
+  }, [open]);
+
+  const ttsConfig = (config as any)?.tts ?? {};
+  const ttsProvider: string = ttsConfig.provider || "streamlabs_polly";
+  const mainVoice: string = ttsConfig.main_voice || "";
+
+  // Build the voice options for the current provider. Falls back to the
+  // 21-voice ElevenLabs library when provider=elevenlabs so the dropdown
+  // is useful even without a successful /v2/voices fetch.
+  const voiceOptions: { id: string; label: string }[] = useMemo(() => {
+    if (ttsProvider === "elevenlabs") {
+      return ELEVENLABS_LIBRARY.map((v) => ({
+        id: v.id, label: `${v.name} — ${v.category}`,
+      }));
+    }
+    const providers = providersData?.providers ?? [];
+    const pp = providers.find((p) => p.id === ttsProvider);
+    const detailed = pp?.voices_detailed ?? [];
+    const raw = pp?.voices ?? [];
+    return raw.map((vid) => {
+      const d = detailed.find((x: any) => x.id === vid);
+      return { id: vid, label: d ? `${d.name} (${d.lang}, ${d.gender})` : vid };
+    });
+  }, [ttsProvider, providersData]);
+
+  const totalSteps = 5;
 
   const handleSubmit = async () => {
     setSubmitting(true);
@@ -69,11 +114,21 @@ export function GenerateWithAIDialog() {
         content_style: contentStyle,
         niche,
         custom_topic: customTopic || undefined,
+        custom_title: customTitle || undefined,
         interactive_format: contentStyle === "interactive" ? interactiveFormat : undefined,
         video_mode: videoMode,
         tts_enabled: ttsEnabled,
+        narrator_gender: narratorGender,
+        voice_override: voiceOverride === "__config__" ? undefined : voiceOverride,
+        background_selector: bgSelector === "__config__" ? undefined : bgSelector,
       });
-      toast({ title: "AI Pipeline started", description: "Generating original content with AI..." });
+      toast({
+        title: "AI pipeline started",
+        description: (
+          narratorGender !== "auto" ? `Narrator: ${narratorGender}` :
+          voiceOverride !== "__config__" ? "Using custom voice" : "Generating…"
+        ),
+      });
       qc.invalidateQueries({ queryKey: ["pipeline"] });
       setOpen(false);
       resetForm();
@@ -88,14 +143,17 @@ export function GenerateWithAIDialog() {
     setStep(0);
     setContentStyle("story");
     setNiche("relationship_drama");
-    setCustomTopic("");
+    setCustomTopic(""); setCustomTitle("");
     setInteractiveFormat("put_a_finger_down");
     setVideoMode("short_reel");
     setTtsEnabled(true);
+    setNarratorGender("auto");
+    setVoiceOverride("__config__");
+    setBgSelector("__config__");
   };
 
   const renderStep = () => {
-    // Step 0: Content Style
+    // ── Step 0: Content style ────────────────────────────────────
     if (step === 0) {
       return (
         <div className="space-y-4">
@@ -127,7 +185,7 @@ export function GenerateWithAIDialog() {
       );
     }
 
-    // Step 1: Niche + Optional Topic
+    // ── Step 1: Niche + Custom topic ─────────────────────────────
     if (step === 1) {
       return (
         <div className="space-y-4">
@@ -173,7 +231,7 @@ export function GenerateWithAIDialog() {
             </div>
           )}
 
-          <div className="space-y-2">
+          <div className="space-y-1">
             <Label className="text-xs text-muted-foreground">Custom Topic (optional)</Label>
             <Input
               value={customTopic}
@@ -181,7 +239,17 @@ export function GenerateWithAIDialog() {
               placeholder="e.g. 'caught my roommate doing something weird at 3am'"
               className="h-8 text-xs bg-secondary border-border"
             />
-            <p className="text-[10px] text-muted-foreground">Leave empty for AI to choose a fresh angle</p>
+            <p className="text-[10px] text-muted-foreground">Leave empty for AI to choose a fresh angle.</p>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Custom Title (optional)</Label>
+            <Input
+              value={customTitle}
+              onChange={(e) => setCustomTitle(e.target.value)}
+              placeholder="Override the AI-chosen headline"
+              className="h-8 text-xs bg-secondary border-border"
+            />
           </div>
 
           <div className="flex gap-2">
@@ -196,8 +264,88 @@ export function GenerateWithAIDialog() {
       );
     }
 
-    // Step 2: Video Mode & TTS
+    // ── Step 2: Voice & TTS ─────────────────────────────────────
     if (step === 2) {
+      return (
+        <div className="space-y-4">
+          <Label className="text-xs text-muted-foreground uppercase tracking-wider flex items-center gap-1">
+            <Mic className="h-3 w-3" /> Voice
+          </Label>
+
+          <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-secondary/50">
+            <div className="flex items-center gap-2">
+              {ttsEnabled ? <Mic className="h-4 w-4 text-primary" /> : <MicOff className="h-4 w-4 text-muted-foreground" />}
+              <div>
+                <p className="text-xs font-medium">Text-to-Speech</p>
+                <p className="text-[10px] text-muted-foreground">Off renders a silent video</p>
+              </div>
+            </div>
+            <Button size="sm" variant={ttsEnabled ? "default" : "outline"} onClick={() => setTtsEnabled(!ttsEnabled)} className="h-7 text-xs">
+              {ttsEnabled ? "On" : "Off"}
+            </Button>
+          </div>
+
+          {ttsEnabled && (
+            <>
+              <div className="space-y-1">
+                <Label className="text-[11px] text-muted-foreground flex items-center gap-1">
+                  <User className="h-3 w-3" /> Narrator gender
+                </Label>
+                <div className="grid grid-cols-3 gap-1">
+                  {(["auto", "male", "female"] as const).map((g) => (
+                    <button
+                      key={g}
+                      onClick={() => setNarratorGender(g)}
+                      className={cn(
+                        "h-7 text-[10px] rounded border transition-colors capitalize",
+                        narratorGender === g
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border bg-secondary/60 text-muted-foreground hover:border-primary/30"
+                      )}
+                    >
+                      {g === "auto" ? "Auto (use preset)" : g}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground leading-snug">
+                  Auto follows your gender-preset in config. Force male/female to override for this run only.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-[11px] text-muted-foreground">Voice (optional override)</Label>
+                <Select value={voiceOverride} onValueChange={setVoiceOverride}>
+                  <SelectTrigger className="h-8 text-xs bg-secondary border-border"><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-[280px]">
+                    <SelectItem value="__config__">
+                      Use config default {mainVoice && <span className="text-muted-foreground">({mainVoice})</span>}
+                    </SelectItem>
+                    {voiceOptions.map((v) => (
+                      <SelectItem key={v.id} value={v.id}>{v.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[10px] text-muted-foreground leading-snug">
+                  Provider: <code>{ttsProvider}</code>. Change provider in Config → TTS.
+                </p>
+              </div>
+            </>
+          )}
+
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setStep(1)} className="flex-1 gap-2">
+              <ArrowLeft className="h-3.5 w-3.5" /> Back
+            </Button>
+            <Button onClick={() => setStep(3)} className="flex-1 gap-2">
+              Next <ArrowRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Step 3: Video + background ─────────────────────────────
+    if (step === 3) {
       return (
         <div className="space-y-4">
           <Label className="text-xs text-muted-foreground uppercase tracking-wider">Video Format</Label>
@@ -222,29 +370,36 @@ export function GenerateWithAIDialog() {
             ))}
           </div>
 
-          <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-secondary/50">
-            <div className="flex items-center gap-2">
-              {ttsEnabled ? <Mic className="h-4 w-4 text-primary" /> : <MicOff className="h-4 w-4 text-muted-foreground" />}
-              <div>
-                <p className="text-xs font-medium">Text-to-Speech</p>
-                <p className="text-[10px] text-muted-foreground">Generate voiceover audio</p>
-              </div>
-            </div>
-            <Button
-              size="sm"
-              variant={ttsEnabled ? "default" : "outline"}
-              onClick={() => setTtsEnabled(!ttsEnabled)}
-              className="h-7 text-xs"
-            >
-              {ttsEnabled ? "On" : "Off"}
-            </Button>
+          <div className="space-y-1">
+            <Label className="text-[11px] text-muted-foreground flex items-center gap-1">
+              <Images className="h-3 w-3" /> Background footage
+            </Label>
+            <Select value={bgSelector} onValueChange={setBgSelector}>
+              <SelectTrigger className="h-8 text-xs bg-secondary border-border"><SelectValue /></SelectTrigger>
+              <SelectContent className="max-h-[280px]">
+                <SelectItem value="__config__">
+                  Use config default
+                </SelectItem>
+                <SelectItem value="">
+                  <span className="flex items-center gap-1"><Shuffle className="h-3 w-3" /> All backgrounds — random</span>
+                </SelectItem>
+                {bgFolders.filter((f) => f.path).map((f) => (
+                  <SelectItem key={f.path} value={f.path}>
+                    📁 {f.name} <span className="text-muted-foreground">({f.video_count})</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              Override the default background for this run. Manage clips on the Backgrounds page.
+            </p>
           </div>
 
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => setStep(1)} className="flex-1 gap-2">
+            <Button variant="outline" onClick={() => setStep(2)} className="flex-1 gap-2">
               <ArrowLeft className="h-3.5 w-3.5" /> Back
             </Button>
-            <Button onClick={() => setStep(3)} className="flex-1 gap-2">
+            <Button onClick={() => setStep(4)} className="flex-1 gap-2">
               Next <ArrowRight className="h-3.5 w-3.5" />
             </Button>
           </div>
@@ -252,52 +407,44 @@ export function GenerateWithAIDialog() {
       );
     }
 
-    // Step 3: Review & Generate
-    if (step === 3) {
-      const styleInfo = CONTENT_STYLES.find((s) => s.id === contentStyle);
-      const nicheInfo = NICHES.find((n) => n.id === niche);
+    // ── Step 4: Review & generate ──────────────────────────────
+    if (step === 4) {
+      const styleInfo  = CONTENT_STYLES.find((s) => s.id === contentStyle);
+      const nicheInfo  = NICHES.find((n) => n.id === niche);
       const formatInfo = INTERACTIVE_FORMATS.find((f) => f.id === interactiveFormat);
+      const voiceLabel =
+        voiceOverride === "__config__"
+          ? `default (${mainVoice || "—"})`
+          : (voiceOptions.find((v) => v.id === voiceOverride)?.label || voiceOverride);
+      const bgLabel =
+        bgSelector === "__config__"
+          ? "config default"
+          : bgSelector === ""
+          ? "all backgrounds (random)"
+          : bgSelector;
 
       return (
         <div className="space-y-4">
           <Label className="text-xs text-muted-foreground uppercase tracking-wider">Review</Label>
-          <div className="space-y-2 rounded-lg border border-border bg-secondary/30 p-3">
-            <div className="flex justify-between text-[10px]">
-              <span className="text-muted-foreground">Style</span>
-              <span className="font-medium">{styleInfo?.label}</span>
-            </div>
-            <div className="flex justify-between text-[10px]">
-              <span className="text-muted-foreground">Niche</span>
-              <span className="font-medium">{nicheInfo?.emoji} {nicheInfo?.name}</span>
-            </div>
-            {contentStyle === "interactive" && (
-              <div className="flex justify-between text-[10px]">
-                <span className="text-muted-foreground">Format</span>
-                <span className="font-medium">{formatInfo?.label}</span>
-              </div>
-            )}
-            {customTopic && (
-              <div className="flex justify-between text-[10px]">
-                <span className="text-muted-foreground">Topic</span>
-                <span className="font-medium truncate ml-4 max-w-[180px]">{customTopic}</span>
-              </div>
-            )}
-            <div className="flex justify-between text-[10px]">
-              <span className="text-muted-foreground">Video</span>
-              <span className="font-medium">{VIDEO_MODES.find((m) => m.id === videoMode)?.label}</span>
-            </div>
-            <div className="flex justify-between text-[10px]">
-              <span className="text-muted-foreground">TTS</span>
-              <span className="font-medium">{ttsEnabled ? "Enabled" : "Disabled"}</span>
-            </div>
+          <div className="space-y-1.5 rounded-lg border border-border bg-secondary/30 p-3 text-[10px]">
+            <Row label="Style" value={styleInfo?.label} />
+            <Row label="Niche" value={`${nicheInfo?.emoji} ${nicheInfo?.name}`} />
+            {contentStyle === "interactive" && <Row label="Format" value={formatInfo?.label} />}
+            {customTopic && <Row label="Topic" value={customTopic} truncate />}
+            {customTitle && <Row label="Title" value={customTitle} truncate />}
+            <Row label="Video" value={VIDEO_MODES.find((m) => m.id === videoMode)?.label} />
+            <Row label="TTS" value={ttsEnabled ? "Enabled" : "Disabled"} />
+            {ttsEnabled && <Row label="Narrator" value={narratorGender === "auto" ? "auto (by detection)" : narratorGender} />}
+            {ttsEnabled && <Row label="Voice" value={voiceLabel} truncate />}
+            <Row label="Background" value={bgLabel} truncate />
           </div>
 
           <p className="text-[10px] text-muted-foreground text-center">
-            AI will generate original content using your configured provider, then run the full pipeline.
+            AI will generate original content using your configured provider, then run the full pipeline with these overrides.
           </p>
 
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => setStep(2)} className="flex-1 gap-2">
+            <Button variant="outline" onClick={() => setStep(3)} className="flex-1 gap-2">
               <ArrowLeft className="h-3.5 w-3.5" /> Back
             </Button>
             <Button onClick={handleSubmit} disabled={submitting} className="flex-1 gap-2 glow-accent">
@@ -320,7 +467,7 @@ export function GenerateWithAIDialog() {
           Generate with AI
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-md bg-card border-border">
+      <DialogContent className="sm:max-w-md bg-card border-border max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-sm flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-accent" />
@@ -344,5 +491,14 @@ export function GenerateWithAIDialog() {
         {renderStep()}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function Row({ label, value, truncate }: { label: string; value?: React.ReactNode; truncate?: boolean }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <span className="text-muted-foreground shrink-0">{label}</span>
+      <span className={cn("font-medium text-right", truncate && "truncate max-w-[220px]")}>{value}</span>
+    </div>
   );
 }

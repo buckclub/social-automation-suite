@@ -2116,6 +2116,15 @@ async def run_pipeline_ai(req: dict = {}):
     interactive_format = req.get("interactive_format", "put_a_finger_down")
     video_mode = req.get("video_mode", "short_reel")
     tts_enabled = req.get("tts_enabled", True)
+    # Per-run transient overrides from the AI dialog (never touch config.json).
+    voice_override     = (req.get("voice_override") or "").strip() or None
+    narrator_gender    = (req.get("narrator_gender") or "auto").strip().lower() or "auto"
+    background_override = req.get("background_selector")
+    if background_override is None:
+        background_override = None  # keep None so the pipeline falls back to config
+    else:
+        background_override = str(background_override).strip()
+    custom_title       = (req.get("custom_title") or "").strip() or None
 
     config = _load_config()
     gemini_cfg = config.get("gemini", {})
@@ -2239,9 +2248,16 @@ async def run_pipeline_ai(req: dict = {}):
     _save_config(config)
 
     pipeline_state["current_post"] = {"id": post_id, "title": title, "subreddit": f"AI/{niche}", "score": 0}
-    _log(f"AI pipeline started: {content_style} / {niche} — {title[:60]}")
+    _log(f"AI pipeline started: {content_style} / {niche} — {title[:60]}"
+         + (f" · voice={voice_override}" if voice_override else "")
+         + (f" · bg={background_override}" if background_override else ""))
 
-    asyncio.create_task(_run_pipeline_async(post_id))
+    asyncio.create_task(_run_pipeline_async(
+        specific_post_id=post_id,
+        narrator_gender=narrator_gender if narrator_gender != "auto" else None,
+        voice_override=voice_override,
+        background_override=background_override,
+    ))
     return {"started": True}
 
 
@@ -2425,7 +2441,10 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
 
         from video_generator import VideoGenerator
         video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
-        video_gen.set_background_selector((config.get("video", {}) or {}).get("background_selector", ""))
+        # Honor the per-run background override if the Generate-with-AI
+        # dialog specified one — otherwise fall back to the config default.
+        _bg_sel = background_override if background_override is not None else (config.get("video", {}) or {}).get("background_selector", "")
+        video_gen.set_background_selector(_bg_sel)
         output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
         # Load post metadata for title card rendering during resume.
@@ -2620,7 +2639,7 @@ def _check_cancelled():
         raise Exception("Pipeline cancelled by user")
 
 
-async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_comments: Optional[List[int]] = None, max_comment_chars: int = 0, narrator_gender: Optional[str] = None, voice_override: Optional[str] = None):
+async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_comments: Optional[List[int]] = None, max_comment_chars: int = 0, narrator_gender: Optional[str] = None, voice_override: Optional[str] = None, background_override: Optional[str] = None, captions_preset: Optional[str] = None):
     """Execute the full pipeline matching main.py run_pipeline() flow."""
     global _cancel_requested, videos_db
     _cancel_requested = False
@@ -2977,11 +2996,11 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                 # Real-time progress tracking
                 tts_sub_steps_live = []
                 last_phase = [None]
+                _tts_heartbeat_last = [time.time()]
 
                 def _tts_progress(phase, current, total, detail):
                     """Called from TTS thread after each segment."""
                     if phase != last_phase[0]:
-                        # New phase: mark previous as done, add new
                         if tts_sub_steps_live:
                             tts_sub_steps_live[-1]["status"] = "done"
                         voice_label = main_voice
@@ -2996,10 +3015,17 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                             "detail": f"seg {current}/{total}"
                         })
                         last_phase[0] = phase
+                        # Log every phase transition so the UI log + terminal
+                        # show where TTS is at, not just the live step detail.
+                        _log(f"TTS: {phase} · seg {current}/{total}")
                     else:
-                        # Update current phase progress
                         if tts_sub_steps_live:
                             tts_sub_steps_live[-1]["detail"] = f"seg {current}/{total} — {detail}"
+                        # Heartbeat log every ~8s so a long-running phase
+                        # proves liveness in the run-log panel.
+                        if time.time() - _tts_heartbeat_last[0] > 8.0:
+                            _log(f"TTS: {phase} · seg {current}/{total} — still working")
+                            _tts_heartbeat_last[0] = time.time()
                     _set_step("tts", "running", f"Segment {current}/{total} · {phase}", list(tts_sub_steps_live))
 
                 # Use the appropriate TTS engine
@@ -3186,7 +3212,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
             try:
                 from video_generator import VideoGenerator
                 video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
-                video_gen.set_background_selector((config.get("video", {}) or {}).get("background_selector", ""))
+                video_gen.set_background_selector(background_override if background_override is not None else (config.get("video", {}) or {}).get("background_selector", ""))
                 output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
                 if video_mode == "short_reel":
@@ -3385,7 +3411,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                 from video_generator import VideoGenerator
                 if 'video_gen' not in dir():
                     video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
-                video_gen.set_background_selector((config.get("video", {}) or {}).get("background_selector", ""))
+                video_gen.set_background_selector(background_override if background_override is not None else (config.get("video", {}) or {}).get("background_selector", ""))
                 branding = config.get("video", {}).get("branding", "")
                 p_title = pipeline_state.get("current_post", {}).get("title", title) if pipeline_state.get("current_post") else title
                 p_sub = pipeline_state.get("current_post", {}).get("subreddit", "") if pipeline_state.get("current_post") else ""
