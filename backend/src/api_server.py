@@ -1362,12 +1362,16 @@ async def propose_clip_project(project_id: str, req: dict = {}):
         raise HTTPException(404, "Clip project not found")
     tr = proj.get("transcript") or {}
     segs = tr.get("segments") or []
-    if not segs:
-        raise HTTPException(400, "No transcript yet — run /transcribe first (or use a YouTube link with captions).")
-
     cfg = _load_config()
     g = cfg.get("gemini") or {}
     cm = cfg.get("clipmaker") or {}
+    mode = req.get("mode") or cm.get("mode", "ai_only")
+    # event_driven mode doesn't need a transcript — it reads the source
+    # file directly for audio/visual signals. Only block the transcript-
+    # based modes when there isn't one.
+    if not segs and mode != "event_driven":
+        raise HTTPException(400, "No transcript yet — run /transcribe first (or use a YouTube link with captions).")
+
     provider = g.get("provider", "gemini")
     api_key = (
         g.get("api_key") if provider == "gemini" else
@@ -1378,10 +1382,16 @@ async def propose_clip_project(project_id: str, req: dict = {}):
     ollama_url = g.get("ollama_url", "http://localhost:11434")
 
     from clip_propose import propose_clips
-    # Heuristic modes (ai_plus, ai_visual) need the source file to compute
-    # audio-energy peaks + scene cuts. Pass it through so the propose module
-    # can pull those signals; None is fine for ai_only / manual.
+    # Heuristic modes (ai_plus, ai_visual, event_driven) need the source
+    # file to compute audio / visual signals. None is fine for ai_only /
+    # manual.
     source_path_for_heuristics = proj.get("source_file") or None
+    # Per-request override > config default. Frontend can pass a fully
+    # spec'd event_detect block (pre_roll, post_roll, hud_region, etc)
+    # for one-off runs without saving it to config.json.
+    event_cfg = (req.get("event_detect")
+                 if isinstance(req.get("event_detect"), dict)
+                 else cm.get("event_detect"))
     def _run():
         return propose_clips(
             segs,
@@ -1390,8 +1400,9 @@ async def propose_clip_project(project_id: str, req: dict = {}):
             target_count=int(req.get("target_count") or cm.get("target_count", 5)),
             min_len_s=int(req.get("min_len_s") or cm.get("min_len_s", 15)),
             max_len_s=int(req.get("max_len_s") or cm.get("max_len_s", 60)),
-            mode=req.get("mode") or cm.get("mode", "ai_only"),
+            mode=mode,
             source_path=source_path_for_heuristics,
+            event_cfg=event_cfg,
         )
 
     proposals = await asyncio.to_thread(_run)

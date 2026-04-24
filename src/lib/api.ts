@@ -482,6 +482,7 @@ export const api = {
     request<{ started: boolean }>(`/api/clips/${id}/transcribe`, { method: "POST" }),
   proposeClips: (id: string, opts?: {
     target_count?: number; min_len_s?: number; max_len_s?: number; mode?: string;
+    event_detect?: Record<string, any>;
   }) =>
     request<{ proposals: ClipProposal[] }>(`/api/clips/${id}/propose`, {
       method: "POST", body: JSON.stringify(opts || {}),

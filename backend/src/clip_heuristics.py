@@ -1,23 +1,37 @@
 """
 Heuristic signals for clip detection.
 
-These produce candidate timestamps the LLM can weight toward — not
-final picks. They're cheap signals that work well on podcast / stream /
-vlog content without requiring a vision model:
+Two families of signals produced by this module:
 
-  * audio_energy(path) — peaks where the RMS volume spikes (laughter,
-    shouting, dramatic beats usually hit here). 1-second windows.
-  * scene_cuts(path)   — timestamps where the visual changes
-    significantly (cuts, transitions, angle changes). Uses FFmpeg's
-    built-in `select='gt(scene,...)'` filter so no vision model needed.
+A) LLM HINT SIGNALS — advisory, fed into `propose_clips` as a text hint
+   block alongside the transcript. Used by the `ai_plus` / `ai_visual`
+   modes. Cheap, never critical:
 
-Both return a list of {time, score, kind} dicts sorted by time, where
-`score` is a normalised 0..1 strength indicator. The caller decides
-what to do with them — typically format as prompt hints and let the
-LLM re-rank its candidate windows.
+     * audio_energy(path)    — absolute top-N RMS peaks (1-s windows)
+     * scene_cuts(path)      — FFmpeg scene-change timestamps
 
-Never raises — on any error returns []. These are advisory signals, not
-hard requirements.
+B) EVENT-DRIVEN DETECTORS — primary signals used by the `event_driven`
+   mode (no transcript required). These power the "detect when a goal
+   happens and clip the lead-up" workflow on silent/non-speech footage:
+
+     * audio_transients(path)    — spikes over a rolling baseline
+                                   (gunshots, horns, hit stingers)
+     * color_flash(path)         — sudden luma / colour-balance jumps
+                                   (muzzle flashes, damage flashes,
+                                   goal-celebration colour bursts,
+                                   explosions)
+     * hud_delta(path, region)   — scene-change filter restricted to a
+                                   cropped HUD region (kill feed,
+                                   scoreboard tickers)
+
+   + detect_events(path, cfg)    — fuses the above into a single ranked
+                                   peak list with {time, score, kinds}
+   + events_to_proposals(...)    — converts peaks into pre/post-roll
+                                   clip windows, dedups, scores
+
+All detectors return `{time, score, kind}` dicts (score 0..1). Everything
+here swallows errors and returns [] on failure — these are advisory
+signals, not hard requirements.
 """
 from __future__ import annotations
 import math
@@ -207,3 +221,527 @@ def build_hint_block(audio_peaks: list[dict], scene_cuts_list: list[dict],
         # Tighten output: just the list of timestamps.
         lines.append("  " + ", ".join(_fmt_hms(c["time"]) for c in cuts))
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Event-driven detectors — primary signals for the `event_driven` mode.
+#
+# These are designed for footage WITHOUT speech (gameplay, sports, music
+# video, GoPro / dashcam, etc). Each detector returns peaks independently;
+# `detect_events()` fuses them.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def audio_transients(source_path: str,
+                     *,
+                     window_s: float = 0.5,
+                     baseline_windows: int = 10,
+                     spike_ratio: float = 2.0,
+                     top_n: int = 60,
+                     min_gap_s: float = 5.0) -> list[dict]:
+    """
+    Find audio TRANSIENTS — short spikes over a rolling baseline. Unlike
+    `audio_energy` (which returns the absolute loudest windows), this
+    returns windows that JUMP above their local context. That's what
+    distinguishes "a gunshot in an otherwise quiet room" from "the whole
+    match has crowd noise." Much better for event detection.
+
+    Algorithm:
+      * Extract mono 16 kHz PCM.
+      * Compute RMS over short windows (default 0.5 s).
+      * Rolling baseline = median of the previous `baseline_windows`
+        windows (default 10 = 5 s of context).
+      * A window is a "transient" if its RMS >= baseline * spike_ratio.
+      * Score = rms / (baseline * spike_ratio + epsilon), clamped 0..1.
+
+    Output: [{ time, score 0..1, kind: "transient" }, ...]
+    """
+    if not source_path or not os.path.isfile(source_path):
+        return []
+
+    import array
+    import tempfile
+    tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp_wav.close()
+    try:
+        cmd = [
+            _ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
+            "-i", source_path,
+            "-vn", "-ac", "1", "-ar", "16000", "-sample_fmt", "s16",
+            tmp_wav.name,
+        ]
+        r = subprocess.run(cmd, capture_output=True)
+        if r.returncode != 0:
+            return []
+
+        with wave.open(tmp_wav.name, "rb") as w:
+            sr = w.getframerate()
+            spw = max(1, int(sr * window_s))
+            readings: list[float] = []
+            while True:
+                frames = w.readframes(spw)
+                if not frames:
+                    break
+                arr = array.array("h"); arr.frombytes(frames)
+                if not arr:
+                    break
+                sq = 0
+                for s in arr:
+                    sq += s * s
+                readings.append(math.sqrt(sq / len(arr)))
+
+        if len(readings) < baseline_windows + 2:
+            return []
+
+        # Rolling-median baseline. O(n*k) but k is small; plenty fast.
+        def _median(xs: list[float]) -> float:
+            s = sorted(xs)
+            n = len(s)
+            return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+        candidates: list[dict] = []
+        for i in range(baseline_windows, len(readings)):
+            baseline = _median(readings[i - baseline_windows:i])
+            if baseline < 1.0:
+                baseline = 1.0  # avoid dividing by near-silence
+            ratio = readings[i] / baseline
+            if ratio < spike_ratio:
+                continue
+            # Score: how far above the spike threshold we went. Clamp at
+            # 4x baseline == 1.0 so a single rare jet engine doesn't flatten
+            # everything else.
+            norm = max(0.0, min(1.0, (ratio - spike_ratio) / (4.0 - spike_ratio)))
+            candidates.append({
+                "time": round(i * window_s, 3),
+                "score": round(norm, 3),
+                "kind": "transient",
+            })
+
+        if not candidates:
+            return []
+
+        candidates.sort(key=lambda c: c["score"], reverse=True)
+        picked: list[dict] = []
+        for c in candidates:
+            if len(picked) >= top_n:
+                break
+            if any(abs(c["time"] - p["time"]) < min_gap_s for p in picked):
+                continue
+            picked.append(c)
+        picked.sort(key=lambda c: c["time"])
+        return picked
+    finally:
+        try: os.remove(tmp_wav.name)
+        except OSError: pass
+
+
+def color_flash(source_path: str,
+                *,
+                fps: int = 5,
+                top_n: int = 60,
+                min_gap_s: float = 5.0,
+                luma_jump: float = 40.0,
+                chroma_jump: float = 35.0) -> list[dict]:
+    """
+    Detect sudden brightness or colour-balance changes — the visual
+    signature of muzzle flashes, damage overlays (red tint), explosions
+    (white-out), goal-celebration screens (saturated colour bursts).
+
+    Implementation: ask FFmpeg to downscale each frame to a single pixel
+    (`scale=1:1`) which averages the whole frame into one RGB triple,
+    sampled at `fps` (default 5 fps = 200 ms resolution). Then we look
+    at frame-to-frame deltas in luma (BT.601) and per-channel colour.
+
+    No numpy — parses raw RGB bytes from stdout.
+    """
+    if not source_path or not os.path.isfile(source_path):
+        return []
+
+    import array
+    cmd = [
+        _ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
+        "-i", source_path,
+        "-vf", f"fps={fps},scale=1:1,format=rgb24",
+        "-f", "rawvideo", "-",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=900)
+    except Exception:
+        return []
+    if r.returncode != 0 or not r.stdout:
+        return []
+
+    buf = r.stdout
+    # 3 bytes per frame (R, G, B)
+    arr = array.array("B"); arr.frombytes(buf)
+    n_frames = len(arr) // 3
+    if n_frames < 3:
+        return []
+
+    # Pull per-frame (r, g, b, luma)
+    frames = []
+    for i in range(n_frames):
+        R = arr[3 * i]; G = arr[3 * i + 1]; B = arr[3 * i + 2]
+        Y = 0.299 * R + 0.587 * G + 0.114 * B
+        frames.append((R, G, B, Y))
+
+    # Event = |luma[i] - luma[i-1]| > luma_jump OR any channel delta > chroma_jump.
+    # Use a 3-frame look-back median to suppress noise without requiring numpy.
+    def _med3(idx: int, which: int) -> float:
+        a = frames[max(0, idx - 1)][which]
+        b = frames[max(0, idx - 2)][which]
+        c = frames[max(0, idx - 3)][which]
+        vs = sorted([a, b, c])
+        return vs[1]
+
+    candidates: list[dict] = []
+    for i in range(3, n_frames):
+        bY = _med3(i, 3)
+        dY = abs(frames[i][3] - bY)
+        bR = _med3(i, 0); bG = _med3(i, 1); bB = _med3(i, 2)
+        dC = max(abs(frames[i][0] - bR),
+                 abs(frames[i][1] - bG),
+                 abs(frames[i][2] - bB))
+        if dY < luma_jump and dC < chroma_jump:
+            continue
+        # Score: blend the two deltas, normalized. Cap at 1.0.
+        norm = max(dY / (luma_jump * 3.0), dC / (chroma_jump * 3.0))
+        norm = max(0.0, min(1.0, norm))
+        candidates.append({
+            "time": round(i / fps, 3),
+            "score": round(norm, 3),
+            "kind": "flash",
+        })
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    picked: list[dict] = []
+    for c in candidates:
+        if len(picked) >= top_n:
+            break
+        if any(abs(c["time"] - p["time"]) < min_gap_s for p in picked):
+            continue
+        picked.append(c)
+    picked.sort(key=lambda c: c["time"])
+    return picked
+
+
+def hud_delta(source_path: str,
+              region: list[float] | tuple[float, float, float, float],
+              *,
+              threshold: float = 0.25,
+              top_n: int = 80,
+              min_gap_s: float = 3.0) -> list[dict]:
+    """
+    Run FFmpeg scene-change detection on a CROPPED region of the frame.
+    The region is given as 0..1 fractions [x1, y1, x2, y2] (top-left to
+    bottom-right). Typical uses:
+
+      * Kill-feed corner in an FPS    — region = [0.70, 0.00, 1.00, 0.25]
+      * Scoreboard ticker at the top  — region = [0.00, 0.00, 1.00, 0.08]
+      * Minimap pop-up                — region = [0.75, 0.70, 1.00, 1.00]
+
+    Every change inside that region produces a hit, so you'll get a peak
+    exactly when the kill feed adds an entry / the score ticks up / etc.
+    The cropped region is the ONLY part of the frame the filter sees, so
+    a game-world scene cut or camera pan won't trigger false positives.
+    """
+    if not source_path or not os.path.isfile(source_path):
+        return []
+    if not region or len(region) != 4:
+        return []
+    x1, y1, x2, y2 = region
+    if x2 <= x1 or y2 <= y1:
+        return []
+    # Fractional crop: iw/ih are the input dimensions; FFmpeg accepts
+    # expressions inside crop=W:H:X:Y.
+    w_expr = f"(iw*({x2 - x1:.4f}))"
+    h_expr = f"(ih*({y2 - y1:.4f}))"
+    x_expr = f"(iw*{x1:.4f})"
+    y_expr = f"(ih*{y1:.4f})"
+    vf = (
+        f"crop={w_expr}:{h_expr}:{x_expr}:{y_expr},"
+        f"select='gt(scene,{threshold})',showinfo"
+    )
+    cmd = [
+        _ffmpeg_exe(), "-hide_banner", "-nostats",
+        "-i", source_path,
+        "-filter:v", vf,
+        "-f", "null", "-",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except Exception:
+        return []
+    out = r.stderr or ""
+    times: list[float] = []
+    for m in _PTS_TIME.finditer(out):
+        try:
+            times.append(float(m.group(1)))
+        except ValueError:
+            continue
+    times.sort()
+    if not times:
+        return []
+    # Enforce min_gap.
+    picked: list[float] = []
+    for t in times:
+        if picked and t - picked[-1] < min_gap_s:
+            continue
+        picked.append(t)
+        if len(picked) >= top_n:
+            break
+    return [{"time": t, "score": 1.0, "kind": "hud"} for t in picked]
+
+
+# ── Fusion + proposal building ─────────────────────────────────────
+
+# How much each detector contributes to the fused peak score.
+# Tweakable per-preset; these are sensible defaults.
+DEFAULT_WEIGHTS = {
+    "transient": 1.0,
+    "flash":     0.7,
+    "hud":       1.2,   # HUD events are semantically very precise
+    "scene":     0.3,   # scene cuts are weak on their own
+    "energy":    0.4,   # absolute energy is supportive, not decisive
+}
+
+
+def detect_events(source_path: str,
+                  cfg: Optional[dict] = None) -> list[dict]:
+    """
+    Run the enabled event detectors and fuse their outputs into a single
+    ranked peak list.
+
+    cfg keys (all optional, defaults in DEFAULT_EVENT_CFG):
+      use_audio_transients : bool
+      use_color_flash      : bool
+      hud_region           : [x1,y1,x2,y2] fractional or None
+      bin_s                : float — time bucket for fusion (default 2.0)
+      min_gap_s            : float — min gap between returned peaks
+      top_n                : int   — how many peaks to keep
+      weights              : dict  — override DEFAULT_WEIGHTS
+
+    Output: [{ time, score, kinds: ["transient","flash",...] }, ...]
+    sorted by time.
+    """
+    cfg = cfg or {}
+    if not source_path or not os.path.isfile(source_path):
+        return []
+
+    weights = dict(DEFAULT_WEIGHTS)
+    weights.update(cfg.get("weights") or {})
+    bin_s = float(cfg.get("bin_s", 2.0))
+    min_gap_s = float(cfg.get("min_gap_s", 8.0))
+    top_n = int(cfg.get("top_n", 20))
+
+    signals: list[dict] = []
+    if cfg.get("use_audio_transients", True):
+        try:
+            signals.extend(audio_transients(source_path))
+        except Exception as e:
+            print(f"⚠️  audio_transients failed: {e}")
+    if cfg.get("use_color_flash", True):
+        try:
+            signals.extend(color_flash(source_path))
+        except Exception as e:
+            print(f"⚠️  color_flash failed: {e}")
+    region = cfg.get("hud_region")
+    if region:
+        try:
+            signals.extend(hud_delta(source_path, region))
+        except Exception as e:
+            print(f"⚠️  hud_delta failed: {e}")
+    if cfg.get("use_scene_cuts", False):
+        try:
+            signals.extend(scene_cuts(source_path))
+        except Exception as e:
+            print(f"⚠️  scene_cuts failed: {e}")
+    if cfg.get("use_audio_energy", False):
+        try:
+            signals.extend(audio_energy(source_path))
+        except Exception as e:
+            print(f"⚠️  audio_energy failed: {e}")
+
+    if not signals:
+        return []
+
+    # Bin by time; fuse weighted scores; record which kinds hit.
+    buckets: dict[int, dict] = {}
+    for s in signals:
+        t = float(s.get("time", 0))
+        sc = float(s.get("score", 0))
+        k = s.get("kind", "")
+        w = weights.get(k, 0.5)
+        b = int(t // bin_s)
+        bucket = buckets.setdefault(b, {
+            "time": b * bin_s + bin_s / 2.0,
+            "raw_score": 0.0,
+            "kinds": set(),
+            "first_time": t,
+        })
+        bucket["raw_score"] += sc * w
+        bucket["kinds"].add(k)
+        # Anchor the bucket time to the EARLIEST signal in it so pre-roll
+        # lands right on the triggering event rather than a bin midpoint.
+        if t < bucket["first_time"]:
+            bucket["first_time"] = t
+
+    # Normalize. Peaks with ≥2 distinct kinds get a multi-signal bonus.
+    peaks = []
+    for b in buckets.values():
+        score = b["raw_score"]
+        if len(b["kinds"]) >= 2:
+            score *= 1.3
+        peaks.append({
+            "time":  round(b["first_time"], 3),
+            "score": round(score, 3),
+            "kinds": sorted(b["kinds"]),
+        })
+
+    # Greedy top-N with min gap.
+    peaks.sort(key=lambda p: p["score"], reverse=True)
+    picked: list[dict] = []
+    for p in peaks:
+        if len(picked) >= top_n:
+            break
+        if any(abs(p["time"] - q["time"]) < min_gap_s for q in picked):
+            continue
+        picked.append(p)
+    picked.sort(key=lambda p: p["time"])
+    return picked
+
+
+def events_to_proposals(events: list[dict],
+                        *,
+                        duration_s: float,
+                        pre_roll_s: float = 15.0,
+                        post_roll_s: float = 3.0,
+                        min_len_s: float = 10.0,
+                        max_len_s: float = 60.0,
+                        max_count: int = 10,
+                        kind_labels: Optional[dict] = None) -> list[dict]:
+    """
+    Turn a ranked event list into clip-proposal dicts matching the shape
+    `propose_clips` returns. Each event at time T becomes a proposal
+    window `[T - pre_roll_s, T + post_roll_s]`, clamped to the source
+    duration and to the allowed length band, then deduped.
+
+    Proposals are returned in the same schema the UI already renders:
+      id, start, end, hook_line, reason, score (0-100),
+      approved, user_adjusted, custom_title.
+    """
+    if not events:
+        return []
+
+    kind_labels = kind_labels or {
+        "transient": "audio spike",
+        "flash":     "visual flash",
+        "hud":       "HUD change",
+        "scene":     "scene cut",
+        "energy":    "loud moment",
+    }
+
+    # Build raw windows.
+    windows = []
+    for ev in events:
+        T = float(ev["time"])
+        start = max(0.0, T - pre_roll_s)
+        end   = min(duration_s, T + post_roll_s)
+        length = end - start
+        if length < min_len_s:
+            # Extend backwards into the lead-up rather than forwards —
+            # the user asked for the "leading up to" framing.
+            start = max(0.0, end - min_len_s)
+            length = end - start
+        if length > max_len_s:
+            # Trim front — keep the payoff on screen.
+            start = end - max_len_s
+            length = end - start
+        if length < 1.0:
+            continue
+        windows.append({
+            "anchor":    T,
+            "start":     start,
+            "end":       end,
+            "raw_score": float(ev.get("score", 0.0)),
+            "kinds":     list(ev.get("kinds", [])),
+        })
+
+    # Dedup overlapping windows (>50% overlap) keeping the higher raw score.
+    windows.sort(key=lambda w: w["raw_score"], reverse=True)
+    kept: list[dict] = []
+    def _overlap_frac(a, b):
+        lo = max(a["start"], b["start"]); hi = min(a["end"], b["end"])
+        inter = max(0.0, hi - lo)
+        shorter = min(a["end"] - a["start"], b["end"] - b["start"])
+        return inter / shorter if shorter > 0 else 0.0
+    for w in windows:
+        if any(_overlap_frac(w, k) > 0.5 for k in kept):
+            continue
+        kept.append(w)
+        if len(kept) >= max_count:
+            break
+
+    # Normalize raw_score → 0..100. We anchor at the max so the strongest
+    # event is always ~100; mixed-signal events still stand out naturally.
+    mx = max((w["raw_score"] for w in kept), default=1.0) or 1.0
+    # Return sorted by time, not score, so the review UI reads linearly.
+    kept.sort(key=lambda w: w["start"])
+
+    proposals = []
+    for i, w in enumerate(kept):
+        score100 = max(30, min(100, int(round(60 + 40 * (w["raw_score"] / mx)))))
+        kind_text = ", ".join(kind_labels.get(k, k) for k in w["kinds"]) or "event"
+        hook = f"{kind_text.capitalize()} @ {_fmt_hms(w['anchor'])}"
+        reason = (
+            f"Detected {kind_text} at {_fmt_hms(w['anchor'])}. "
+            f"Clip covers {int(w['anchor'] - w['start'])}s lead-up + "
+            f"{int(w['end'] - w['anchor'])}s payoff."
+        )
+        proposals.append({
+            "id":            f"e{i + 1}",
+            "start":         round(w["start"], 2),
+            "end":           round(w["end"], 2),
+            "hook_line":     hook[:200],
+            "reason":        reason[:220],
+            "score":         score100,
+            "approved":      False,
+            "user_adjusted": False,
+            "custom_title":  None,
+            # Extra bookkeeping the UI can expose later (event markers
+            # on the scrub bar, etc). Unknown keys are tolerated by the
+            # save_project + UI layers.
+            "event_anchor":  round(w["anchor"], 2),
+            "event_kinds":   w["kinds"],
+        })
+    return proposals
+
+
+# Sensible defaults for the whole event pipeline. Kept in one dict so a
+# config.json override merges cleanly.
+DEFAULT_EVENT_CFG: dict = {
+    "use_audio_transients": True,
+    "use_color_flash":      True,
+    "use_scene_cuts":       False,
+    "use_audio_energy":     False,
+    "hud_region":           None,     # [x1,y1,x2,y2] 0-1 fractions
+    "bin_s":                2.0,
+    "min_gap_s":            8.0,
+    "top_n":                20,
+    "pre_roll_s":           15.0,
+    "post_roll_s":          3.0,
+    "min_len_s":            10.0,
+    "max_len_s":            60.0,
+    "max_count":            10,
+}
+
+
+def merged_event_cfg(user_cfg: Optional[dict]) -> dict:
+    """Shallow-merge a user-supplied event_detect dict over the defaults."""
+    out = dict(DEFAULT_EVENT_CFG)
+    if user_cfg:
+        out.update({k: v for k, v in user_cfg.items() if v is not None})
+    return out

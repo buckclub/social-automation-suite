@@ -65,6 +65,7 @@ def propose_clips(
     max_len_s: int = 60,
     mode: str = "ai_only",
     source_path: Optional[str] = None,
+    event_cfg: Optional[dict] = None,
 ) -> list[dict]:
     """
     Returns up to `target_count` proposals. Never raises — failures
@@ -72,11 +73,47 @@ def propose_clips(
     fall back to a single "the whole thing" manual window.
 
     Modes:
-      ai_only    — transcript → LLM
-      ai_plus    — transcript + audio-energy peaks → LLM
-      ai_visual  — transcript + audio-energy peaks + scene cuts → LLM
-      manual     — skip AI entirely
+      ai_only       — transcript → LLM
+      ai_plus       — transcript + audio-energy peaks → LLM
+      ai_visual     — transcript + audio-energy peaks + scene cuts → LLM
+      event_driven  — NO transcript needed; fuse audio transients +
+                      color flashes + optional HUD-region deltas into
+                      event peaks, then build pre/post-roll windows.
+                      Intended for gameplay / sports / action footage
+                      where nobody is narrating.
+      manual        — skip AI entirely
     """
+    # Event-driven mode is transcript-free, LLM-free, and only needs the
+    # source file path. Bail early — none of the LLM setup below applies.
+    if mode == "event_driven":
+        if not source_path:
+            return []
+        try:
+            from clip_heuristics import (
+                detect_events,
+                events_to_proposals,
+                merged_event_cfg,
+            )
+        except Exception as e:
+            print(f"⚠️  event_driven mode unavailable: {e}")
+            return []
+        cfg = merged_event_cfg(event_cfg)
+        # Honour the caller's length band if provided; otherwise use the
+        # event-specific defaults which lean longer (more lead-in).
+        cfg["min_len_s"] = float(min_len_s) if min_len_s else cfg["min_len_s"]
+        cfg["max_len_s"] = float(max_len_s) if max_len_s else cfg["max_len_s"]
+        cfg["max_count"] = int(target_count) if target_count else cfg["max_count"]
+        events = detect_events(source_path, cfg)
+        return events_to_proposals(
+            events,
+            duration_s=duration_s,
+            pre_roll_s=float(cfg.get("pre_roll_s", 15.0)),
+            post_roll_s=float(cfg.get("post_roll_s", 3.0)),
+            min_len_s=float(cfg["min_len_s"]),
+            max_len_s=float(cfg["max_len_s"]),
+            max_count=int(cfg["max_count"]),
+        )
+
     if mode == "manual" or not segments:
         return []
 

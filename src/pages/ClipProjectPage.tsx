@@ -43,7 +43,14 @@ export default function ClipProjectPage() {
   const [targetCount, setTargetCount] = useState(5);
   const [minLen, setMinLen] = useState(15);
   const [maxLen, setMaxLen] = useState(60);
-  const [mode, setMode] = useState<"ai_only" | "ai_plus" | "ai_visual" | "manual">("ai_only");
+  const [mode, setMode] = useState<"ai_only" | "ai_plus" | "ai_visual" | "event_driven" | "manual">("ai_only");
+
+  // event_driven tuning — exposed right on the page so users can tweak
+  // the lead-in/out without touching config.json. Empty region string =
+  // no HUD box, falls back to whole-frame detectors.
+  const [eventPreRoll,  setEventPreRoll]  = useState(15);
+  const [eventPostRoll, setEventPostRoll] = useState(3);
+  const [eventHudRegion, setEventHudRegion] = useState<string>("");  // "x1,y1,x2,y2" fractions
 
   // Action-in-flight flags
   const [transcribing, setTranscribing] = useState(false);
@@ -80,7 +87,10 @@ export default function ClipProjectPage() {
   }
 
   const canTranscribe = proj.source_file && (!proj.transcript || proj.status === "failed");
-  const canPropose   = !!(proj.transcript?.segments?.length);
+  // event_driven mode is transcript-free (gameplay / sports footage), so
+  // allow Propose as soon as we have a source file — whether or not
+  // whisper has run. The UI makes the choice via the Mode dropdown.
+  const canPropose   = !!(proj.transcript?.segments?.length) || !!proj.source_file;
   const hasProposals = (proj.proposals?.length ?? 0) > 0;
   const approvedCount = proj.proposals.filter((p) => p.approved).length;
 
@@ -100,8 +110,23 @@ export default function ClipProjectPage() {
   const doPropose = async () => {
     setProposing(true);
     try {
+      // Build the event_detect override for event_driven mode. Parse the
+      // comma-separated HUD region into a 4-tuple of fractions; invalid
+      // input silently falls back to no-region.
+      let event_detect: Record<string, any> | undefined = undefined;
+      if (mode === "event_driven") {
+        const region = eventHudRegion
+          .split(",").map((s) => parseFloat(s.trim()))
+          .filter((n) => !Number.isNaN(n));
+        event_detect = {
+          pre_roll_s:  eventPreRoll,
+          post_roll_s: eventPostRoll,
+          hud_region:  region.length === 4 ? region : null,
+        };
+      }
       const r = await api.proposeClips(proj.id, {
         target_count: targetCount, min_len_s: minLen, max_len_s: maxLen, mode,
+        event_detect,
       });
       toast({ title: `Generated ${r.proposals.length} proposals` });
       refresh();
@@ -254,10 +279,51 @@ export default function ClipProjectPage() {
                       <SelectItem value="ai_only">AI only (LLM over transcript)</SelectItem>
                       <SelectItem value="ai_plus">AI + audio-energy peaks</SelectItem>
                       <SelectItem value="ai_visual">AI + audio peaks + scene cuts</SelectItem>
+                      <SelectItem value="event_driven">Event-driven (no transcript — gameplay / sports)</SelectItem>
                       <SelectItem value="manual">Manual (skip AI)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
+
+                {mode === "event_driven" && (
+                  <div className="space-y-2 rounded-md border border-border/60 bg-secondary/30 p-2">
+                    <p className="text-[10px] text-muted-foreground leading-snug">
+                      Detects action moments with audio transients (gunshots, horns, hits) + visual
+                      flashes (muzzle flashes, damage overlays, explosions). Each detected event
+                      becomes a clip with <b>pre-roll</b> seconds of lead-up and <b>post-roll</b>
+                      seconds after. No transcript required.
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-0.5">
+                        <Label className="text-[10px] text-muted-foreground">Pre-roll (s)</Label>
+                        <Input type="number" min={0} max={120} value={eventPreRoll}
+                          onChange={(e) => setEventPreRoll(+e.target.value || 0)}
+                          className="h-7 text-[11px] bg-secondary border-border font-mono" />
+                      </div>
+                      <div className="space-y-0.5">
+                        <Label className="text-[10px] text-muted-foreground">Post-roll (s)</Label>
+                        <Input type="number" min={0} max={60} value={eventPostRoll}
+                          onChange={(e) => setEventPostRoll(+e.target.value || 0)}
+                          className="h-7 text-[11px] bg-secondary border-border font-mono" />
+                      </div>
+                    </div>
+                    <div className="space-y-0.5">
+                      <Label className="text-[10px] text-muted-foreground">
+                        HUD region (optional, x1,y1,x2,y2 as 0-1 fractions)
+                      </Label>
+                      <Input
+                        placeholder="e.g. 0.70,0.00,1.00,0.25   — top-right kill-feed"
+                        value={eventHudRegion}
+                        onChange={(e) => setEventHudRegion(e.target.value)}
+                        className="h-7 text-[11px] bg-secondary border-border font-mono"
+                      />
+                      <p className="text-[9px] text-muted-foreground leading-snug">
+                        Restricts visual change detection to a HUD box. Leave empty for
+                        whole-frame detection.
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 <Button size="sm" className="w-full gap-1" onClick={doPropose} disabled={proposing}>
                   {proposing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}

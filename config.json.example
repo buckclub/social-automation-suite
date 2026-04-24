@@ -176,8 +176,26 @@
     "min_len_s":       15,
     "max_len_s":       60,
     "mode":            "ai_only",
-    "//mode_options":  "ai_only | ai_plus (+ audio-energy peaks) | ai_visual (+ scene cuts) | manual",
-    "transcribe_model": "base"
+    "//mode_options":  "ai_only | ai_plus (+ audio-energy peaks) | ai_visual (+ scene cuts) | event_driven (no transcript, fuses audio transients + color flashes + HUD deltas) | manual",
+    "transcribe_model": "base",
+
+    "event_detect": {
+      "//":                    "Used only by mode: event_driven. Detects action moments in footage WITHOUT speech (gameplay, sports, dashcam).",
+      "use_audio_transients":  true,
+      "use_color_flash":       true,
+      "use_scene_cuts":        false,
+      "use_audio_energy":      false,
+      "hud_region":            null,
+      "//hud_region_example":  "[0.70, 0.00, 1.00, 0.25]  — top-right kill-feed corner as x1,y1,x2,y2 fractions",
+      "pre_roll_s":            15.0,
+      "post_roll_s":           3.0,
+      "min_len_s":             10.0,
+      "max_len_s":             60.0,
+      "max_count":             10,
+      "bin_s":                 2.0,
+      "min_gap_s":             8.0,
+      "top_n":                 20
+    }
   },
 
   "clip_captions": null

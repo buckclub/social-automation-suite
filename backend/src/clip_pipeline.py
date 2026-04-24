@@ -128,7 +128,16 @@ class WhisperAlignClipStep(PipelineStep):
 
     def applicable(self, ctx: PipelineContext) -> bool:
         caps = ctx.get("captions") or {}
-        return bool(caps.get("enabled", True))
+        if not caps.get("enabled", True):
+            return False
+        # Event-driven proposals come from gameplay / sports / action
+        # footage with no speech worth captioning. Running whisper on
+        # them wastes 10-15s per clip and frequently hallucinates
+        # "Thanks for watching" over music or SFX. Skip.
+        prop = ctx.get("proposal") or {}
+        if prop.get("event_kinds"):
+            return False
+        return True
 
     async def run(self, ctx: PipelineContext, progress) -> None:
         slice_path = ctx["slice_path"]
