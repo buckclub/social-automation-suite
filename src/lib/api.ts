@@ -831,11 +831,30 @@ export const api = {
     narrator_gender?: "auto" | "male" | "female";
     background_selector?: string;
     custom_title?: string;
+    content_filter?: "safe" | "normal" | "edgy";
+    target_audience?: string;
+    tone?: "dramatic" | "funny" | "heartfelt" | "shocking" | "cringe";
+    preselected_content?: Record<string, unknown>;
   }) =>
     request<{ started: boolean }>("/api/pipeline/run-ai", {
       method: "POST",
       body: JSON.stringify(params),
     }),
+
+  // Generate N candidate variants WITHOUT starting the pipeline.
+  // Caller picks one, then hands it to runPipelineAI via preselected_content.
+  generateAIVariants: (params: {
+    content_style: string; niche: string; custom_topic?: string;
+    interactive_format?: string;
+    content_filter?: "safe" | "normal" | "edgy";
+    target_audience?: string;
+    tone?: "dramatic" | "funny" | "heartfelt" | "shocking" | "cringe";
+    count?: number;
+  }) =>
+    request<{ variants: Array<Record<string, unknown>>; count: number }>(
+      "/api/ai/generate-variants",
+      { method: "POST", body: JSON.stringify(params) },
+    ),
 
   // Resume video from audio-only post
   resumeVideo: (post_id: string) =>

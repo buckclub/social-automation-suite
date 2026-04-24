@@ -177,6 +177,17 @@
     "cache_ttl_days": 7
   },
 
+  "ai_content_generation": {
+    "//":                       "Defaults for the 'Generate with AI' dialog. Per-run picks in the dialog override these without modifying config.",
+    "content_filter_default":   "normal",
+    "//filter_options":         "safe (advertiser-friendly, no profanity) | normal (mild language only if plot-relevant) | edgy (full curse vocabulary, adult themes, no targeted slurs)",
+    "target_audience_default":  "",
+    "tone_default":             "dramatic",
+    "//tone_options":           "dramatic | funny | heartfelt | shocking | cringe — orthogonal to filter (a Safe story can still be Shocking, an Edgy one can be Heartfelt)",
+    "presets":                  [],
+    "//presets_format":         "User-saved bundles: [{id, name, content_style, niche, interactive_format?, content_filter, target_audience, tone}]. Managed via the dialog — don't hand-edit."
+  },
+
   "clipmaker": {
     "max_duration_s":  3600,
     "target_count":    5,

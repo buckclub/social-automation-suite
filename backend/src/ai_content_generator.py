@@ -86,9 +86,98 @@ NICHES = {
     },
 }
 
+# ── Content filter / audience instruction blocks ─────────────────────
+# Per-run controls layered on top of the base system prompts. The tone
+# and amount of risky language should move with the selected filter;
+# the narrative POV should move with the target audience.
+
+CONTENT_FILTERS = {
+    "safe": (
+        "LANGUAGE & BRAND-SAFETY (SAFE MODE):\n"
+        "- Zero profanity of any kind. Not even mild ('damn', 'hell', 'crap').\n"
+        "- Do NOT use the words: sex, gun, drug, kill, suicide, abuse, rape, murder, die. Use euphemisms ('hurt themselves', 'passed', 'in a bad way').\n"
+        "- No slurs, no sexual content, no drug references, no graphic violence.\n"
+        "- Fully advertiser-friendly. Must pass YouTube Kids filters."
+    ),
+    "normal": (
+        "LANGUAGE & BRAND-SAFETY (NORMAL MODE):\n"
+        "- Mild profanity allowed only when the moment demands it (max 1-2 uses total, 'damn'/'hell'/'crap'/'shit' at most).\n"
+        "- No slurs, ever.\n"
+        "- Risky topics (drinking, breakups, minor violence, mild romance) OK when plot-relevant; never gratuitous or graphic."
+    ),
+    "edgy": (
+        "LANGUAGE & TONE (EDGY MODE):\n"
+        "- Reddit-authentic voice. Curse words encouraged where natural — 'fuck', 'shit', 'bitch', 'asshole', 'dickhead', etc. Do not cap frequency.\n"
+        "- Crude sexual references, drug use, drunk stories, bar fights, morally gray or unlikeable narrators are all welcome.\n"
+        "- Politically incorrect opinions and offensive-humor rants are fine.\n"
+        "- No softening, no 'and they learned a lesson' endings, no moralizing.\n"
+        "- HARD LIMIT: do NOT use slurs targeting race, ethnicity, religion, or sexual orientation. Stick to general crude language."
+    ),
+}
+
+def _filter_instruction(mode: Optional[str]) -> str:
+    key = (mode or "normal").strip().lower()
+    return CONTENT_FILTERS.get(key, CONTENT_FILTERS["normal"])
+
+def _audience_instruction(audience: Optional[str]) -> str:
+    a = (audience or "").strip()
+    if not a:
+        return ""
+    return (
+        f"TARGET AUDIENCE: {a}\n"
+        "Tailor references, slang, emotional hooks, and character details (age, job, relationships, pop-culture touchstones) to feel native to this group. "
+        "The narrator's voice should sound like someone this audience would recognize as 'one of us'."
+    )
+
+# ── Tone / emotional register (orthogonal to content-filter) ─────────
+# The filter controls risky-language levels. Tone controls the emotional
+# register of the story — same story skeleton can be funny or heartfelt.
+
+TONE_INSTRUCTIONS = {
+    "dramatic": (
+        "EMOTIONAL REGISTER: DRAMATIC\n"
+        "- High stakes, mounting tension, vivid peaks of conflict.\n"
+        "- Every beat should escalate. The ending should hit hard."
+    ),
+    "funny": (
+        "EMOTIONAL REGISTER: FUNNY\n"
+        "- Lean into absurdity, self-deprecating narrator, comedic timing.\n"
+        "- Readers should laugh out loud at least twice.\n"
+        "- Punchlines > life lessons. The narrator is in on the joke."
+    ),
+    "heartfelt": (
+        "EMOTIONAL REGISTER: HEARTFELT\n"
+        "- Genuine emotion, vulnerability, a core human truth.\n"
+        "- Aim to move people, not shock them. Earn the emotion — don't manufacture it.\n"
+        "- Quiet moments land harder than big ones here."
+    ),
+    "shocking": (
+        "EMOTIONAL REGISTER: SHOCKING\n"
+        "- The twist should make viewers say 'WHAT.' out loud.\n"
+        "- Escalate past what feels reasonable. Withhold key info until the reveal.\n"
+        "- Prioritize the gut-punch moment over resolution."
+    ),
+    "cringe": (
+        "EMOTIONAL REGISTER: CRINGE / SECONDHAND EMBARRASSMENT\n"
+        "- Readers should physically wince. Lean into awkward, oblivious narrator moments.\n"
+        "- The narrator often doesn't realize how bad the situation is — that's the point.\n"
+        "- Specificity is what makes cringe work: the exact wrong thing said at the exact wrong moment."
+    ),
+}
+
+def _tone_instruction(tone: Optional[str]) -> str:
+    key = (tone or "dramatic").strip().lower()
+    return TONE_INSTRUCTIONS.get(key, TONE_INSTRUCTIONS["dramatic"])
+
 # ── System Prompts ───────────────────────────────────────────────────
 
 STORY_SYSTEM_PROMPT = """You are a viral Reddit storyteller. Write a first-person confessional story that sounds 100% authentic — like a real Reddit post.
+
+{filter_instruction}
+
+{audience_instruction}
+
+{tone_instruction}
 
 RULES:
 - Include specific details: names (fake), ages, locations, timestamps that make it feel real
@@ -99,7 +188,6 @@ RULES:
 - 800-1500 characters total (for a short reel narration)
 - NO emojis, NO hashtags, NO markdown, NO stage directions
 - Do NOT include "AITA" or "TIFU" prefixes — just start the story naturally
-- The content must be dramatic but NOT contain explicit sexual content or graphic violence
 
 NICHE: {niche_name}
 THEMES TO DRAW FROM: {niche_themes}
@@ -112,6 +200,12 @@ Output ONLY valid JSON with this exact structure:
 
 QA_SYSTEM_PROMPT = """You are writing a viral AskReddit-style thread. Create ONE attention-grabbing question and realistic "comment" answers from different users.
 
+{filter_instruction}
+
+{audience_instruction}
+
+{tone_instruction}
+
 RULES:
 - The question should be the kind that makes people NEED to answer — provocative, relatable, or thought-provoking
 - Each answer should be 100-300 characters, dramatic but believable
@@ -119,7 +213,6 @@ RULES:
 - Answers should vary in tone: some funny, some serious, some shocking
 - 5-7 answers total
 - NO emojis, NO hashtags, NO markdown formatting
-- Content should be engaging but NOT contain explicit content
 
 NICHE: {niche_name}
 THEMES TO DRAW FROM: {niche_themes}
@@ -133,6 +226,12 @@ Output ONLY valid JSON with this exact structure:
 INTERACTIVE_SYSTEM_PROMPT = """You are a viral short-form video content creator specializing in interactive engagement content.
 
 Create a "{format_type}" challenge/quiz that hooks viewers and makes them participate.
+
+{filter_instruction}
+
+{audience_instruction}
+
+{tone_instruction}
 
 FORMATS:
 - "put_a_finger_down": Write 8-12 statements starting with "Put a finger down if..." from common to rare. End with a scoring punchline.
@@ -159,15 +258,20 @@ Output ONLY valid JSON with this exact structure:
 
 The LAST segment should be the scoring punchline (with pause_seconds: 0)."""
 
-HOT_TAKE_SYSTEM_PROMPT = """You are a viral opinion writer who crafts controversial but SAFE takes — the kind that get thousands of comments because everyone has a strong reaction.
+HOT_TAKE_SYSTEM_PROMPT = """You are a viral opinion writer who crafts controversial takes — the kind that get thousands of comments because everyone has a strong reaction.
+
+{filter_instruction}
+
+{audience_instruction}
+
+{tone_instruction}
 
 RULES:
 - The opinion should be genuinely debatable — NOT obviously right or wrong
 - Write 400-800 characters defending the take in a passionate, conversational tone
 - It should feel like a real Reddit rant/confession
 - Make readers immediately want to agree OR argue — no lukewarm takes
-- Stay away from politics, religion, or genuinely harmful topics
-- Focus on everyday life controversies: food, relationships, social norms, pop culture
+- Focus on everyday life controversies: food, relationships, social norms, pop culture, work, dating
 - NO emojis, NO hashtags, NO markdown
 
 NICHE: {niche_name}
@@ -296,7 +400,10 @@ class AIContentGenerator:
 
     # ── Public generators ────────────────────────────────────────────
 
-    def generate_story(self, niche: str, custom_topic: Optional[str] = None) -> Optional[dict]:
+    def generate_story(self, niche: str, custom_topic: Optional[str] = None,
+                       content_filter: Optional[str] = None,
+                       target_audience: Optional[str] = None,
+                       tone: Optional[str] = None) -> Optional[dict]:
         """Generate a story-mode post. Returns {title, body} or None."""
         niche_info = NICHES.get(niche, NICHES["relationship_drama"])
         system = STORY_SYSTEM_PROMPT.format(
@@ -304,6 +411,9 @@ class AIContentGenerator:
             niche_themes=niche_info["themes"],
             niche_subs=niche_info["subs"],
             topic_instruction=self._topic_instruction(custom_topic),
+            filter_instruction=_filter_instruction(content_filter),
+            audience_instruction=_audience_instruction(target_audience),
+            tone_instruction=_tone_instruction(tone),
         )
         prompt = f"Write a viral Reddit story in the {niche_info['name']} niche. Make it unforgettable."
 
@@ -312,7 +422,10 @@ class AIContentGenerator:
             self._save_topic(f"Story: {result['title'][:80]}")
         return result
 
-    def generate_qa(self, niche: str, custom_topic: Optional[str] = None, num_answers: int = 6) -> Optional[dict]:
+    def generate_qa(self, niche: str, custom_topic: Optional[str] = None, num_answers: int = 6,
+                    content_filter: Optional[str] = None,
+                    target_audience: Optional[str] = None,
+                    tone: Optional[str] = None) -> Optional[dict]:
         """Generate a Q&A post. Returns {title, question, comments[]} or None."""
         niche_info = NICHES.get(niche, NICHES["relationship_drama"])
         system = QA_SYSTEM_PROMPT.format(
@@ -320,6 +433,9 @@ class AIContentGenerator:
             niche_themes=niche_info["themes"],
             niche_subs=niche_info["subs"],
             topic_instruction=self._topic_instruction(custom_topic),
+            filter_instruction=_filter_instruction(content_filter),
+            audience_instruction=_audience_instruction(target_audience),
+            tone_instruction=_tone_instruction(tone),
         )
         prompt = f"Write a viral AskReddit thread in the {niche_info['name']} niche with {num_answers} answers."
 
@@ -332,7 +448,10 @@ class AIContentGenerator:
         return result
 
     def generate_interactive(self, niche: str, format_type: str = "put_a_finger_down",
-                             custom_topic: Optional[str] = None) -> Optional[dict]:
+                             custom_topic: Optional[str] = None,
+                             content_filter: Optional[str] = None,
+                             target_audience: Optional[str] = None,
+                             tone: Optional[str] = None) -> Optional[dict]:
         """Generate interactive engagement content. Returns {title, segments[{text, pause_seconds}]} or None."""
         niche_info = NICHES.get(niche, NICHES["childhood_nostalgia"])
         fmt = next((f for f in INTERACTIVE_FORMATS if f["id"] == format_type), INTERACTIVE_FORMATS[0])
@@ -342,6 +461,9 @@ class AIContentGenerator:
             niche_name=niche_info["name"],
             niche_themes=niche_info["themes"],
             topic_instruction=self._topic_instruction(custom_topic),
+            filter_instruction=_filter_instruction(content_filter),
+            audience_instruction=_audience_instruction(target_audience),
+            tone_instruction=_tone_instruction(tone),
         )
         prompt = f"Create a '{fmt['name']}' challenge video about {niche_info['name']}."
 
@@ -354,15 +476,21 @@ class AIContentGenerator:
                     seg["pause_seconds"] = 3
         return result
 
-    def generate_hot_take(self, niche: str, custom_topic: Optional[str] = None) -> Optional[dict]:
+    def generate_hot_take(self, niche: str, custom_topic: Optional[str] = None,
+                          content_filter: Optional[str] = None,
+                          target_audience: Optional[str] = None,
+                          tone: Optional[str] = None) -> Optional[dict]:
         """Generate a hot take / opinion post. Returns {title, body} or None."""
         niche_info = NICHES.get(niche, NICHES["relationship_drama"])
         system = HOT_TAKE_SYSTEM_PROMPT.format(
             niche_name=niche_info["name"],
             niche_themes=niche_info["themes"],
             topic_instruction=self._topic_instruction(custom_topic),
+            filter_instruction=_filter_instruction(content_filter),
+            audience_instruction=_audience_instruction(target_audience),
+            tone_instruction=_tone_instruction(tone),
         )
-        prompt = f"Write a controversial but safe hot take about {niche_info['name']}."
+        prompt = f"Write a hot take about {niche_info['name']}."
 
         result = self._generate_with_retry(prompt, system, ["title", "body"])
         if result:
@@ -371,19 +499,28 @@ class AIContentGenerator:
 
     def generate(self, content_style: str, niche: str,
                  custom_topic: Optional[str] = None,
-                 interactive_format: str = "put_a_finger_down") -> Optional[dict]:
+                 interactive_format: str = "put_a_finger_down",
+                 content_filter: Optional[str] = None,
+                 target_audience: Optional[str] = None,
+                 tone: Optional[str] = None) -> Optional[dict]:
         """
         Unified entry point. Returns the generated content dict or None.
         Adds a 'content_style' key to the result for downstream processing.
         """
         if content_style == "story":
-            result = self.generate_story(niche, custom_topic)
+            result = self.generate_story(niche, custom_topic, content_filter, target_audience, tone)
         elif content_style == "qa":
-            result = self.generate_qa(niche, custom_topic)
+            result = self.generate_qa(niche, custom_topic,
+                                      content_filter=content_filter,
+                                      target_audience=target_audience,
+                                      tone=tone)
         elif content_style == "interactive":
-            result = self.generate_interactive(niche, interactive_format, custom_topic)
+            result = self.generate_interactive(niche, interactive_format, custom_topic,
+                                               content_filter=content_filter,
+                                               target_audience=target_audience,
+                                               tone=tone)
         elif content_style == "hot_take":
-            result = self.generate_hot_take(niche, custom_topic)
+            result = self.generate_hot_take(niche, custom_topic, content_filter, target_audience, tone)
         else:
             print(f"❌ Unknown content style: {content_style}")
             return None

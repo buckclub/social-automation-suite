@@ -2256,6 +2256,64 @@ async def run_pipeline_custom(req: dict = {}):
     return {"started": True}
 
 
+@app.post("/api/ai/generate-variants")
+async def generate_ai_variants(req: dict = {}):
+    """
+    Generate N candidate content variants in parallel without touching pipeline state.
+    The frontend shows these in a picker; the chosen one is then handed to
+    /api/pipeline/run-ai via the `preselected_content` field.
+    """
+    config = _load_config()
+    gemini_cfg = config.get("gemini", {})
+    if not gemini_cfg.get("enabled", False):
+        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
+
+    content_style      = req.get("content_style", "story")
+    niche              = req.get("niche", "relationship_drama")
+    custom_topic       = req.get("custom_topic")
+    interactive_format = req.get("interactive_format", "put_a_finger_down")
+
+    acg_cfg = config.get("ai_content_generation", {}) or {}
+    content_filter = (req.get("content_filter") or acg_cfg.get("content_filter_default") or "normal").strip().lower()
+    if content_filter not in ("safe", "normal", "edgy"):
+        content_filter = "normal"
+    target_audience = (req.get("target_audience") or acg_cfg.get("target_audience_default") or "").strip() or None
+    tone = (req.get("tone") or acg_cfg.get("tone_default") or "dramatic").strip().lower()
+    if tone not in ("dramatic", "funny", "heartfelt", "shocking", "cringe"):
+        tone = "dramatic"
+
+    try:
+        count = max(1, min(5, int(req.get("count", 3))))
+    except (TypeError, ValueError):
+        count = 3
+
+    from ai_content_generator import AIContentGenerator
+    generator = AIContentGenerator(config)
+
+    def _one():
+        return generator.generate(
+            content_style, niche, custom_topic, interactive_format,
+            content_filter, target_audience, tone,
+        )
+
+    # Run the N generations concurrently. Each call is already retried inside.
+    tasks = [asyncio.to_thread(_one) for _ in range(count)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    variants = []
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            _log(f"[variants] variant {i+1} raised: {r}")
+            continue
+        if r:
+            variants.append(r)
+
+    if not variants:
+        raise HTTPException(502, "All variants failed to generate. Check AI provider logs.")
+
+    return {"variants": variants, "count": len(variants)}
+
+
 @app.post("/api/pipeline/run-ai")
 async def run_pipeline_ai(req: dict = {}):
     """Run the pipeline using AI-generated content (story, Q&A, interactive, hot take)."""
@@ -2283,6 +2341,20 @@ async def run_pipeline_ai(req: dict = {}):
     if not gemini_cfg.get("enabled", False):
         raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
 
+    # Content-filter + target-audience + tone: per-run, fall back to config defaults.
+    acg_cfg = config.get("ai_content_generation", {}) or {}
+    content_filter = (req.get("content_filter") or acg_cfg.get("content_filter_default") or "normal").strip().lower()
+    if content_filter not in ("safe", "normal", "edgy"):
+        content_filter = "normal"
+    target_audience = (req.get("target_audience") or acg_cfg.get("target_audience_default") or "").strip() or None
+    tone = (req.get("tone") or acg_cfg.get("tone_default") or "dramatic").strip().lower()
+    if tone not in ("dramatic", "funny", "heartfelt", "shocking", "cringe"):
+        tone = "dramatic"
+
+    # Optional: caller already generated the content via /api/ai/generate-variants
+    # and picked one — skip the generation step and use this payload directly.
+    preselected_content = req.get("preselected_content")
+
     # Start pipeline steps and mark AI generation as running
     for step in pipeline_state["steps"]:
         step["status"] = "idle"
@@ -2295,40 +2367,50 @@ async def run_pipeline_ai(req: dict = {}):
 
     provider_name = gemini_cfg.get("provider", "gemini")
     model_name = gemini_cfg.get("model", "")
-    _set_step("ai_generate", "running", f"Generating {content_style} content...", [
-        {"label": f"Style: {content_style}", "status": "running", "detail": ""},
-        {"label": f"Niche: {niche}", "status": "pending", "detail": ""},
-        {"label": f"Provider: {provider_name} / {model_name}", "status": "pending", "detail": ""},
-    ])
 
-    # Generate content using AI
-    try:
-        from ai_content_generator import AIContentGenerator
-        generator = AIContentGenerator(config)
-        _log(f"Generating AI content: style={content_style}, niche={niche}")
+    if preselected_content and isinstance(preselected_content, dict):
+        # Skip generation — caller picked a variant from /api/ai/generate-variants
+        _set_step("ai_generate", "done", f"Using pre-selected: {preselected_content.get('title', '')[:60]}", [
+            {"label": f"Style: {content_style}", "status": "done", "detail": ""},
+            {"label": f"Niche: {niche}", "status": "done", "detail": ""},
+            {"label": "Source: user-picked variant", "status": "done", "detail": "✓ content ready"},
+        ])
+        content_data = dict(preselected_content)
+        content_data.setdefault("content_style", content_style)
+    else:
+        _set_step("ai_generate", "running", f"Generating {content_style} content...", [
+            {"label": f"Style: {content_style}", "status": "running", "detail": ""},
+            {"label": f"Niche: {niche}", "status": "pending", "detail": ""},
+            {"label": f"Provider: {provider_name} / {model_name}", "status": "pending", "detail": ""},
+        ])
+        try:
+            from ai_content_generator import AIContentGenerator
+            generator = AIContentGenerator(config)
+            _log(f"Generating AI content: style={content_style}, niche={niche}, filter={content_filter}, tone={tone}")
 
-        content_data = await asyncio.to_thread(
-            generator.generate, content_style, niche, custom_topic, interactive_format
-        )
-        if not content_data:
-            _set_step("ai_generate", "error", "AI returned empty content after retries")
+            content_data = await asyncio.to_thread(
+                generator.generate, content_style, niche, custom_topic, interactive_format,
+                content_filter, target_audience, tone,
+            )
+            if not content_data:
+                _set_step("ai_generate", "error", "AI returned empty content after retries")
+                pipeline_state["is_running"] = False
+                pipeline_state["error"] = "AI failed to generate content after retries"
+                pipeline_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                return {"started": False, "error": "AI failed to generate content"}
+        except Exception as e:
+            _set_step("ai_generate", "error", f"AI generation failed: {str(e)[:80]}")
             pipeline_state["is_running"] = False
-            pipeline_state["error"] = "AI failed to generate content after retries"
+            pipeline_state["error"] = str(e)
             pipeline_state["completed_at"] = datetime.now(timezone.utc).isoformat()
-            return {"started": False, "error": "AI failed to generate content"}
-    except Exception as e:
-        _set_step("ai_generate", "error", f"AI generation failed: {str(e)[:80]}")
-        pipeline_state["is_running"] = False
-        pipeline_state["error"] = str(e)
-        pipeline_state["completed_at"] = datetime.now(timezone.utc).isoformat()
-        _log(f"AI content generation error: {e}")
-        raise HTTPException(502, f"AI content generation failed: {str(e)}")
+            _log(f"AI content generation error: {e}")
+            raise HTTPException(502, f"AI content generation failed: {str(e)}")
 
-    _set_step("ai_generate", "done", f"Generated: {content_data.get('title', '')[:60]}", [
-        {"label": f"Style: {content_style}", "status": "done", "detail": ""},
-        {"label": f"Niche: {niche}", "status": "done", "detail": ""},
-        {"label": f"Provider: {provider_name}", "status": "done", "detail": "✓ content ready"},
-    ])
+        _set_step("ai_generate", "done", f"Generated: {content_data.get('title', '')[:60]}", [
+            {"label": f"Style: {content_style}", "status": "done", "detail": ""},
+            {"label": f"Niche: {niche}", "status": "done", "detail": ""},
+            {"label": f"Provider: {provider_name}", "status": "done", "detail": "✓ content ready"},
+        ])
 
     # Create synthetic post directory (same structure as custom pipeline)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -2364,6 +2446,9 @@ async def run_pipeline_ai(req: dict = {}):
         "num_comments": len(content_data.get("comments", [])),
         "downloaded_at": datetime.now(timezone.utc).isoformat(),
         "ai_generated": True, "content_style": content_style, "niche": niche,
+        "content_filter": content_filter,
+        "target_audience": target_audience or "",
+        "tone": tone,
     }
     with open(os.path.join(post_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)

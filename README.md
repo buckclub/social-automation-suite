@@ -213,7 +213,8 @@ Reels Automation fetches content from Reddit or generates original scripts using
 Real, in code features. No filler.
 
 * Fetch Reddit posts from configured subreddits with filters for length, score, and age.
-* AI content generation in four styles: Story, Q&A, Interactive "put a finger down", and Hot Take.
+* AI content generation in four styles: Story, Q&A, Interactive "put a finger down", and Hot Take. Each run is shaped by an orthogonal **content filter** (Safe / Normal / Edgy), **tone** (Dramatic / Funny / Heartfelt / Shocking / Cringe), and free-text **target audience** (e.g. "women 18-35", "teenagers").
+* Save any style + niche + filter + tone + audience combo as a named **preset** for one-click reuse, and optionally generate 3 variants in parallel to pick the best before committing to TTS + render.
 * Multiple AI providers: Google Gemini, OpenRouter, Ollama (local and cloud), and Nvidia NIM.
 * Handles Ollama reasoning models that return answers in the `thinking` field.
 * TTS via Streamlabs Polly (cloud, free) or VibeVoice (local).
