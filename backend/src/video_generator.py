@@ -355,7 +355,8 @@ class VideoGenerator:
     """
     
     def __init__(self, mode: str = 'reel', use_gpu: bool = False, threads: int = 0, hw_accel: str = 'none',
-                 captions_config: Optional[dict] = None):
+                 captions_config: Optional[dict] = None,
+                 thumbnail_config: Optional[dict] = None):
         """
         Initialize video generator.
         mode: 'reel' (9:16) or 'full' (16:9)
@@ -363,6 +364,8 @@ class VideoGenerator:
         threads: Number of threads for writing video (0 = auto/max)
         hw_accel: Hardware acceleration type: 'none' (CPU), 'nvenc' (NVIDIA), 'amf' (AMD)
         captions_config: Caption appearance/timing config (see _caption_params).
+        thumbnail_config: Title-card customization — profile pic, username,
+            whether to draw the fake hearts/share stats bar.
         """
         self.mode = mode.lower()
         self.hw_accel = hw_accel if hw_accel in ('none', 'nvenc', 'amf') else ('nvenc' if use_gpu else 'none')
@@ -385,6 +388,20 @@ class VideoGenerator:
             os.makedirs(self.backgrounds_dir)
 
         self.captions = self._caption_params(captions_config or {})
+        self.thumbnail = self._thumbnail_params(thumbnail_config or {})
+
+    def _thumbnail_params(self, cfg: dict) -> dict:
+        """Normalize title-card config with sensible defaults."""
+        # profile_pic_path is user-supplied; may be absolute OR relative to
+        # PROJECT_ROOT (for the typical 'branding/avatar.png' layout).
+        pic_path = (cfg.get('profile_pic_path') or '').strip()
+        if pic_path and not os.path.isabs(pic_path):
+            pic_path = os.path.join(PROJECT_ROOT, pic_path)
+        return {
+            'profile_pic_path': pic_path,
+            'username':         (cfg.get('username') or '').strip(),
+            'hide_stats':       bool(cfg.get('hide_stats', True)),
+        }
 
     def _caption_params(self, cfg: dict) -> dict:
         """Normalize caption config with sensible defaults."""
@@ -1522,8 +1539,10 @@ class VideoGenerator:
             title_bbox = draw.multiline_textbbox((0, 0), wrapped, font=font_title, spacing=8)
             title_text_h = title_bbox[3] - title_bbox[1]
 
-            # Bottom bar height
-            bottom_bar_h = 40
+            # Bottom bar height — zero when stats are hidden so the card
+            # hugs the title text instead of leaving an awkward gap.
+            _stats_hidden = (getattr(self, 'thumbnail', None) or {}).get('hide_stats', True)
+            bottom_bar_h = 0 if _stats_hidden else 40
 
             # Calculate total card height dynamically
             card_h = inner_pad + header_h + 20 + title_text_h + 25 + bottom_bar_h + inner_pad
@@ -1537,20 +1556,55 @@ class VideoGenerator:
             card_rect = [(card_x, card_y), (card_x + card_w, card_y + card_h)]
             draw.rounded_rectangle(card_rect, radius=30, fill=(255, 255, 255, 240))
 
-            # 5. Reddit icon circle + subreddit name
+            # 5. Profile icon (circular) + display handle.
+            #    If a user profile pic is configured, paste it as the icon —
+            #    otherwise draw the stock Reddit alien. The handle follows
+            #    thumbnail.username > video.branding > r/<subreddit>.
             icon_y = card_y + inner_pad
             icon_x = card_x + inner_pad
-            draw.ellipse(
-                [(icon_x, icon_y), (icon_x + icon_r * 2, icon_y + icon_r * 2)],
-                fill=(255, 69, 0)
-            )
-            cx, cy = icon_x + icon_r, icon_y + icon_r
-            draw.ellipse([(cx - 8, cy - 6), (cx - 2, cy)], fill='white')
-            draw.ellipse([(cx + 2, cy - 6), (cx + 8, cy)], fill='white')
-            draw.arc([(cx - 8, cy - 2), (cx + 8, cy + 8)], 0, 180, fill='white', width=2)
+            tn = getattr(self, 'thumbnail', None) or {}
+            pic_path = tn.get('profile_pic_path') or ''
+            drew_custom_icon = False
+            if pic_path and os.path.isfile(pic_path):
+                try:
+                    from PIL import Image as _PILImage
+                    avatar = _PILImage.open(pic_path).convert("RGBA")
+                    # Resize to the icon diameter and round-mask into a circle.
+                    d = icon_r * 2
+                    avatar = avatar.resize((d, d), _PILImage.LANCZOS)
+                    mask = Image.new("L", (d, d), 0)
+                    _mdraw = ImageDraw.Draw(mask)
+                    _mdraw.ellipse((0, 0, d, d), fill=255)
+                    # Alpha-composite the circular avatar onto bg_img so it
+                    # respects the transparent title-card canvas.
+                    bg_img.paste(avatar, (icon_x, icon_y), mask)
+                    drew_custom_icon = True
+                except Exception as _e:
+                    print(f"   ⚠️  Profile pic failed to load ({pic_path}): {_e}")
 
-            # Show branding handle instead of subreddit for privacy
-            sub_text = f"u/{branding.strip()}" if branding and branding.strip() else f"r/{subreddit}"
+            if not drew_custom_icon:
+                # Stock Reddit alien icon fallback.
+                draw.ellipse(
+                    [(icon_x, icon_y), (icon_x + icon_r * 2, icon_y + icon_r * 2)],
+                    fill=(255, 69, 0)
+                )
+                cx, cy = icon_x + icon_r, icon_y + icon_r
+                draw.ellipse([(cx - 8, cy - 6), (cx - 2, cy)], fill='white')
+                draw.ellipse([(cx + 2, cy - 6), (cx + 8, cy)], fill='white')
+                draw.arc([(cx - 8, cy - 2), (cx + 8, cy + 8)], 0, 180, fill='white', width=2)
+
+            # Handle shown next to the avatar. Prefers the explicit thumbnail
+            # username (with auto-prepended '@'), falls back to video.branding
+            # as 'u/<handle>', finally 'r/<subreddit>'.
+            uname = tn.get('username') or ''
+            if uname:
+                if not uname.startswith(('@', 'u/', 'r/')):
+                    uname = '@' + uname
+                sub_text = uname
+            elif branding and branding.strip():
+                sub_text = f"u/{branding.strip()}"
+            else:
+                sub_text = f"r/{subreddit}"
             draw.text((icon_x + icon_r * 2 + 12, icon_y + 8), sub_text, fill=(30, 30, 30), font=font_sub)
 
             # 6. Part badge (top right of card)
@@ -1574,13 +1628,18 @@ class VideoGenerator:
                 fill=(20, 20, 20), font=font_title, spacing=8
             )
 
-            # 8. Bottom bar — hearts + share count
-            bottom_y = card_y + card_h - inner_pad - 25
-            heart = "♡"
-            score_text = f"{score:,}+" if score else "999+"
-            share_text = f"⤴ {score_text}"
-            draw.text((card_x + inner_pad, bottom_y), f"{heart} {score_text}", fill=(120, 120, 120), font=font_meta)
-            draw.text((card_x + card_w - 180, bottom_y), share_text, fill=(120, 120, 120), font=font_meta)
+            # 8. Bottom bar — hearts + share count. Off by default now:
+            #    the fake heart/share glyphs didn't always render in the
+            #    title font and users found them more distracting than
+            #    authentic-looking. Flip `thumbnail.hide_stats=false` in
+            #    config to restore them.
+            if not (getattr(self, 'thumbnail', None) or {}).get('hide_stats', True):
+                bottom_y = card_y + card_h - inner_pad - 25
+                heart = "♡"
+                score_text = f"{score:,}+" if score else "999+"
+                share_text = f"⤴ {score_text}"
+                draw.text((card_x + inner_pad, bottom_y), f"{heart} {score_text}", fill=(120, 120, 120), font=font_meta)
+                draw.text((card_x + card_w - 180, bottom_y), share_text, fill=(120, 120, 120), font=font_meta)
 
             # 9. Branding watermark (bottom-right corner of image) — skipped when
             # producing a transparent overlay, since the render pipeline paints

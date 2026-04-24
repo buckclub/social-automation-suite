@@ -350,6 +350,22 @@ export const api = {
       error?: string;
     }>("/api/tts/elevenlabs/voices"),
 
+  // Branding / title-card profile pic
+  uploadProfilePic: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return fetch(`${API_BASE}/api/branding/profile-pic`, {
+      method: "POST",
+      body: form,
+    }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.text()) || r.statusText);
+      return r.json() as Promise<{ saved: boolean; path: string; size_bytes: number }>;
+    });
+  },
+  clearProfilePic: () =>
+    request<{ cleared: boolean }>("/api/branding/profile-pic", { method: "DELETE" }),
+  profilePicUrl: () => `${API_BASE}/api/branding/profile-pic?v=${Date.now()}`,
+
   // System status (for the bottom status bar)
   getSystemStatus: () =>
     request<{

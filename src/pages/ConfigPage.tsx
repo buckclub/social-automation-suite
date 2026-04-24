@@ -23,6 +23,7 @@ import { CaptionsPreview } from "@/components/CaptionsPreview";
 import { ColorInput } from "@/components/ColorInput";
 import { SecretInput } from "@/components/ui/secret-input";
 import { YouTubePublishingPanel } from "@/components/YouTubePublishingPanel";
+import { TitleCardSettings } from "@/components/TitleCardSettings";
 import { ELEVENLABS_LIBRARY } from "@/components/ElevenLabsLibraryPresets";
 
 function TestAiButton({ provider, model, apiKey, ollamaUrl }: { provider: string; model: string; apiKey: string; ollamaUrl?: string }) {
@@ -230,6 +231,11 @@ export default function ConfigPage() {
   // YouTube benchmark API (for social copy style references)
   const [youtubeApiKey, setYoutubeApiKey] = useState("");
 
+  // Title-card branding (avatar + username + hide stats)
+  const [tnUsername, setTnUsername] = useState("");
+  const [tnHideStats, setTnHideStats] = useState(true);
+  const [tnProfilePicPath, setTnProfilePicPath] = useState("");
+
   const [initialLoaded, setInitialLoaded] = useState(false);
   type TabId = "general" | "formatting" | "tts" | "video" | "captions" | "ai" | "publishing" | "output";
   // Honor ?tab=X in the URL so the command palette can deep-link into a section.
@@ -366,6 +372,11 @@ export default function ConfigPage() {
     const yt = (c as any).youtube ?? {};
     setYoutubeApiKey(yt.api_key ?? "");
 
+    const tn = (c as any).thumbnail ?? {};
+    setTnUsername(tn.username ?? "");
+    setTnHideStats(tn.hide_stats ?? true);
+    setTnProfilePicPath(tn.profile_pic_path ?? "");
+
     setInitialLoaded(true);
   }, [config, initialLoaded]);
 
@@ -389,6 +400,7 @@ export default function ConfigPage() {
     geminiModel, geminiHook, geminiThumbnail, geminiModels, openrouterModels,
     ollamaUrl, ollamaModels, nvidiaNimModels,
     youtubeApiKey,
+    tnUsername, tnHideStats, tnProfilePicPath,
     capEnabled, capFontPath, capFontSize, capColor, capStrokeColor, capStrokeWidth,
     capBgEnabled, capBgColor, capBgOpacity, capPadding, capCornerRadius,
     capMaxWidthPct, capPosition, capPositionOffset, capWordsPerCaption,
@@ -570,6 +582,11 @@ export default function ConfigPage() {
         },
         youtube: {
           api_key: youtubeApiKey,
+        },
+        thumbnail: {
+          profile_pic_path: tnProfilePicPath,
+          username: tnUsername,
+          hide_stats: tnHideStats,
         },
       },
       {
@@ -1347,6 +1364,17 @@ export default function ConfigPage() {
             <Input value={branding} onChange={(e) => setBranding(e.target.value)} placeholder="e.g. @yourhandle or YourChannel" className="h-8 text-xs bg-secondary border-border" />
             <p className="text-[10px] text-muted-foreground">Shown on thumbnails to prevent uncredited copying. Leave blank to disable.</p>
           </div>
+        </Section>
+
+        <Section title="Title Card" icon={<Type className="h-4 w-4 text-accent" />}>
+          <TitleCardSettings
+            username={tnUsername}
+            onUsernameChange={setTnUsername}
+            hideStats={tnHideStats}
+            onHideStatsChange={setTnHideStats}
+            profilePicPath={tnProfilePicPath}
+            onProfilePicChange={setTnProfilePicPath}
+          />
         </Section>
         </div>
 

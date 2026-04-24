@@ -555,6 +555,69 @@ async def health():
     return {"status": "online", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+# ── Branding / title-card assets ────────────────────────────────────
+from fastapi import UploadFile, File
+
+@app.post("/api/branding/profile-pic")
+async def upload_profile_pic(file: UploadFile = File(...)):
+    """
+    Save an uploaded image to branding/avatar.<ext> and record the path on
+    config.thumbnail.profile_pic_path. Replaces any previously saved avatar.
+    """
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "Please upload an image (png/jpg/webp).")
+    ext = os.path.splitext(file.filename or "")[1].lower() or ".png"
+    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise HTTPException(400, "Unsupported image format — use PNG, JPG, or WebP.")
+    branding_dir = os.path.join(PROJECT_ROOT, "branding")
+    os.makedirs(branding_dir, exist_ok=True)
+    dest = os.path.join(branding_dir, f"avatar{ext}")
+    # Drop any stale avatars with different extensions so we don't stack old files.
+    for other_ext in (".png", ".jpg", ".jpeg", ".webp"):
+        prev = os.path.join(branding_dir, f"avatar{other_ext}")
+        if prev != dest and os.path.isfile(prev):
+            try: os.remove(prev)
+            except OSError: pass
+    contents = await file.read()
+    with open(dest, "wb") as f:
+        f.write(contents)
+
+    rel_path = os.path.relpath(dest, PROJECT_ROOT).replace("\\", "/")
+    cfg = _load_config()
+    cfg.setdefault("thumbnail", {})["profile_pic_path"] = rel_path
+    _save_config(cfg)
+    return {"saved": True, "path": rel_path, "size_bytes": len(contents)}
+
+
+@app.get("/api/branding/profile-pic")
+async def get_profile_pic():
+    """Serve the configured profile pic so the Config UI can preview it."""
+    from fastapi.responses import FileResponse
+    cfg = _load_config()
+    rel = (cfg.get("thumbnail") or {}).get("profile_pic_path") or ""
+    if not rel:
+        raise HTTPException(404, "No profile pic set")
+    path = rel if os.path.isabs(rel) else os.path.join(PROJECT_ROOT, rel)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Profile pic missing on disk")
+    return FileResponse(path)
+
+
+@app.delete("/api/branding/profile-pic")
+async def delete_profile_pic():
+    cfg = _load_config()
+    rel = (cfg.get("thumbnail") or {}).get("profile_pic_path") or ""
+    if rel:
+        path = rel if os.path.isabs(rel) else os.path.join(PROJECT_ROOT, rel)
+        try:
+            if os.path.isfile(path): os.remove(path)
+        except OSError:
+            pass
+    cfg.setdefault("thumbnail", {})["profile_pic_path"] = ""
+    _save_config(cfg)
+    return {"cleared": True}
+
+
 @app.get("/api/system/status")
 async def system_status():
     """
@@ -1457,7 +1520,7 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
         _log("Rendering video (resumed)...")
 
         from video_generator import VideoGenerator
-        video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}))
+        video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
         output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
         # Load post metadata for title card rendering during resume.
@@ -2207,7 +2270,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
         else:
             try:
                 from video_generator import VideoGenerator
-                video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}))
+                video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
                 output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
                 if video_mode == "short_reel":
@@ -2405,7 +2468,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
             try:
                 from video_generator import VideoGenerator
                 if 'video_gen' not in dir():
-                    video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}))
+                    video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
                 branding = config.get("video", {}).get("branding", "")
                 p_title = pipeline_state.get("current_post", {}).get("title", title) if pipeline_state.get("current_post") else title
                 p_sub = pipeline_state.get("current_post", {}).get("subreddit", "") if pipeline_state.get("current_post") else ""

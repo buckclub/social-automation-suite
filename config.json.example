@@ -102,6 +102,12 @@
     }
   },
 
+  "thumbnail": {
+    "profile_pic_path": "",
+    "username": "",
+    "hide_stats": true
+  },
+
   "captions": {
     "font_path": "arial.ttf",
     "font_size": 80,
