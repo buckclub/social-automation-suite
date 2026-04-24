@@ -468,13 +468,61 @@ function ProposalRow({
       )}
 
       {rendered && (
-        <div className="mt-2 pt-2 border-t border-border/40 flex items-center gap-2">
-          <CheckCircle2 className="h-3 w-3 text-success" />
-          <span className="text-[10px] text-success">Rendered</span>
-          <a href={api.clipRenderedVideoUrl(projectId, proposal.id)} target="_blank" rel="noopener noreferrer" className="text-[10px] text-primary hover:underline ml-auto">
-            Open video <ExternalLink className="h-2.5 w-2.5 inline" />
-          </a>
-        </div>
+        <RenderedPreview
+          projectId={projectId}
+          proposalId={proposal.id}
+          renderedAt={(rendered as any).created_at as string | undefined}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Inline player for a rendered clip ─────────────────────────────
+function RenderedPreview({
+  projectId, proposalId, renderedAt,
+}: { projectId: string; proposalId: string; renderedAt?: string }) {
+  const [open, setOpen] = useState(false);
+  // Cache-bust via created_at so a re-render shows the new file right away
+  // instead of the browser serving the stale mp4.
+  const url = `${api.clipRenderedVideoUrl(projectId, proposalId)}&v=${encodeURIComponent(renderedAt || "")}`;
+  return (
+    <div className="mt-2 pt-2 border-t border-border/40 space-y-1.5">
+      <div className="flex items-center gap-2">
+        <CheckCircle2 className="h-3 w-3 text-success" />
+        <span className="text-[10px] text-success font-medium">Rendered</span>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="ml-auto text-[10px] text-primary hover:underline"
+        >
+          {open ? "Hide preview" : "Preview"}
+        </button>
+        <a
+          href={url}
+          download
+          className="text-[10px] text-muted-foreground hover:text-primary"
+          title="Download mp4"
+        >
+          Download
+        </a>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[10px] text-muted-foreground hover:text-primary"
+          title="Open in new tab"
+        >
+          <ExternalLink className="h-2.5 w-2.5 inline" />
+        </a>
+      </div>
+      {open && (
+        <video
+          src={url}
+          controls
+          autoPlay
+          className="w-full rounded-md bg-black max-h-[360px]"
+          playsInline
+        />
       )}
     </div>
   );

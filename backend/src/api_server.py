@@ -3666,28 +3666,42 @@ async def list_videos():
 
 
 def _find_thumbnail_files(video_id: str) -> List[str]:
-    """Return all thumbnail PNG paths for a video, sorted by name."""
-    paths = []
+    """
+    Return thumbnail PNG paths for one specific video.
+
+    The render pipeline writes thumbnails as `<mp4_basename>_thumbnail.png`
+    alongside each mp4, so the source-of-truth is the registry entry's
+    `video_paths`: for each mp4 path, the matching thumbnail is
+    `<mp4_path without .mp4>_thumbnail.png`. The previous implementation
+    walked the whole `videos/` directory picking up ANY thumbnail PNG,
+    which meant every `/api/videos/X/thumbnail` request returned the same
+    alphabetically-first file regardless of which video was requested.
+    """
+    paths: list[str] = []
     entry = _find_video_entry(video_id)
     if entry and entry.get("video_paths"):
-        # Thumbnails live alongside videos
-        dirs_checked = set()
         for vp in entry["video_paths"]:
-            d = os.path.dirname(vp)
-            if d and d not in dirs_checked and os.path.isdir(d):
-                dirs_checked.add(d)
-                for f in sorted(os.listdir(d)):
-                    if f.endswith(".png") and "thumbnail" in f:
-                        paths.append(os.path.join(d, f))
-    # Also check videos/ root for single-video thumbnails
-    videos_dir = os.path.join(PROJECT_ROOT, "videos")
-    if os.path.isdir(videos_dir):
-        for f in sorted(os.listdir(videos_dir)):
-            if f.endswith(".png") and "thumbnail" in f and video_id in f:
-                fp = os.path.join(videos_dir, f)
-                if fp not in paths:
-                    paths.append(fp)
-    return sorted(paths)
+            if not vp:
+                continue
+            base, _ = os.path.splitext(vp)
+            # Try both `<base>_thumbnail.png` (used by FFmpeg engine) and
+            # `<base>.png` (moviepy fallback).
+            for candidate in (f"{base}_thumbnail.png", f"{base}.png"):
+                if os.path.isfile(candidate) and candidate not in paths:
+                    paths.append(candidate)
+
+    # Fallback: search for thumbnails inside posts/<video_id>/ — that's
+    # where live pipeline runs put them before they get moved to videos/.
+    if not paths:
+        post_dir = os.path.join(PROJECT_ROOT, "posts", video_id)
+        if os.path.isdir(post_dir):
+            for f in sorted(os.listdir(post_dir)):
+                if f.endswith("_thumbnail.png") or f == "thumbnail.png":
+                    fp = os.path.join(post_dir, f)
+                    if fp not in paths:
+                        paths.append(fp)
+
+    return paths
 
 
 @app.get("/api/videos/{video_id}/thumbnail")
