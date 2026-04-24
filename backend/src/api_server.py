@@ -3742,31 +3742,41 @@ def _find_video_entry(video_id: str):
 
 
 def _find_all_video_files(video_id: str) -> List[str]:
-    """Return all mp4 paths for a video, sorted by name."""
-    paths = set()
+    """
+    Return mp4 paths for ONE specific video.
+
+    Source of truth is the registry entry's `video_paths`. The previous
+    implementation bolted a 'fallback' that appended `videos/` itself to
+    the search dirs, then walked that folder listing every mp4 in it —
+    so every /api/videos/X/stream request resolved to a flat 'every
+    video on disk' list. Hence the preview always opening the wrong
+    video. Post-dir fallback (`posts/<video_id>/*.mp4`) is id-scoped so
+    it's still safe.
+    """
+    paths: list[str] = []
     entry = _find_video_entry(video_id)
     if entry and entry.get("video_paths"):
         for p in entry["video_paths"]:
-            if os.path.exists(p):
-                paths.add(p)
+            if p and os.path.exists(p) and p not in paths:
+                paths.append(p)
+        # When the registry has any surviving file, trust it — don't
+        # augment with unrelated scanned files.
+        if paths:
+            return paths
 
-    # Fallback: search posts and videos dirs
-    search_dirs = [os.path.join(PROJECT_ROOT, "posts", video_id)]
-    videos_dir = os.path.join(PROJECT_ROOT, "videos")
-    if os.path.isdir(videos_dir):
-        search_dirs.append(videos_dir)
-        for sub in os.listdir(videos_dir):
-            sub_path = os.path.join(videos_dir, sub)
-            if os.path.isdir(sub_path) and video_id in sub:
-                search_dirs.append(sub_path)
-
-    for d in search_dirs:
+    # Only fall back to the id-scoped post workspace, never the shared
+    # videos/ root. videos/<video_id>/ (multi-part subfolders) IS
+    # id-scoped so that's fine too.
+    post_dir = os.path.join(PROJECT_ROOT, "posts", video_id)
+    parts_dir = os.path.join(PROJECT_ROOT, "videos", video_id)
+    for d in (post_dir, parts_dir):
         if os.path.isdir(d):
             for f in sorted(os.listdir(d)):
-                if f.endswith(".mp4"):
-                    paths.add(os.path.join(d, f))
-
-    return sorted(paths)
+                if f.lower().endswith(".mp4"):
+                    fp = os.path.join(d, f)
+                    if fp not in paths:
+                        paths.append(fp)
+    return paths
 
 
 @app.get("/api/videos/{video_id}/stream")
