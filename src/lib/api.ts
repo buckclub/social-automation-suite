@@ -418,6 +418,11 @@ export const api = {
     ),
   backgroundPreviewUrl: (path: string) =>
     `${API_BASE}/api/backgrounds/preview?path=${encodeURIComponent(path)}`,
+  moveBackground: (src_path: string, dest_folder: string) =>
+    request<{ moved: boolean; path: string }>("/api/backgrounds/move", {
+      method: "POST",
+      body: JSON.stringify({ src_path, dest_folder }),
+    }),
 
   // Branding / title-card profile pic
   uploadProfilePic: (file: File) => {

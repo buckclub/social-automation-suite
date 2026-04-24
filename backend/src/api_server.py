@@ -829,6 +829,58 @@ async def background_preview(path: str):
     return FileResponse(target, media_type="video/mp4")
 
 
+@app.post("/api/backgrounds/move")
+async def move_background(req: dict):
+    """
+    Move a video file (or subfolder) to a different folder within backgrounds/.
+
+    Body:
+      { src_path: "subA/clip.mp4",          # file OR folder
+        dest_folder: "subB" }               # "" = backgrounds root
+    Auto-renames with _1, _2, … if the destination already has a file
+    with the same basename, so drag-to-move never silently overwrites.
+    """
+    src_rel  = (req.get("src_path") or "").strip()
+    dest_rel = (req.get("dest_folder") or "").strip()
+    if not src_rel:
+        raise HTTPException(400, "src_path is required")
+
+    src = _safe_bg_path(src_rel)
+    dest_dir = _safe_bg_path(dest_rel) if dest_rel else _backgrounds_root()
+
+    if not os.path.exists(src):
+        raise HTTPException(404, "Source not found")
+    if not os.path.isdir(dest_dir):
+        raise HTTPException(400, "Destination folder does not exist")
+
+    basename = os.path.basename(src.rstrip(os.sep))
+    # Refuse to move a folder into itself or any of its own children.
+    if os.path.isdir(src):
+        src_abs = os.path.abspath(src)
+        dest_abs = os.path.abspath(dest_dir)
+        if dest_abs == src_abs or dest_abs.startswith(src_abs + os.sep):
+            raise HTTPException(400, "Can't move a folder into itself")
+
+    base, ext = os.path.splitext(basename)
+    target = os.path.join(dest_dir, basename)
+    idx = 1
+    while os.path.exists(target):
+        if os.path.abspath(target) == os.path.abspath(src):
+            # Same location — treat as no-op.
+            return {"moved": False, "path": os.path.relpath(target, _backgrounds_root()).replace("\\", "/")}
+        target = os.path.join(dest_dir, f"{base}_{idx}{ext}")
+        idx += 1
+
+    try:
+        shutil.move(src, target)
+    except OSError as e:
+        raise HTTPException(500, f"Move failed: {e}")
+
+    rel = os.path.relpath(target, _backgrounds_root()).replace("\\", "/")
+    _log(f"Background moved: {src_rel} → {rel}")
+    return {"moved": True, "path": rel}
+
+
 @app.get("/api/backgrounds/all-folders")
 async def list_all_folders():
     """Flat list of every folder (recursive) with a video count — used by the config dropdown."""

@@ -2,8 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Folder, FolderPlus, Upload, Trash2, ChevronRight, Film, Loader2,
-  PlayCircle, Home, AlertTriangle, FolderOpen,
+  PlayCircle, Home, AlertTriangle, FolderOpen, Move, ArrowUp,
 } from "lucide-react";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,6 +52,35 @@ export default function BackgroundsPage() {
   const [previewVideo, setPreviewVideo] = useState<{ name: string; path: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{ kind: "file" | "folder"; name: string; path: string; recursive: boolean } | null>(null);
 
+  // Move dialog (manual picker, alternative to drag-and-drop)
+  const [movePrompt, setMovePrompt] = useState<{ src_path: string; name: string } | null>(null);
+  const [moveDest, setMoveDest] = useState<string>("");
+  const [allFolders, setAllFolders] = useState<{ path: string; name: string; video_count: number }[]>([]);
+  const refreshFolders = async () => {
+    try {
+      const r = await api.listBackgroundFolders();
+      setAllFolders(r.folders);
+    } catch {}
+  };
+
+  // Drag state for visual drop highlights
+  const [dragSrc, setDragSrc] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null); // folder rel path being hovered
+
+  const moveFile = async (src_path: string, dest_folder: string) => {
+    try {
+      await api.moveBackground(src_path, dest_folder);
+      toast({
+        title: "Moved",
+        description: dest_folder ? `→ ${dest_folder}` : "→ backgrounds root",
+      });
+      refresh();
+      refreshFolders();
+    } catch (e: any) {
+      toast({ title: "Move failed", description: e.message, variant: "destructive" });
+    }
+  };
+
   const refresh = async (path = cwd) => {
     setLoading(true);
     try {
@@ -61,7 +93,7 @@ export default function BackgroundsPage() {
       setLoading(false);
     }
   };
-  useEffect(() => { refresh(""); }, []);
+  useEffect(() => { refresh(""); refreshFolders(); }, []);
 
   // Breadcrumb segments
   const crumbs = cwd ? cwd.split("/") : [];
@@ -207,23 +239,72 @@ export default function BackgroundsPage() {
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-              {/* Folders */}
-              {listing?.folders.map((f) => (
+              {/* Parent-folder drop target — appears when we're not at the root,
+                  so dragging a video onto it moves it one level up. */}
+              {cwd && (
+                <motion.div
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  onDragOver={(e) => { e.preventDefault(); setDropTarget("__parent__"); }}
+                  onDragLeave={() => setDropTarget((cur) => cur === "__parent__" ? null : cur)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDropTarget(null);
+                    const src = e.dataTransfer.getData("text/reels-bg");
+                    if (src) {
+                      const parent = listing?.parent ?? "";
+                      moveFile(src, parent);
+                    }
+                  }}
+                  className={`relative rounded-md border border-dashed p-3 transition-all cursor-pointer
+                    ${dropTarget === "__parent__" ? "border-primary bg-primary/10 scale-[1.02]" : "border-border bg-secondary/10 hover:border-primary/40"}`}
+                  onClick={() => refresh(listing?.parent ?? "")}
+                  title="Drop here to move up, or click to navigate"
+                >
+                  <div className="flex items-center gap-2">
+                    <ArrowUp className="h-6 w-6 text-muted-foreground shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold truncate">..</p>
+                      <p className="text-[10px] text-muted-foreground">
+                        up to {listing?.parent ? `/${listing.parent}` : "backgrounds root"}
+                      </p>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Folders — drop target for videos in current directory */}
+              {listing?.folders.map((f) => {
+                const isTarget = dropTarget === f.path;
+                return (
                 <motion.div
                   key={`d-${f.path}`}
                   initial={{ opacity: 0, y: 4 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="group relative rounded-md border border-border bg-secondary/30 p-3 hover:border-primary/40 transition-all"
+                  onDragOver={(e) => { e.preventDefault(); setDropTarget(f.path); }}
+                  onDragLeave={() => setDropTarget((cur) => cur === f.path ? null : cur)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDropTarget(null);
+                    const src = e.dataTransfer.getData("text/reels-bg");
+                    if (src && !src.startsWith(f.path + "/") && src !== f.path) {
+                      moveFile(src, f.path);
+                    }
+                  }}
+                  className={`group relative rounded-md border p-3 transition-all
+                    ${isTarget
+                      ? "border-primary bg-primary/10 scale-[1.02]"
+                      : "border-border bg-secondary/30 hover:border-primary/40"}`}
                 >
                   <button
                     onClick={() => refresh(f.path)}
                     className="w-full flex items-center gap-2 text-left"
                   >
-                    <Folder className="h-6 w-6 text-primary shrink-0" />
+                    <Folder className={`h-6 w-6 shrink-0 ${isTarget ? "text-primary" : "text-primary/80"}`} />
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-semibold truncate">{f.name}</p>
                       <p className="text-[10px] text-muted-foreground">
-                        {f.video_count} video{f.video_count === 1 ? "" : "s"}
+                        {isTarget ? "drop to move here" : `${f.video_count} video${f.video_count === 1 ? "" : "s"}`}
                       </p>
                     </div>
                   </button>
@@ -238,15 +319,25 @@ export default function BackgroundsPage() {
                     <Trash2 className="h-3 w-3" />
                   </button>
                 </motion.div>
-              ))}
+              );})}
 
-              {/* Videos */}
-              {listing?.videos.map((v) => (
+              {/* Videos — draggable */}
+              {listing?.videos.map((v) => {
+                const isDragging = dragSrc === v.path;
+                return (
                 <motion.div
                   key={`v-${v.path}`}
                   initial={{ opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="group relative rounded-md border border-border bg-secondary/30 overflow-hidden hover:border-primary/40 transition-all"
+                  animate={{ opacity: isDragging ? 0.4 : 1, y: 0 }}
+                  draggable
+                  onDragStart={(e) => {
+                    const ev = e as unknown as React.DragEvent;
+                    ev.dataTransfer.setData("text/reels-bg", v.path);
+                    ev.dataTransfer.effectAllowed = "move";
+                    setDragSrc(v.path);
+                  }}
+                  onDragEnd={() => { setDragSrc(null); setDropTarget(null); }}
+                  className="group relative rounded-md border border-border bg-secondary/30 overflow-hidden hover:border-primary/40 transition-all cursor-grab active:cursor-grabbing"
                 >
                   <button
                     onClick={() => setPreviewVideo(v)}
@@ -255,16 +346,29 @@ export default function BackgroundsPage() {
                     <div className="aspect-video bg-black flex items-center justify-center relative">
                       <video
                         src={api.backgroundPreviewUrl(v.path)}
-                        className="absolute inset-0 w-full h-full object-cover"
+                        className="absolute inset-0 w-full h-full object-cover pointer-events-none"
                         preload="metadata"
                         muted
                       />
-                      <PlayCircle className="h-8 w-8 text-white/80 drop-shadow z-10 group-hover:scale-110 transition-transform" />
+                      <PlayCircle className="h-8 w-8 text-white/80 drop-shadow z-10 group-hover:scale-110 transition-transform pointer-events-none" />
                     </div>
                     <div className="px-2 py-1.5 text-left">
                       <p className="text-[11px] font-medium truncate">{v.name}</p>
                       <p className="text-[9px] text-muted-foreground font-mono">{fmtSize(v.size)}</p>
                     </div>
+                  </button>
+                  {/* Move button — fallback for when drag is inconvenient */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      refreshFolders();
+                      setMoveDest("");
+                      setMovePrompt({ src_path: v.path, name: v.name });
+                    }}
+                    className="absolute top-1 right-8 opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6 flex items-center justify-center rounded bg-background/80 hover:bg-primary/20 text-primary"
+                    title="Move to another folder…"
+                  >
+                    <Move className="h-3 w-3" />
                   </button>
                   <button
                     onClick={(e) => {
@@ -277,7 +381,7 @@ export default function BackgroundsPage() {
                     <Trash2 className="h-3 w-3" />
                   </button>
                 </motion.div>
-              ))}
+              );})}
             </div>
           )}
 
@@ -303,7 +407,9 @@ export default function BackgroundsPage() {
 
       {listing && (listing.videos.length + listing.folders.length) > 0 && (
         <p className="text-[10px] text-muted-foreground">
-          Tip: drag multiple files anywhere on this card to upload in batches.
+          Tip: drag a video onto a folder to move it there, or hover a video and click the
+          <Move className="h-2.5 w-2.5 inline mx-0.5" /> icon for a folder picker. Drop multiple
+          files anywhere on this card to upload in batches.
           {cwd && <> · Currently inside <code>backgrounds/{cwd}</code>.</>}
         </p>
       )}
@@ -353,6 +459,49 @@ export default function BackgroundsPage() {
               className="w-full rounded-md bg-black max-h-[60vh]"
             />
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Move dialog (fallback for when drag-and-drop isn't convenient) */}
+      <Dialog open={!!movePrompt} onOpenChange={(o) => !o && setMovePrompt(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm">
+              <Move className="h-4 w-4 text-primary" />
+              Move "{movePrompt?.name}"
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Pick the destination folder. Leave on "root" to move to the top level.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <Label className="text-xs">Destination folder</Label>
+            <Select value={moveDest || "__root__"} onValueChange={(v) => setMoveDest(v === "__root__" ? "" : v)}>
+              <SelectTrigger className="h-8 text-xs bg-secondary border-border">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="max-h-[320px]">
+                <SelectItem value="__root__">📂 backgrounds (root)</SelectItem>
+                {allFolders.filter((f) => f.path).map((f) => (
+                  <SelectItem key={f.path} value={f.path}>
+                    📁 {f.name} <span className="text-muted-foreground">({f.video_count})</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMovePrompt(null)}>Cancel</Button>
+            <Button
+              onClick={async () => {
+                if (!movePrompt) return;
+                await moveFile(movePrompt.src_path, moveDest);
+                setMovePrompt(null);
+              }}
+            >
+              Move here
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
