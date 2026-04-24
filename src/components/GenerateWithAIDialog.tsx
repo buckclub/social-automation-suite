@@ -120,7 +120,9 @@ export function GenerateWithAIDialog() {
         tts_enabled: ttsEnabled,
         narrator_gender: narratorGender,
         voice_override: voiceOverride === "__config__" ? undefined : voiceOverride,
-        background_selector: bgSelector === "__config__" ? undefined : bgSelector,
+        background_selector:
+          bgSelector === "__config__" ? undefined :
+          bgSelector === "__all_random__" ? "" : bgSelector,
       });
       toast({
         title: "AI pipeline started",
@@ -380,7 +382,7 @@ export function GenerateWithAIDialog() {
                 <SelectItem value="__config__">
                   Use config default
                 </SelectItem>
-                <SelectItem value="">
+                <SelectItem value="__all_random__">
                   <span className="flex items-center gap-1"><Shuffle className="h-3 w-3" /> All backgrounds — random</span>
                 </SelectItem>
                 {bgFolders.filter((f) => f.path).map((f) => (
@@ -419,7 +421,7 @@ export function GenerateWithAIDialog() {
       const bgLabel =
         bgSelector === "__config__"
           ? "config default"
-          : bgSelector === ""
+          : bgSelector === "__all_random__"
           ? "all backgrounds (random)"
           : bgSelector;
 
