@@ -18,7 +18,8 @@
     "use_gpu": false,
     "threads": 0,
     "outro_text": "Follow for Part {next_part}",
-    "branding": ""
+    "branding": "",
+    "background_selector": ""
   },
 
   "formatting": {

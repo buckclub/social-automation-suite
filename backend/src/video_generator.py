@@ -387,20 +387,98 @@ class VideoGenerator:
         if not os.path.exists(self.backgrounds_dir):
             os.makedirs(self.backgrounds_dir)
 
+        # Which background to use for this render:
+        #   - ""                  → random from ALL videos under backgrounds/ (recursive)
+        #   - "folder/sub"        → random from that folder (recursive inside it)
+        #   - "folder/clip.mp4"   → that specific file
+        # Set via `video.background_selector` in config, overridable per-run.
+        self.background_selector: str = ""
+
         self.captions = self._caption_params(captions_config or {})
         self.thumbnail = self._thumbnail_params(thumbnail_config or {})
 
+    def set_background_selector(self, selector: str) -> None:
+        """Assign the selector from api_server once the config is loaded."""
+        self.background_selector = (selector or "").strip().replace("\\", "/")
+
+    # ── Background resolution ──────────────────────────────────────────
+    _VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+
+    def _iter_backgrounds(self, rel_path: str = "") -> list[str]:
+        """Return absolute paths of every background video under backgrounds_dir/<rel_path> (recursive)."""
+        root = os.path.join(self.backgrounds_dir, rel_path) if rel_path else self.backgrounds_dir
+        root = os.path.abspath(root)
+        # Refuse to walk outside backgrounds_dir (defensive against config injection).
+        if not root.startswith(os.path.abspath(self.backgrounds_dir)):
+            return []
+        if not os.path.isdir(root):
+            return []
+        out: list[str] = []
+        for dirpath, _, files in os.walk(root):
+            for f in files:
+                if f.lower().endswith(self._VIDEO_EXTS):
+                    out.append(os.path.join(dirpath, f))
+        return out
+
+    def _pick_background(self) -> Optional[str]:
+        """
+        Resolve self.background_selector to a single absolute mp4 path.
+        Falls back through: specific file → folder random → all random.
+        """
+        sel = (self.background_selector or "").strip().replace("\\", "/").lstrip("/")
+        if sel:
+            candidate = os.path.abspath(os.path.join(self.backgrounds_dir, sel))
+            # Safety: must stay inside backgrounds_dir
+            if candidate.startswith(os.path.abspath(self.backgrounds_dir)):
+                if os.path.isfile(candidate) and candidate.lower().endswith(self._VIDEO_EXTS):
+                    return candidate
+                if os.path.isdir(candidate):
+                    files = self._iter_backgrounds(sel)
+                    if files:
+                        return random.choice(files)
+                # Selector pointed somewhere that no longer exists — fall through
+                # to all-backgrounds so a stale config doesn't break the render.
+        all_files = self._iter_backgrounds()
+        return random.choice(all_files) if all_files else None
+
     def _thumbnail_params(self, cfg: dict) -> dict:
-        """Normalize title-card config with sensible defaults."""
-        # profile_pic_path is user-supplied; may be absolute OR relative to
-        # PROJECT_ROOT (for the typical 'branding/avatar.png' layout).
+        """Normalize title-card config with sensible defaults.
+
+        Visual knobs:
+          profile_pic_path  — avatar file (masked into a circle).
+          username          — handle text (auto '@' prefix if bare).
+          hide_stats        — drop the fake ♡/⤴ bottom bar.
+          card_bg_color     — the white card behind the title (hex).
+          text_color        — title text.
+          username_color    — the handle above the title.
+          accent_color      — fallback avatar fill + part badge.
+          corner_radius     — rounded-card radius (px).
+          card_max_width_pct— 0..1 — width of card relative to frame.
+          title_font_size   — title text px.
+          username_font_size— handle px.
+        """
+        def _hex(value, default):
+            v = (value or "").strip()
+            return v if v else default
+        def _num(value, default):
+            try: return float(value)
+            except (TypeError, ValueError): return default
+
         pic_path = (cfg.get('profile_pic_path') or '').strip()
         if pic_path and not os.path.isabs(pic_path):
             pic_path = os.path.join(PROJECT_ROOT, pic_path)
         return {
-            'profile_pic_path': pic_path,
-            'username':         (cfg.get('username') or '').strip(),
-            'hide_stats':       bool(cfg.get('hide_stats', True)),
+            'profile_pic_path':   pic_path,
+            'username':           (cfg.get('username') or '').strip(),
+            'hide_stats':         bool(cfg.get('hide_stats', True)),
+            'card_bg_color':      _hex(cfg.get('card_bg_color'),     '#FFFFFF'),
+            'text_color':         _hex(cfg.get('text_color'),        '#141414'),
+            'username_color':     _hex(cfg.get('username_color'),    '#1E1E1E'),
+            'accent_color':       _hex(cfg.get('accent_color'),      '#FF4500'),
+            'corner_radius':      int(_num(cfg.get('corner_radius'),    30)),
+            'card_max_width_pct': max(0.3, min(1.0, _num(cfg.get('card_max_width_pct'), 0.84))),
+            'title_font_size':    int(_num(cfg.get('title_font_size'),  52)),
+            'username_font_size': int(_num(cfg.get('username_font_size'), 36)),
         }
 
     def _caption_params(self, cfg: dict) -> dict:
@@ -1062,17 +1140,14 @@ class VideoGenerator:
 
     def get_random_background(self, duration: float) -> VideoFileClip:
         """
-        Get a random background clip of appropriate duration and aspect ratio.
+        Get a background clip of appropriate duration and aspect ratio.
+        Honors self.background_selector (folder or specific file); falls
+        back to random from all backgrounds; finally to a solid color.
         """
-        video_files = [f for f in os.listdir(self.backgrounds_dir) 
-                      if f.lower().endswith(('.mp4', '.mov', '.avi'))]
-        
-        if not video_files:
-            # Create a simple color background if no videos found
+        bg_path = self._pick_background()
+        if not bg_path:
             print("⚠️  No background videos found in 'backgrounds/'. Using solid color.")
             return ColorClip(size=(self.width, self.height), color=(20, 20, 30), duration=duration)
-            
-        bg_path = os.path.join(self.backgrounds_dir, random.choice(video_files))
         
         try:
             clip = VideoFileClip(bg_path)
@@ -1472,10 +1547,8 @@ class VideoGenerator:
             bg_img = None
             if not transparent_bg:
                 # 1. Background — grab a frame from a random background video or use solid
-                video_files = [f for f in os.listdir(self.backgrounds_dir)
-                              if f.lower().endswith(('.mp4', '.mov', '.avi'))]
-                if video_files:
-                    bg_path = os.path.join(self.backgrounds_dir, random.choice(video_files))
+                bg_path = self._pick_background()
+                if bg_path:
                     try:
                         clip = VideoFileClip(bg_path)
                         t = random.uniform(0, max(clip.duration - 1, 0))
@@ -1497,29 +1570,36 @@ class VideoGenerator:
 
             draw = ImageDraw.Draw(bg_img)
 
-            # 2. Load fonts
+            # 2. Load fonts — sized per thumbnail config.
+            tn = getattr(self, 'thumbnail', None) or {}
+            title_px = int(tn.get('title_font_size', 52))
+            uname_px = int(tn.get('username_font_size', 36))
+            meta_px  = max(20, int(uname_px * 0.83))
+            brand_px = max(18, int(uname_px * 0.72))
             try:
-                font_title = ImageFont.truetype("arialbd.ttf", 52)
-                font_sub = ImageFont.truetype("arial.ttf", 36)
-                font_meta = ImageFont.truetype("arial.ttf", 30)
-                font_brand = ImageFont.truetype("arial.ttf", 26)
+                font_title = ImageFont.truetype("arialbd.ttf", title_px)
+                font_sub = ImageFont.truetype("arial.ttf", uname_px)
+                font_meta = ImageFont.truetype("arial.ttf", meta_px)
+                font_brand = ImageFont.truetype("arial.ttf", brand_px)
             except OSError:
                 try:
-                    font_title = ImageFont.truetype("arial.ttf", 52)
+                    font_title = ImageFont.truetype("arial.ttf", title_px)
                 except OSError:
                     font_title = ImageFont.load_default()
                 font_sub = font_title
                 font_meta = font_title
                 font_brand = font_title
 
-            # 3. Measure content to determine dynamic card height
-            card_margin_x = int(w * 0.08)
-            card_w = w - card_margin_x * 2
-            inner_pad = 30
+            # 3. Measure content to determine dynamic card height.
+            # `card_max_width_pct` ∈ (0..1]: card width relative to frame.
+            cmax_pct = float(tn.get('card_max_width_pct', 0.84))
+            card_w = int(w * cmax_pct)
+            card_margin_x = (w - card_w) // 2
+            inner_pad = max(16, int(uname_px * 0.85))
             title_max_w = card_w - inner_pad * 2
 
-            # Subreddit header height
-            icon_r = 24
+            # Subreddit / handle header — icon radius scales with handle font size.
+            icon_r = max(18, int(uname_px * 0.67))
             header_h = icon_r * 2 + 10  # icon + gap
 
             # Title text measurement
@@ -1552,9 +1632,24 @@ class VideoGenerator:
             card_y = (h - card_h) // 2
             card_x = card_margin_x
 
-            # 4. Draw rounded white card
+            # 4. Draw rounded card using configured colors + corner radius.
+            def _hex_to_rgba(hexstr: str, alpha: int = 240) -> tuple:
+                s = (hexstr or "").lstrip("#")
+                if len(s) == 3:
+                    s = "".join(ch * 2 for ch in s)
+                try:
+                    return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16), alpha)
+                except Exception:
+                    return (255, 255, 255, alpha)
+
+            card_fill   = _hex_to_rgba(tn.get('card_bg_color', '#FFFFFF'), 240)
+            title_fill  = _hex_to_rgba(tn.get('text_color',     '#141414'), 255)[:3]
+            uname_fill  = _hex_to_rgba(tn.get('username_color', '#1E1E1E'), 255)[:3]
+            accent_fill = _hex_to_rgba(tn.get('accent_color',   '#FF4500'), 255)[:3]
+            corner_rad  = int(tn.get('corner_radius', 30))
+
             card_rect = [(card_x, card_y), (card_x + card_w, card_y + card_h)]
-            draw.rounded_rectangle(card_rect, radius=30, fill=(255, 255, 255, 240))
+            draw.rounded_rectangle(card_rect, radius=corner_rad, fill=card_fill)
 
             # 5. Profile icon (circular) + display handle.
             #    If a user profile pic is configured, paste it as the icon —
@@ -1586,7 +1681,7 @@ class VideoGenerator:
                 # Stock Reddit alien icon fallback.
                 draw.ellipse(
                     [(icon_x, icon_y), (icon_x + icon_r * 2, icon_y + icon_r * 2)],
-                    fill=(255, 69, 0)
+                    fill=accent_fill
                 )
                 cx, cy = icon_x + icon_r, icon_y + icon_r
                 draw.ellipse([(cx - 8, cy - 6), (cx - 2, cy)], fill='white')
@@ -1605,7 +1700,7 @@ class VideoGenerator:
                 sub_text = f"u/{branding.strip()}"
             else:
                 sub_text = f"r/{subreddit}"
-            draw.text((icon_x + icon_r * 2 + 12, icon_y + 8), sub_text, fill=(30, 30, 30), font=font_sub)
+            draw.text((icon_x + icon_r * 2 + 12, icon_y + 8), sub_text, fill=uname_fill, font=font_sub)
 
             # 6. Part badge (top right of card)
             if total_parts > 1:
@@ -1617,7 +1712,7 @@ class VideoGenerator:
                 badge_y_pos = card_y + inner_pad
                 draw.rounded_rectangle(
                     [(badge_x, badge_y_pos), (badge_x + badge_w, badge_y_pos + badge_h)],
-                    radius=badge_h // 2, fill=(255, 69, 0)
+                    radius=badge_h // 2, fill=accent_fill
                 )
                 draw.text((badge_x + 15, badge_y_pos + 5), badge_text, fill='white', font=font_sub)
 
@@ -1625,7 +1720,7 @@ class VideoGenerator:
             title_y = icon_y + icon_r * 2 + 20
             draw.multiline_text(
                 (card_x + inner_pad, title_y), wrapped,
-                fill=(20, 20, 20), font=font_title, spacing=8
+                fill=title_fill, font=font_title, spacing=8
             )
 
             # 8. Bottom bar — hearts + share count. Off by default now:
@@ -1798,19 +1893,15 @@ class VideoGenerator:
 
             temp_files.append(temp_audio_path)
             
-            # 2. Get Background Video (Pure FFmpeg)
-            print("   Preparing background (Direct FFmpeg)...")
-            video_files = [f for f in os.listdir(self.backgrounds_dir) 
-                          if f.lower().endswith(('.mp4', '.mov', '.avi'))]
-            
-            use_blank_bg = False
-            if not video_files:
+            # 2. Get Background Video (Pure FFmpeg).
+            # Honors self.background_selector — either a specific file, a folder
+            # to pick randomly from, or "" for random across all backgrounds.
+            print(f"   Preparing background (Direct FFmpeg, selector='{self.background_selector or '*'}')...")
+            bg_path = self._pick_background()
+
+            use_blank_bg = bg_path is None
+            if use_blank_bg:
                 print("⚠️  No background videos found — using blank background")
-                use_blank_bg = True
-                bg_path = None
-            else:
-                bg_file = random.choice(video_files)
-                bg_path = os.path.join(self.backgrounds_dir, bg_file)
             
             temp_bg_path = os.path.join(output_dir, "ffmpeg_bg_temp.mp4")
             w = self.width

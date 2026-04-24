@@ -6,7 +6,7 @@ import {
 } from "@/components/ui/command";
 import {
   LayoutDashboard, Newspaper, Film, Settings2, Youtube, Sparkles,
-  Play, PlayCircle, Search, Mic, Type, Image as ImageIcon, RotateCcw,
+  Play, PlayCircle, Search, Mic, Type, Image as ImageIcon, RotateCcw, Images,
 } from "lucide-react";
 import { useVideos } from "@/hooks/use-api";
 import { api } from "@/lib/api";
@@ -124,6 +124,10 @@ function CommandPalette() {
           <CommandItem onSelect={() => go("/videos")}>
             <Film className="h-4 w-4" /> Videos
             <CommandShortcut>g v</CommandShortcut>
+          </CommandItem>
+          <CommandItem onSelect={() => go("/backgrounds")}>
+            <Images className="h-4 w-4" /> Backgrounds
+            <CommandShortcut>g b</CommandShortcut>
           </CommandItem>
           <CommandItem onSelect={() => go("/config")}>
             <Settings2 className="h-4 w-4" /> Configuration

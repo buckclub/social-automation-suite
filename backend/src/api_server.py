@@ -600,7 +600,7 @@ async def lifespan(app: FastAPI):
 
 
 # ── App ──────────────────────────────────────────────────────────────
-app = FastAPI(title="Reddit Video Engine API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Reels Automation API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
@@ -676,6 +676,177 @@ async def delete_profile_pic():
     cfg.setdefault("thumbnail", {})["profile_pic_path"] = ""
     _save_config(cfg)
     return {"cleared": True}
+
+
+# ── Backgrounds library ─────────────────────────────────────────────
+_VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+
+def _backgrounds_root() -> str:
+    d = os.path.join(PROJECT_ROOT, "backgrounds")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+def _safe_bg_path(rel: str) -> str:
+    """Resolve a user-supplied relative path against backgrounds/, rejecting anything that escapes it."""
+    rel = (rel or "").strip().replace("\\", "/").lstrip("/")
+    if rel.startswith("/") or ".." in rel.split("/"):
+        raise HTTPException(400, "Invalid path")
+    root = _backgrounds_root()
+    candidate = os.path.abspath(os.path.join(root, rel))
+    if not candidate.startswith(os.path.abspath(root)):
+        raise HTTPException(400, "Path escapes backgrounds directory")
+    return candidate
+
+
+@app.get("/api/backgrounds")
+async def list_backgrounds(path: str = ""):
+    """List folders + videos inside backgrounds/<path>. Returns breadcrumb + entries."""
+    root = _backgrounds_root()
+    abs_path = _safe_bg_path(path)
+    if not os.path.isdir(abs_path):
+        if abs_path == root:
+            os.makedirs(abs_path, exist_ok=True)
+        else:
+            raise HTTPException(404, f"Folder not found: {path}")
+
+    folders = []
+    videos = []
+    for name in sorted(os.listdir(abs_path)):
+        full = os.path.join(abs_path, name)
+        rel = os.path.relpath(full, root).replace("\\", "/")
+        if os.path.isdir(full):
+            inner_count = 0
+            for r, _, fs in os.walk(full):
+                inner_count += sum(1 for f in fs if f.lower().endswith(_VIDEO_EXTS))
+            folders.append({"name": name, "path": rel, "video_count": inner_count})
+        elif os.path.isfile(full) and name.lower().endswith(_VIDEO_EXTS):
+            try:
+                st = os.stat(full)
+                videos.append({
+                    "name":  name,
+                    "path":  rel,
+                    "size":  st.st_size,
+                    "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                })
+            except OSError:
+                pass
+
+    rel_clean = os.path.relpath(abs_path, root).replace("\\", "/")
+    if rel_clean == ".":
+        rel_clean = ""
+        parent = None
+    else:
+        parent = os.path.dirname(rel_clean).replace("\\", "/") or ""
+
+    return {
+        "path":    rel_clean,
+        "parent":  parent,
+        "folders": folders,
+        "videos":  videos,
+    }
+
+
+@app.post("/api/backgrounds/upload")
+async def upload_background(file: UploadFile = File(...), folder: str = ""):
+    """Upload a video into a (possibly nested) folder under backgrounds/."""
+    name = os.path.basename(file.filename or "")
+    if not name or not name.lower().endswith(_VIDEO_EXTS):
+        raise HTTPException(400, f"Unsupported video format. Allowed: {', '.join(_VIDEO_EXTS)}")
+    target_dir = _safe_bg_path(folder) if folder else _backgrounds_root()
+    os.makedirs(target_dir, exist_ok=True)
+    base, ext = os.path.splitext(name)
+    dest = os.path.join(target_dir, name)
+    idx = 1
+    while os.path.exists(dest):
+        dest = os.path.join(target_dir, f"{base}_{idx}{ext}")
+        idx += 1
+
+    size = 0
+    with open(dest, "wb") as f:
+        while True:
+            chunk = await file.read(1 << 20)   # 1 MB
+            if not chunk:
+                break
+            f.write(chunk)
+            size += len(chunk)
+
+    rel = os.path.relpath(dest, _backgrounds_root()).replace("\\", "/")
+    _log(f"Background uploaded: {rel} ({size/1024/1024:.1f} MB)")
+    return {"saved": True, "path": rel, "size": size}
+
+
+@app.delete("/api/backgrounds")
+async def delete_background(path: str):
+    target = _safe_bg_path(path)
+    if not os.path.isfile(target):
+        raise HTTPException(404, "File not found")
+    if not target.lower().endswith(_VIDEO_EXTS):
+        raise HTTPException(400, "Not a video file")
+    try:
+        os.remove(target)
+    except OSError as e:
+        raise HTTPException(500, f"Couldn't delete: {e}")
+    return {"deleted": True, "path": path}
+
+
+@app.post("/api/backgrounds/folders")
+async def create_background_folder(req: dict):
+    """Body: {path: 'parent/new-folder'}"""
+    rel = (req.get("path") or "").strip()
+    if not rel:
+        raise HTTPException(400, "path is required")
+    target = _safe_bg_path(rel)
+    if os.path.exists(target):
+        raise HTTPException(409, "Already exists")
+    os.makedirs(target, exist_ok=True)
+    return {"created": True, "path": rel}
+
+
+@app.delete("/api/backgrounds/folders")
+async def delete_background_folder(path: str, recursive: bool = False):
+    target = _safe_bg_path(path)
+    if target == _backgrounds_root():
+        raise HTTPException(400, "Can't delete the backgrounds root")
+    if not os.path.isdir(target):
+        raise HTTPException(404, "Folder not found")
+    try:
+        if recursive:
+            shutil.rmtree(target)
+        else:
+            os.rmdir(target)
+    except OSError as e:
+        raise HTTPException(400, f"Couldn't delete folder: {e}")
+    return {"deleted": True, "path": path}
+
+
+@app.get("/api/backgrounds/preview")
+async def background_preview(path: str):
+    """Stream a background video back so the browser can preview it inline."""
+    from fastapi.responses import FileResponse
+    target = _safe_bg_path(path)
+    if not os.path.isfile(target):
+        raise HTTPException(404, "Not found")
+    return FileResponse(target, media_type="video/mp4")
+
+
+@app.get("/api/backgrounds/all-folders")
+async def list_all_folders():
+    """Flat list of every folder (recursive) with a video count — used by the config dropdown."""
+    root = _backgrounds_root()
+    out = [{"path": "", "name": "(All backgrounds — random)", "video_count": 0}]
+    total = 0
+    for r, _, fs in os.walk(root):
+        total += sum(1 for f in fs if f.lower().endswith(_VIDEO_EXTS))
+    out[0]["video_count"] = total
+    for dirpath, _, _ in os.walk(root):
+        rel = os.path.relpath(dirpath, root).replace("\\", "/")
+        if rel == ".":
+            continue
+        inner = 0
+        for r, _, fs in os.walk(dirpath):
+            inner += sum(1 for f in fs if f.lower().endswith(_VIDEO_EXTS))
+        out.append({"path": rel, "name": rel, "video_count": inner})
+    return {"folders": out}
 
 
 # ── Run queue ───────────────────────────────────────────────────────
@@ -1714,6 +1885,7 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
 
         from video_generator import VideoGenerator
         video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
+        video_gen.set_background_selector((config.get("video", {}) or {}).get("background_selector", ""))
         output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
         # Load post metadata for title card rendering during resume.
@@ -2474,6 +2646,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
             try:
                 from video_generator import VideoGenerator
                 video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
+                video_gen.set_background_selector((config.get("video", {}) or {}).get("background_selector", ""))
                 output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
                 if video_mode == "short_reel":
@@ -2672,6 +2845,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                 from video_generator import VideoGenerator
                 if 'video_gen' not in dir():
                     video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
+                video_gen.set_background_selector((config.get("video", {}) or {}).get("background_selector", ""))
                 branding = config.get("video", {}).get("branding", "")
                 p_title = pipeline_state.get("current_post", {}).get("title", title) if pipeline_state.get("current_post") else title
                 p_sub = pipeline_state.get("current_post", {}).get("subreddit", "") if pipeline_state.get("current_post") else ""

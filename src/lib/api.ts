@@ -1,5 +1,5 @@
 /**
- * Reddit Video Engine - API client
+ * Reels Automation - API client
  * Author: Faheem Alvi <faheemalvi2000@gmail.com>
  * GitHub: https://github.com/FaheemAlvii
  * License: CC BY-NC 4.0
@@ -362,6 +362,62 @@ export const api = {
       voices: { voice_id: string; name: string; category?: string; description?: string; labels?: Record<string, string>; preview_url?: string }[];
       error?: string;
     }>("/api/tts/elevenlabs/voices"),
+
+  // Backgrounds library
+  listBackgrounds: (path = "") =>
+    request<{
+      path: string;
+      parent: string | null;
+      folders: { name: string; path: string; video_count: number }[];
+      videos:  { name: string; path: string; size: number; mtime: string }[];
+    }>(`/api/backgrounds?path=${encodeURIComponent(path)}`),
+  listBackgroundFolders: () =>
+    request<{ folders: { path: string; name: string; video_count: number }[] }>(
+      "/api/backgrounds/all-folders",
+    ),
+  uploadBackground: (file: File, folder = "", onProgress?: (pct: number) => void) =>
+    new Promise<{ saved: boolean; path: string; size: number }>((resolve, reject) => {
+      const form = new FormData();
+      form.append("file", file);
+      if (folder) form.append("folder", folder);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/api/backgrounds/upload`);
+      xhr.upload.onprogress = (e) => {
+        if (onProgress && e.lengthComputable) onProgress(e.loaded / e.total);
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); }
+          catch { reject(new Error("Bad upload response")); }
+        } else {
+          try {
+            const j = JSON.parse(xhr.responseText);
+            reject(new Error(j.detail || xhr.statusText));
+          } catch {
+            reject(new Error(xhr.statusText || "Upload failed"));
+          }
+        }
+      };
+      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.send(form);
+    }),
+  deleteBackground: (path: string) =>
+    request<{ deleted: boolean; path: string }>(
+      `/api/backgrounds?path=${encodeURIComponent(path)}`,
+      { method: "DELETE" },
+    ),
+  createBackgroundFolder: (path: string) =>
+    request<{ created: boolean; path: string }>("/api/backgrounds/folders", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+  deleteBackgroundFolder: (path: string, recursive = false) =>
+    request<{ deleted: boolean; path: string }>(
+      `/api/backgrounds/folders?path=${encodeURIComponent(path)}&recursive=${recursive ? "true" : "false"}`,
+      { method: "DELETE" },
+    ),
+  backgroundPreviewUrl: (path: string) =>
+    `${API_BASE}/api/backgrounds/preview?path=${encodeURIComponent(path)}`,
 
   // Branding / title-card profile pic
   uploadProfilePic: (file: File) => {

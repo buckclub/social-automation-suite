@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Video, LayoutDashboard, Newspaper, Settings2, Film, Command } from "lucide-react";
+import { Video, LayoutDashboard, Newspaper, Settings2, Film, Command, Images } from "lucide-react";
 import { useHealth } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
 import { CommandPaletteProvider, useCommandPalette } from "@/components/CommandPalette";
@@ -10,6 +10,7 @@ const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/posts", label: "Posts", icon: Newspaper },
   { to: "/videos", label: "Videos", icon: Film },
+  { to: "/backgrounds", label: "Backgrounds", icon: Images },
   { to: "/config", label: "Configuration", icon: Settings2 },
 ];
 
@@ -38,8 +39,8 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
                 <Video className="h-4 w-4 text-primary" />
               </div>
               <h1 className="text-lg font-bold tracking-tight">
-                <span className="text-gradient">Reddit</span>
-                <span className="text-foreground"> Video Engine</span>
+                <span className="text-gradient">Reels</span>
+                <span className="text-foreground"> Automation</span>
               </h1>
             </NavLink>
 

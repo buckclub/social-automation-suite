@@ -1,5 +1,5 @@
 /**
- * Reddit Video Engine
+ * Reels Automation
  * Author: Faheem Alvi <faheemalvi2000@gmail.com>
  * GitHub: https://github.com/FaheemAlvii
  * LinkedIn: https://www.linkedin.com/in/faheem-alvi

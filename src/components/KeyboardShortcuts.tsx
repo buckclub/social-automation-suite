@@ -45,10 +45,11 @@ export function KeyboardShortcuts() {
       if (pending) {
         gPendingUntil.current = 0;
         switch (e.key.toLowerCase()) {
-          case "h": nav("/");         e.preventDefault(); return;
-          case "p": nav("/posts");    e.preventDefault(); return;
-          case "v": nav("/videos");   e.preventDefault(); return;
-          case "c": nav("/config");   e.preventDefault(); return;
+          case "h": nav("/");            e.preventDefault(); return;
+          case "p": nav("/posts");       e.preventDefault(); return;
+          case "v": nav("/videos");      e.preventDefault(); return;
+          case "b": nav("/backgrounds"); e.preventDefault(); return;
+          case "c": nav("/config");      e.preventDefault(); return;
           default: return;
         }
       }
@@ -98,6 +99,7 @@ export function KeyboardShortcuts() {
           <Row keys={["g", "h"]} label="Go to Dashboard" />
           <Row keys={["g", "p"]} label="Go to Posts" />
           <Row keys={["g", "v"]} label="Go to Videos" />
+          <Row keys={["g", "b"]} label="Go to Backgrounds" />
           <Row keys={["g", "c"]} label="Go to Config" />
           <Row keys={["/"]} label="Focus search / filter input" />
           <Row keys={["?"]} label="This cheatsheet" />

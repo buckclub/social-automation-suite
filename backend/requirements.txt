@@ -1,4 +1,4 @@
-# Reddit Video Engine - Python dependencies
+# Reels Automation - Python dependencies
 # Author: Faheem Alvi <faheemalvi2000@gmail.com>
 # Install with: pip install -r backend/requirements.txt
 

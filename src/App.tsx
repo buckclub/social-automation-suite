@@ -1,5 +1,5 @@
 /**
- * Reddit Video Engine
+ * Reels Automation
  * Author: Faheem Alvi <faheemalvi2000@gmail.com>
  * GitHub: https://github.com/FaheemAlvii
  * LinkedIn: https://www.linkedin.com/in/faheem-alvi
@@ -14,6 +14,7 @@ import { AppLayout } from "@/components/AppLayout";
 import Index from "./pages/Index";
 import PostsPage from "./pages/PostsPage";
 import VideosPage from "./pages/VideosPage";
+import BackgroundsPage from "./pages/BackgroundsPage";
 import ConfigPage from "./pages/ConfigPage";
 import NotFound from "./pages/NotFound";
 
@@ -30,6 +31,7 @@ const App = () => (
             <Route path="/" element={<Index />} />
             <Route path="/posts" element={<PostsPage />} />
             <Route path="/videos" element={<VideosPage />} />
+            <Route path="/backgrounds" element={<BackgroundsPage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

@@ -1,4 +1,4 @@
-# Reddit Video Engine — ReelsAutomation Fork
+# Reels Automation
 
 Open source tool to generate vertical short videos from Reddit posts or AI generated scripts. Renders with FFmpeg, narrates with TTS, and can publish to YouTube Shorts, TikTok, Instagram Reels, and Snapchat Spotlight.
 
@@ -162,7 +162,7 @@ wmic computersystem set AutomaticManagedPagefile=True
 
 ## What it does
 
-Reddit Video Engine fetches content from Reddit or generates original scripts using a configured AI provider, converts the text to speech, and renders a vertical 1080x1920 short video with synchronized subtitles and a background clip. It includes a web dashboard, a CLI for terminals (including A-Shell on iOS), and a desktop build for Windows.
+Reels Automation fetches content from Reddit or generates original scripts using a configured AI provider, converts the text to speech, and renders a vertical 1080x1920 short video with synchronized subtitles and a background clip. It includes a web dashboard, a CLI for terminals (including A-Shell on iOS), and a desktop build for Windows.
 
 ## Features
 
@@ -506,7 +506,7 @@ README.md
 
 ## FAQ
 
-### How do I run Reddit Video Engine locally?
+### How do I run Reels Automation locally?
 
 Install Node 20, pnpm, Python 3.11, and FFmpeg. Run `pnpm install && pnpm dev` for the frontend and `pip install -r backend/requirements.txt && uvicorn api_server:app --app-dir backend/src --reload` for the backend.
 

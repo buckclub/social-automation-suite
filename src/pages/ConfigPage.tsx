@@ -231,10 +231,28 @@ export default function ConfigPage() {
   // YouTube benchmark API (for social copy style references)
   const [youtubeApiKey, setYoutubeApiKey] = useState("");
 
-  // Title-card branding (avatar + username + hide stats)
+  // Title-card branding (avatar + username + hide stats + visual knobs)
   const [tnUsername, setTnUsername] = useState("");
   const [tnHideStats, setTnHideStats] = useState(true);
   const [tnProfilePicPath, setTnProfilePicPath] = useState("");
+  const [tnCardBgColor, setTnCardBgColor] = useState("#FFFFFF");
+  const [tnTextColor, setTnTextColor] = useState("#141414");
+  const [tnUsernameColor, setTnUsernameColor] = useState("#1E1E1E");
+  const [tnAccentColor, setTnAccentColor] = useState("#FF4500");
+  const [tnCornerRadius, setTnCornerRadius] = useState(30);
+  const [tnCardMaxWidthPct, setTnCardMaxWidthPct] = useState(0.84);
+  const [tnTitleFontSize, setTnTitleFontSize] = useState(52);
+  const [tnUsernameFontSize, setTnUsernameFontSize] = useState(36);
+
+  // Default background selector (video.background_selector)
+  const [videoBgSelector, setVideoBgSelector] = useState<string>("");
+  const [bgFolders, setBgFolders] = useState<{ path: string; name: string; video_count: number }[]>([]);
+  useEffect(() => {
+    // Live-pull folder list so the dropdown reflects what's in backgrounds/ right now.
+    api.listBackgroundFolders()
+      .then((r) => setBgFolders(r.folders))
+      .catch(() => setBgFolders([{ path: "", name: "(All backgrounds — random)", video_count: 0 }]));
+  }, []);
 
   const [initialLoaded, setInitialLoaded] = useState(false);
   type TabId = "general" | "formatting" | "tts" | "video" | "captions" | "ai" | "publishing" | "output";
@@ -376,6 +394,16 @@ export default function ConfigPage() {
     setTnUsername(tn.username ?? "");
     setTnHideStats(tn.hide_stats ?? true);
     setTnProfilePicPath(tn.profile_pic_path ?? "");
+    setTnCardBgColor(tn.card_bg_color ?? "#FFFFFF");
+    setTnTextColor(tn.text_color ?? "#141414");
+    setTnUsernameColor(tn.username_color ?? "#1E1E1E");
+    setTnAccentColor(tn.accent_color ?? "#FF4500");
+    setTnCornerRadius(tn.corner_radius ?? 30);
+    setTnCardMaxWidthPct(tn.card_max_width_pct ?? 0.84);
+    setTnTitleFontSize(tn.title_font_size ?? 52);
+    setTnUsernameFontSize(tn.username_font_size ?? 36);
+
+    setVideoBgSelector(((c as any).video ?? {}).background_selector ?? "");
 
     setInitialLoaded(true);
   }, [config, initialLoaded]);
@@ -401,6 +429,9 @@ export default function ConfigPage() {
     ollamaUrl, ollamaModels, nvidiaNimModels,
     youtubeApiKey,
     tnUsername, tnHideStats, tnProfilePicPath,
+    tnCardBgColor, tnTextColor, tnUsernameColor, tnAccentColor,
+    tnCornerRadius, tnCardMaxWidthPct, tnTitleFontSize, tnUsernameFontSize,
+    videoBgSelector,
     capEnabled, capFontPath, capFontSize, capColor, capStrokeColor, capStrokeWidth,
     capBgEnabled, capBgColor, capBgOpacity, capPadding, capCornerRadius,
     capMaxWidthPct, capPosition, capPositionOffset, capWordsPerCaption,
@@ -527,6 +558,7 @@ export default function ConfigPage() {
           split_duration: splitDuration,
           outro_text: outroText,
           branding,
+          background_selector: videoBgSelector,
         },
         captions: {
           enabled: capEnabled,
@@ -587,6 +619,14 @@ export default function ConfigPage() {
           profile_pic_path: tnProfilePicPath,
           username: tnUsername,
           hide_stats: tnHideStats,
+          card_bg_color: tnCardBgColor,
+          text_color: tnTextColor,
+          username_color: tnUsernameColor,
+          accent_color: tnAccentColor,
+          corner_radius: tnCornerRadius,
+          card_max_width_pct: tnCardMaxWidthPct,
+          title_font_size: tnTitleFontSize,
+          username_font_size: tnUsernameFontSize,
         },
       },
       {
@@ -1360,6 +1400,31 @@ export default function ConfigPage() {
           </div>
           <Separator />
           <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Default Background</Label>
+            <Select value={videoBgSelector || "__all__"} onValueChange={(v) => setVideoBgSelector(v === "__all__" ? "" : v)}>
+              <SelectTrigger className="h-8 text-xs bg-secondary border-border">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="max-h-[320px]">
+                <SelectItem value="__all__">
+                  🎲 All backgrounds — random
+                  {bgFolders[0]?.video_count ? <span className="text-muted-foreground ml-1"> ({bgFolders[0].video_count} videos)</span> : null}
+                </SelectItem>
+                {bgFolders.slice(1).map((f) => (
+                  <SelectItem key={f.path} value={f.path}>
+                    📁 {f.name} <span className="text-muted-foreground">({f.video_count})</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[10px] text-muted-foreground">
+              Picks the footage layer under your story audio. Leave on "random" to vary each render,
+              or target a specific folder (e.g. your Minecraft parkour set). Manage clips in the
+              <a href="#/backgrounds" className="text-primary hover:underline ml-1">Backgrounds</a> page.
+            </p>
+          </div>
+          <Separator />
+          <div className="space-y-1">
             <Label className="text-xs text-muted-foreground">Branding Watermark</Label>
             <Input value={branding} onChange={(e) => setBranding(e.target.value)} placeholder="e.g. @yourhandle or YourChannel" className="h-8 text-xs bg-secondary border-border" />
             <p className="text-[10px] text-muted-foreground">Shown on thumbnails to prevent uncredited copying. Leave blank to disable.</p>
@@ -1368,12 +1433,17 @@ export default function ConfigPage() {
 
         <Section title="Title Card" icon={<Type className="h-4 w-4 text-accent" />}>
           <TitleCardSettings
-            username={tnUsername}
-            onUsernameChange={setTnUsername}
-            hideStats={tnHideStats}
-            onHideStatsChange={setTnHideStats}
-            profilePicPath={tnProfilePicPath}
-            onProfilePicChange={setTnProfilePicPath}
+            username={tnUsername}                       onUsernameChange={setTnUsername}
+            hideStats={tnHideStats}                     onHideStatsChange={setTnHideStats}
+            profilePicPath={tnProfilePicPath}           onProfilePicChange={setTnProfilePicPath}
+            cardBgColor={tnCardBgColor}                 onCardBgColorChange={setTnCardBgColor}
+            textColor={tnTextColor}                     onTextColorChange={setTnTextColor}
+            usernameColor={tnUsernameColor}             onUsernameColorChange={setTnUsernameColor}
+            accentColor={tnAccentColor}                 onAccentColorChange={setTnAccentColor}
+            cornerRadius={tnCornerRadius}               onCornerRadiusChange={setTnCornerRadius}
+            cardMaxWidthPct={tnCardMaxWidthPct}         onCardMaxWidthPctChange={setTnCardMaxWidthPct}
+            titleFontSize={tnTitleFontSize}             onTitleFontSizeChange={setTnTitleFontSize}
+            usernameFontSize={tnUsernameFontSize}       onUsernameFontSizeChange={setTnUsernameFontSize}
           />
         </Section>
         </div>
