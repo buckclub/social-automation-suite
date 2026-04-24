@@ -1,6 +1,6 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  Sparkles, ArrowRight, ArrowLeft, Loader2, AlertTriangle,
+  Sparkles, ArrowRight, ArrowLeft, Loader2, AlertTriangle, RefreshCw,
   Film, Scissors, Mic, MicOff, BookOpen, MessageSquare,
   Gamepad2, Flame, HandMetal, HelpCircle, Star, Brain, Images, User, Shuffle,
   Shield, ShieldAlert, ShieldOff, Users,
@@ -124,11 +124,20 @@ export function GenerateWithAIDialog() {
   const [newPresetName, setNewPresetName] = useState("");
   const [presetNameInputOpen, setPresetNameInputOpen] = useState(false);
 
-  // Variants: batch-generate N candidates, pick one before running pipeline
-  const [generateVariantsMode, setGenerateVariantsMode] = useState(false);
+  // Script-review screen — always shown after Generate. The user can:
+  //   * Approve one (and Run) → fires the single pipeline immediately.
+  //   * Approve multiple (when count > 1) → enqueues them all on the run queue.
+  //   * Regenerate one card to swap just that candidate.
+  //   * Regenerate all to refresh the whole batch.
+  // `candidateCount` = how many candidates to fetch on the next generate
+  // (1 = single review, 2+ = multi-pick batch).
+  const [candidateCount, setCandidateCount] = useState(1);
   const [variantsLoading, setVariantsLoading] = useState(false);
   const [variants, setVariants] = useState<Array<Record<string, unknown>>>([]);
-  const [pickedVariantIdx, setPickedVariantIdx] = useState<number | null>(null);
+  const [approvedSet, setApprovedSet] = useState<Set<number>>(new Set());
+  const [expandedSet, setExpandedSet] = useState<Set<number>>(new Set());
+  const [regeneratingIdx, setRegeneratingIdx] = useState<number | null>(null);
+  const [regeneratingAll, setRegeneratingAll] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
@@ -303,16 +312,13 @@ export function GenerateWithAIDialog() {
     }
   };
 
-  const handleSubmit = async () => {
-    if (!generateVariantsMode) {
-      await startPipeline();
-      return;
-    }
-
-    // Variants flow: fetch 3 candidates, show picker
+  // Fetch `candidateCount` candidates and open the review screen. Used both
+  // for the initial Generate click and the "Regenerate all" button.
+  const fetchCandidates = async (n: number) => {
     setVariantsLoading(true);
     setShowPicker(true);
-    setPickedVariantIdx(null);
+    setApprovedSet(new Set());
+    setExpandedSet(new Set());
     setVariants([]);
     try {
       const res = await api.generateAIVariants({
@@ -323,26 +329,146 @@ export function GenerateWithAIDialog() {
         content_filter: contentFilter,
         target_audience: targetAudience.trim() || undefined,
         tone,
-        count: 3,
+        count: n,
       });
       setVariants(res.variants);
+      // When there's only one candidate, auto-approve it so the user
+      // can hit Run with one click — but we still show the script first.
+      if (res.variants.length === 1) setApprovedSet(new Set([0]));
     } catch (e: any) {
-      toast({ title: "Variant generation failed", description: e?.message, variant: "destructive" });
+      toast({ title: "Generation failed", description: e?.message, variant: "destructive" });
       setShowPicker(false);
     } finally {
       setVariantsLoading(false);
     }
   };
 
-  const confirmPickedVariant = async () => {
-    if (pickedVariantIdx == null) return;
-    const picked = variants[pickedVariantIdx];
-    // Honor a custom title override if the user set one — replace the variant's title
-    if (customTitle.trim()) {
-      (picked as any).title = customTitle.trim();
+  const handleSubmit = async () => {
+    await fetchCandidates(candidateCount);
+  };
+
+  // Replace just one card in the review screen with a fresh generation.
+  // Triggered by the per-card 🔄 button.
+  const regenerateOne = async (idx: number) => {
+    setRegeneratingIdx(idx);
+    try {
+      const res = await api.generateAIVariants({
+        content_style: contentStyle,
+        niche,
+        custom_topic: customTopic || undefined,
+        interactive_format: contentStyle === "interactive" ? interactiveFormat : undefined,
+        content_filter: contentFilter,
+        target_audience: targetAudience.trim() || undefined,
+        tone,
+        count: 1,
+      });
+      const fresh = res.variants[0];
+      if (!fresh) throw new Error("Empty result");
+      setVariants((arr) => arr.map((v, i) => (i === idx ? fresh : v)));
+      // Replacing a card invalidates any prior approval on that slot.
+      setApprovedSet((s) => {
+        const next = new Set(s);
+        next.delete(idx);
+        return next;
+      });
+      setExpandedSet((s) => {
+        const next = new Set(s);
+        next.delete(idx);
+        return next;
+      });
+    } catch (e: any) {
+      toast({ title: "Regenerate failed", description: e?.message, variant: "destructive" });
+    } finally {
+      setRegeneratingIdx(null);
     }
-    setShowPicker(false);
-    await startPipeline(picked);
+  };
+
+  const regenerateAll = async () => {
+    setRegeneratingAll(true);
+    try {
+      await fetchCandidates(variants.length || candidateCount);
+    } finally {
+      setRegeneratingAll(false);
+    }
+  };
+
+  // Run every approved variant. 1 → fires the pipeline immediately
+  // (existing path); 2+ → enqueues them all on the run queue.
+  const runApproved = async () => {
+    const indices = Array.from(approvedSet).sort((a, b) => a - b);
+    if (indices.length === 0) {
+      toast({ title: "Nothing approved yet", description: "Tick at least one card." });
+      return;
+    }
+    const picks = indices.map((i) => {
+      const v = { ...variants[i] };
+      // Custom title applies to whichever variant is run; for batch, only
+      // the first picked uses it (otherwise every clip ships with the
+      // same title which is rarely what you want).
+      if (i === indices[0] && customTitle.trim()) {
+        (v as any).title = customTitle.trim();
+      }
+      return v;
+    });
+
+    if (picks.length === 1) {
+      setShowPicker(false);
+      await startPipeline(picks[0]);
+      return;
+    }
+
+    // Multi-approve → batch enqueue.
+    setSubmitting(true);
+    try {
+      const res = await api.batchRunAI({
+        items: picks.map((preselected) => ({
+          preselected_content: preselected,
+          content_style: contentStyle,
+          niche,
+          content_filter: contentFilter,
+          target_audience: targetAudience.trim() || undefined,
+          tone,
+          video_mode: videoMode,
+          tts_enabled: ttsEnabled,
+          narrator_gender: narratorGender,
+          voice_override: voiceOverride === "__config__" ? undefined : voiceOverride,
+          background_selector:
+            bgSelector === "__config__" ? undefined :
+            bgSelector === "__all_random__" ? "" : bgSelector,
+        })),
+      });
+      toast({
+        title: `Queued ${res.count} run${res.count === 1 ? "" : "s"}`,
+        description: res.failures?.length
+          ? `${res.failures.length} failed to enqueue — check the run queue.`
+          : "The run queue worker will process them serially.",
+      });
+      qc.invalidateQueries({ queryKey: ["pipeline"] });
+      qc.invalidateQueries({ queryKey: ["queue"] });
+      setOpen(false);
+      resetForm();
+    } catch (e: any) {
+      toast({ title: "Batch enqueue failed", description: e.message, variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const toggleApprove = (idx: number) => {
+    setApprovedSet((s) => {
+      const next = new Set(s);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
+  const toggleExpand = (idx: number) => {
+    setExpandedSet((s) => {
+      const next = new Set(s);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
   };
 
   const resetForm = () => {
@@ -361,93 +487,194 @@ export function GenerateWithAIDialog() {
     setTargetAudience("");
     setTone("dramatic");
     setLoadedPresetName(null);
-    setGenerateVariantsMode(false);
+    setCandidateCount(1);
     setShowPicker(false);
     setVariants([]);
-    setPickedVariantIdx(null);
+    setApprovedSet(new Set());
+    setExpandedSet(new Set());
+    setRegeneratingIdx(null);
+    setRegeneratingAll(false);
     setNewPresetName("");
     setPresetNameInputOpen(false);
   };
 
-  const renderVariantsPicker = () => {
-    const describeVariant = (v: Record<string, unknown>): string => {
-      if (contentStyle === "qa") {
-        const comments = (v.comments as Array<{ body?: string }> | undefined) ?? [];
-        const first = comments.slice(0, 2).map((c) => c.body || "").filter(Boolean);
-        return first.join(" • ") || (v.question as string) || "";
+  // Pretty-print the variant body for the review screen. Each style has
+  // its own shape (story body, qa comments, interactive segments) so we
+  // join them into one flowing block of text the user can actually read.
+  const formatFullScript = (v: Record<string, unknown>): string => {
+    if (contentStyle === "qa") {
+      const q = (v.question as string) || (v.title as string) || "";
+      const comments = (v.comments as Array<{ author?: string; body?: string; score?: number }> | undefined) ?? [];
+      const lines = [`Q: ${q}`, ""];
+      for (const c of comments) {
+        const author = c.author || "anon";
+        const score = c.score ? ` (${c.score})` : "";
+        lines.push(`${author}${score}: ${c.body || ""}`);
       }
-      if (contentStyle === "interactive") {
-        const segs = (v.segments as Array<{ text?: string }> | undefined) ?? [];
-        return segs.slice(0, 2).map((s) => s.text || "").filter(Boolean).join(" · ");
-      }
-      return ((v.body as string) || "").slice(0, 260);
-    };
+      return lines.join("\n").trim();
+    }
+    if (contentStyle === "interactive") {
+      const segs = (v.segments as Array<{ text?: string; pause_seconds?: number }> | undefined) ?? [];
+      return segs
+        .map((s) => {
+          const pause = s.pause_seconds ? `\n  ⏸ ${s.pause_seconds}s pause` : "";
+          return `${s.text || ""}${pause}`;
+        })
+        .join("\n\n").trim();
+    }
+    return ((v.body as string) || "").trim();
+  };
 
+  // Single-line summary for the collapsed card view.
+  const summarizeVariant = (v: Record<string, unknown>): string => {
+    if (contentStyle === "qa") {
+      const comments = (v.comments as Array<{ body?: string }> | undefined) ?? [];
+      const first = comments.slice(0, 2).map((c) => c.body || "").filter(Boolean);
+      return first.join(" • ") || (v.question as string) || "";
+    }
+    if (contentStyle === "interactive") {
+      const segs = (v.segments as Array<{ text?: string }> | undefined) ?? [];
+      return segs.slice(0, 2).map((s) => s.text || "").filter(Boolean).join(" · ");
+    }
+    return ((v.body as string) || "").slice(0, 260);
+  };
+
+  const renderScriptReview = () => {
+    const approvedCount = approvedSet.size;
+    const isMulti = variants.length > 1;
     return (
       <div className="space-y-3">
-        <Label className="text-xs text-muted-foreground uppercase tracking-wider">
-          Pick a variant
-        </Label>
+        <div>
+          <Label className="text-xs text-muted-foreground uppercase tracking-wider">
+            {variants.length > 1
+              ? `Review ${variants.length} candidates`
+              : "Review your script"}
+          </Label>
+          <p className="text-[10px] text-muted-foreground leading-snug mt-1">
+            Read it through, regenerate any cards you don't like, then
+            {isMulti ? " tick the ones you want to keep and Run." : " hit Run."}
+            {isMulti && " Multi-pick queues each as its own pipeline run."}
+          </p>
+        </div>
 
         {variantsLoading && (
           <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
             <Loader2 className="h-6 w-6 animate-spin" />
-            <p className="text-[11px]">Generating 3 variants in parallel…</p>
-            {aiProvider !== "ollama" && (
-              <p className="text-[10px] opacity-70">Using ~3× the provider tokens of a normal run.</p>
+            <p className="text-[11px]">
+              {variants.length > 0
+                ? `Regenerating ${variants.length} candidate${variants.length === 1 ? "" : "s"}…`
+                : `Generating ${candidateCount} candidate${candidateCount === 1 ? "" : "s"} in parallel…`}
+            </p>
+            {aiProvider !== "ollama" && candidateCount > 1 && (
+              <p className="text-[10px] opacity-70">
+                Uses ~{candidateCount}× the provider tokens of a normal run.
+              </p>
             )}
           </div>
         )}
 
         {!variantsLoading && variants.length > 0 && (
           <>
-            <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
-              {variants.map((v, i) => (
-                <button
-                  key={i}
-                  onClick={() => setPickedVariantIdx(i)}
-                  className={cn(
-                    "w-full text-left p-3 rounded-lg border transition-all",
-                    pickedVariantIdx === i
-                      ? "border-primary bg-primary/10"
-                      : "border-border bg-secondary/40 hover:border-primary/30"
-                  )}
-                >
-                  <div className="flex items-start gap-2">
-                    <div className={cn(
-                      "h-4 w-4 shrink-0 rounded-full border flex items-center justify-center mt-0.5",
-                      pickedVariantIdx === i ? "border-primary bg-primary" : "border-border"
-                    )}>
-                      {pickedVariantIdx === i && <Check className="h-2.5 w-2.5 text-primary-foreground" />}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[11px] font-semibold leading-snug mb-1 line-clamp-2">
-                        {(v.title as string) || `Variant ${i + 1}`}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground leading-snug line-clamp-4">
-                        {describeVariant(v)}
-                      </p>
+            <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
+              {variants.map((v, i) => {
+                const approved = approvedSet.has(i);
+                const expanded = expandedSet.has(i);
+                const regenThis = regeneratingIdx === i;
+                return (
+                  <div
+                    key={i}
+                    className={cn(
+                      "w-full p-3 rounded-lg border transition-all",
+                      approved
+                        ? "border-primary bg-primary/10"
+                        : "border-border bg-secondary/40",
+                    )}
+                  >
+                    <div className="flex items-start gap-2">
+                      {/* Approve checkbox (always visible — single mode auto-approves but lets user un-tick) */}
+                      <button
+                        onClick={() => toggleApprove(i)}
+                        className={cn(
+                          "h-4 w-4 shrink-0 rounded border flex items-center justify-center mt-0.5",
+                          approved ? "border-primary bg-primary" : "border-border hover:border-primary/50",
+                        )}
+                        title={approved ? "Approved — click to un-approve" : "Click to approve"}
+                      >
+                        {approved && <Check className="h-2.5 w-2.5 text-primary-foreground" />}
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <p className="text-[11px] font-semibold leading-snug line-clamp-2 flex-1">
+                            {(v.title as string) || `Variant ${i + 1}`}
+                          </p>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <Button
+                              size="sm" variant="ghost"
+                              className="h-6 w-6 p-0"
+                              onClick={() => regenerateOne(i)}
+                              disabled={regenThis || regeneratingAll}
+                              title="Regenerate just this candidate"
+                            >
+                              {regenThis
+                                ? <Loader2 className="h-3 w-3 animate-spin" />
+                                : <RefreshCw className="h-3 w-3" />}
+                            </Button>
+                          </div>
+                        </div>
+                        <p
+                          className={cn(
+                            "text-[10px] leading-snug whitespace-pre-wrap",
+                            expanded ? "text-foreground" : "text-muted-foreground line-clamp-4",
+                          )}
+                        >
+                          {expanded ? formatFullScript(v) : summarizeVariant(v)}
+                        </p>
+                        <button
+                          onClick={() => toggleExpand(i)}
+                          className="mt-1 text-[9px] text-primary hover:underline"
+                        >
+                          {expanded ? "Collapse" : "Read full script"}
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </button>
-              ))}
+                );
+              })}
             </div>
 
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2">
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => { setShowPicker(false); setVariants([]); setApprovedSet(new Set()); }}
+                  className="flex-1 gap-2"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" /> Back
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={regenerateAll}
+                  disabled={regeneratingAll || regeneratingIdx !== null || submitting}
+                  className="flex-1 gap-2"
+                  title="Regenerate every candidate from scratch"
+                >
+                  {regeneratingAll
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <RefreshCw className="h-3.5 w-3.5" />}
+                  Regenerate all
+                </Button>
+              </div>
               <Button
-                variant="outline"
-                onClick={() => { setShowPicker(false); setVariants([]); setPickedVariantIdx(null); }}
-                className="flex-1 gap-2"
-              >
-                <ArrowLeft className="h-3.5 w-3.5" /> Back
-              </Button>
-              <Button
-                onClick={confirmPickedVariant}
-                disabled={pickedVariantIdx == null || submitting}
-                className="flex-1 gap-2 glow-accent"
+                onClick={runApproved}
+                disabled={approvedCount === 0 || submitting || regeneratingAll || regeneratingIdx !== null}
+                className="w-full gap-2 glow-accent"
               >
                 {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                Use this one
+                {approvedCount === 0
+                  ? "Approve at least one"
+                  : approvedCount === 1
+                    ? "Run approved"
+                    : `Queue ${approvedCount} approved runs`}
               </Button>
             </div>
           </>
@@ -867,27 +1094,35 @@ export function GenerateWithAIDialog() {
           </div>
 
           <div className="space-y-1">
-            <div className="flex items-center justify-between p-2.5 rounded-lg border border-border bg-secondary/30">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-3.5 w-3.5 text-accent" />
-                <div>
-                  <p className="text-[11px] font-medium">Generate 3 variants</p>
-                  <p className="text-[10px] text-muted-foreground">Pick the best one before running the pipeline</p>
+            <div className="flex items-center justify-between p-2.5 rounded-lg border border-border bg-secondary/30 gap-3">
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <Sparkles className="h-3.5 w-3.5 text-accent shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-[11px] font-medium">How many candidates to generate?</p>
+                  <p className="text-[10px] text-muted-foreground leading-snug">
+                    You'll review every script before anything renders. Pick more
+                    than one to compare or queue several runs at once.
+                  </p>
                 </div>
               </div>
-              <Button
-                size="sm"
-                variant={generateVariantsMode ? "default" : "outline"}
-                onClick={() => setGenerateVariantsMode((v) => !v)}
-                className="h-7 text-xs"
-              >
-                {generateVariantsMode ? "On" : "Off"}
-              </Button>
+              <div className="flex items-center gap-1 shrink-0">
+                {[1, 2, 3, 5].map((n) => (
+                  <Button
+                    key={n}
+                    size="sm"
+                    variant={candidateCount === n ? "default" : "outline"}
+                    onClick={() => setCandidateCount(n)}
+                    className="h-7 w-7 p-0 text-xs"
+                  >
+                    {n}
+                  </Button>
+                ))}
+              </div>
             </div>
-            {generateVariantsMode && aiProvider !== "ollama" && (
+            {candidateCount > 1 && aiProvider !== "ollama" && (
               <p className="text-[10px] text-amber-400/90 flex items-center gap-1 px-1">
                 <AlertTriangle className="h-3 w-3" />
-                Uses ~3× the provider tokens of a normal run ({aiProvider}).
+                Uses ~{candidateCount}× the provider tokens of a normal run ({aiProvider}).
               </p>
             )}
           </div>
@@ -930,7 +1165,8 @@ export function GenerateWithAIDialog() {
           </div>
 
           <p className="text-[10px] text-muted-foreground text-center">
-            AI will generate original content using your configured provider, then run the full pipeline with these overrides.
+            AI will generate original content using your configured provider.
+            Nothing renders until you approve the script on the next screen.
           </p>
 
           <div className="flex gap-2">
@@ -941,7 +1177,7 @@ export function GenerateWithAIDialog() {
               {(submitting || variantsLoading)
                 ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 : <Sparkles className="h-3.5 w-3.5" />}
-              {generateVariantsMode ? "Generate 3 options" : "Generate"}
+              Generate {candidateCount > 1 ? `${candidateCount} candidates` : "script"}
             </Button>
           </div>
         </div>
@@ -985,7 +1221,7 @@ export function GenerateWithAIDialog() {
           </div>
         )}
         <DialogErrorBoundary>
-          {showPicker ? renderVariantsPicker() : renderStep()}
+          {showPicker ? renderScriptReview() : renderStep()}
         </DialogErrorBoundary>
       </DialogContent>
     </Dialog>

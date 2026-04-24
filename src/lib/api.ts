@@ -856,6 +856,30 @@ export const api = {
       { method: "POST", body: JSON.stringify(params) },
     ),
 
+  // Queue many AI-generated stories at once. Each item is one approved
+  // variant + the same per-run options runPipelineAI takes. The backend
+  // writes each as a synthetic post and enqueues on the existing run
+  // queue, so they drain serially through the standard worker.
+  batchRunAI: (params: {
+    items: Array<{
+      preselected_content: Record<string, unknown>;
+      content_style: string; niche: string;
+      content_filter?: "safe" | "normal" | "edgy";
+      target_audience?: string;
+      tone?: "dramatic" | "funny" | "heartfelt" | "shocking" | "cringe";
+      video_mode?: string;
+      tts_enabled?: boolean;
+      narrator_gender?: "auto" | "male" | "female";
+      voice_override?: string;
+      background_selector?: string;
+      custom_title?: string;
+    }>;
+  }) =>
+    request<{ queued: QueueItem[]; count: number; failures: { index: number; error: string }[] }>(
+      "/api/pipeline/batch-run-ai",
+      { method: "POST", body: JSON.stringify(params) },
+    ),
+
   // Resume video from audio-only post
   resumeVideo: (post_id: string) =>
     request<{ started: boolean }>("/api/pipeline/resume-video", {

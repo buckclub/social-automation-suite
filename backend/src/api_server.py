@@ -655,13 +655,19 @@ async def _queue_worker():
                 except Exception as e:
                     err_out = str(e)
             else:
-                # Legacy Reddit post pipeline.
+                # Legacy Reddit post pipeline. Also handles batch-run-ai
+                # items, since those write a synthetic post to disk and
+                # enqueue with kind: "post". background_override is
+                # forwarded so the AI batch's per-run BG selector is
+                # honoured by the queued runs (it's also used by
+                # explicit Resume / Retry flows that pass it through).
                 await _run_pipeline_async(
                     specific_post_id=pid,
                     selected_comments=params.get("selected_comments"),
                     max_comment_chars=int(params.get("max_comment_chars") or 0),
                     narrator_gender=params.get("narrator_gender"),
                     voice_override=params.get("voice_override"),
+                    background_override=params.get("background_override"),
                 )
                 err_out = pipeline_state.get("error")
 
@@ -2314,6 +2320,95 @@ async def generate_ai_variants(req: dict = {}):
     return {"variants": variants, "count": len(variants)}
 
 
+def _write_ai_post_to_disk(
+    *,
+    content_data: dict,
+    content_style: str,
+    niche: str,
+    content_filter: str,
+    target_audience: Optional[str],
+    tone: str,
+    custom_title: Optional[str] = None,
+) -> tuple[str, str, str, str]:
+    """
+    Materialise an AI-generated content payload into the synthetic-post
+    files (`posts/<id>/summary.json` + `full_data.json`) that the
+    Reddit-pipeline already knows how to consume. Returns
+    `(post_id, title, subreddit, format_mode)`.
+
+    Used by both /api/pipeline/run-ai (the single-shot path) and
+    /api/pipeline/batch-run-ai (the queue-many path) — once the post
+    files exist, the run queue's existing `kind: "post"` worker handles
+    the rest with no AI-specific code.
+    """
+    import uuid as _uuid
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    # Random suffix so two batch-run items submitted in the same second
+    # don't collide on disk.
+    short = _uuid.uuid4().hex[:6]
+    post_id = f"ai_{content_style}_{timestamp}_{short}"
+    post_dir = os.path.join(PROJECT_ROOT, "posts", post_id)
+    os.makedirs(post_dir, exist_ok=True)
+
+    title = (custom_title or content_data.get("title") or "AI Generated Content").strip()
+    subreddit = f"AI/{niche}"
+
+    # Build selftext + format_mode based on content style.
+    if content_style == "interactive":
+        segments = content_data.get("segments", [])
+        body_parts = []
+        for seg in segments:
+            body_parts.append(seg.get("text", ""))
+            pause = seg.get("pause_seconds", 0)
+            if pause > 0:
+                body_parts.append(f"[PAUSE:{pause}]")
+        selftext = "\n\n".join(body_parts)
+        format_mode = "story"
+    elif content_style == "qa":
+        selftext = content_data.get("question", title)
+        format_mode = "qa"
+    else:
+        selftext = content_data.get("body", "")
+        format_mode = "story"
+
+    summary = {
+        "id": post_id, "title": title, "author": "AI",
+        "subreddit": subreddit, "score": 0, "upvote_ratio": 1.0,
+        "url": "", "permalink": "", "selftext": selftext,
+        "num_comments": len(content_data.get("comments", [])),
+        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+        "ai_generated": True, "content_style": content_style, "niche": niche,
+        "content_filter": content_filter,
+        "target_audience": target_audience or "",
+        "tone": tone,
+    }
+    with open(os.path.join(post_dir, "summary.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    comments_children = []
+    for i, c in enumerate(content_data.get("comments", [])):
+        comments_children.append({
+            "kind": "t1",
+            "data": {
+                "author": c.get("author", f"user_{i+1}"),
+                "body": c.get("body", ""), "score": c.get("score", 1), "stickied": False,
+            }
+        })
+    full_data = [
+        {"kind": "Listing", "data": {"children": [{"kind": "t3", "data": {
+            "id": post_id, "title": title, "author": "AI",
+            "subreddit": subreddit, "score": 0, "upvote_ratio": 1.0,
+            "url": "", "permalink": "", "selftext": selftext,
+            "num_comments": len(comments_children),
+        }}]}},
+        {"kind": "Listing", "data": {"children": comments_children}},
+    ]
+    with open(os.path.join(post_dir, "full_data.json"), "w", encoding="utf-8") as f:
+        json.dump(full_data, f, indent=2)
+
+    return post_id, title, subreddit, format_mode
+
+
 @app.post("/api/pipeline/run-ai")
 async def run_pipeline_ai(req: dict = {}):
     """Run the pipeline using AI-generated content (story, Q&A, interactive, hot take)."""
@@ -2412,69 +2507,16 @@ async def run_pipeline_ai(req: dict = {}):
             {"label": f"Provider: {provider_name}", "status": "done", "detail": "✓ content ready"},
         ])
 
-    # Create synthetic post directory (same structure as custom pipeline)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    post_id = f"ai_{content_style}_{timestamp}"
-    post_dir = os.path.join(PROJECT_ROOT, "posts", post_id)
-    os.makedirs(post_dir, exist_ok=True)
-
-    title = content_data.get("title", "AI Generated Content")
-
-    # Build selftext based on content style
-    if content_style == "interactive":
-        segments = content_data.get("segments", [])
-        body_parts = []
-        for seg in segments:
-            body_parts.append(seg.get("text", ""))
-            pause = seg.get("pause_seconds", 0)
-            if pause > 0:
-                body_parts.append(f"[PAUSE:{pause}]")
-        selftext = "\n\n".join(body_parts)
-        format_mode = "story"
-    elif content_style == "qa":
-        selftext = content_data.get("question", content_data.get("title", ""))
-        format_mode = "qa"
-    else:
-        selftext = content_data.get("body", "")
-        format_mode = "story"
-
-    # Write summary.json
-    summary = {
-        "id": post_id, "title": title, "author": "AI",
-        "subreddit": f"AI/{niche}", "score": 0, "upvote_ratio": 1.0,
-        "url": "", "permalink": "", "selftext": selftext,
-        "num_comments": len(content_data.get("comments", [])),
-        "downloaded_at": datetime.now(timezone.utc).isoformat(),
-        "ai_generated": True, "content_style": content_style, "niche": niche,
-        "content_filter": content_filter,
-        "target_audience": target_audience or "",
-        "tone": tone,
-    }
-    with open(os.path.join(post_dir, "summary.json"), "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-
-    # Write full_data.json
-    comments_children = []
-    for i, c in enumerate(content_data.get("comments", [])):
-        comments_children.append({
-            "kind": "t1",
-            "data": {
-                "author": c.get("author", f"user_{i+1}"),
-                "body": c.get("body", ""), "score": c.get("score", 1), "stickied": False,
-            }
-        })
-
-    full_data = [
-        {"kind": "Listing", "data": {"children": [{"kind": "t3", "data": {
-            "id": post_id, "title": title, "author": "AI",
-            "subreddit": f"AI/{niche}", "score": 0, "upvote_ratio": 1.0,
-            "url": "", "permalink": "", "selftext": selftext,
-            "num_comments": len(comments_children),
-        }}]}},
-        {"kind": "Listing", "data": {"children": comments_children}},
-    ]
-    with open(os.path.join(post_dir, "full_data.json"), "w", encoding="utf-8") as f:
-        json.dump(full_data, f, indent=2)
+    # Materialise the content into a synthetic post on disk.
+    post_id, title, subreddit, format_mode = _write_ai_post_to_disk(
+        content_data=content_data,
+        content_style=content_style,
+        niche=niche,
+        content_filter=content_filter,
+        target_audience=target_audience,
+        tone=tone,
+        custom_title=custom_title,
+    )
 
     # Update config for this run
     if video_mode:
@@ -2484,7 +2526,7 @@ async def run_pipeline_ai(req: dict = {}):
         config.setdefault("tts", {})["enabled"] = tts_enabled
     _save_config(config)
 
-    pipeline_state["current_post"] = {"id": post_id, "title": title, "subreddit": f"AI/{niche}", "score": 0}
+    pipeline_state["current_post"] = {"id": post_id, "title": title, "subreddit": subreddit, "score": 0}
     _log(f"AI pipeline started: {content_style} / {niche} — {title[:60]}"
          + (f" · voice={voice_override}" if voice_override else "")
          + (f" · bg={background_override}" if background_override else ""))
@@ -2496,6 +2538,98 @@ async def run_pipeline_ai(req: dict = {}):
         background_override=background_override,
     ))
     return {"started": True}
+
+
+@app.post("/api/pipeline/batch-run-ai")
+async def batch_run_pipeline_ai(req: dict = {}):
+    """
+    Queue many AI-generated stories at once. The caller has already
+    generated + reviewed each candidate in the dialog (via
+    /api/ai/generate-variants); this endpoint just writes each to disk
+    as a synthetic post and enqueues it on the existing run queue. The
+    queue worker drains them serially through the same code path Reddit
+    posts use.
+
+    Body:
+      {
+        "items": [
+          {
+            "preselected_content": {<variant dict from generate-variants>},
+            "content_style": "story", "niche": "...",
+            "content_filter": "normal", "target_audience": "...", "tone": "dramatic",
+            "video_mode": "short_reel", "tts_enabled": true,
+            "narrator_gender": "auto"|"male"|"female",
+            "voice_override": "<voice_id or null>",
+            "background_selector": "<folder|file|empty for random>",
+            "custom_title": "<override or null>"
+          },
+          ...
+        ]
+      }
+    """
+    items = req.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise HTTPException(400, "items[] required")
+
+    config = _load_config()
+    gemini_cfg = config.get("gemini", {})
+    if not gemini_cfg.get("enabled", False):
+        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
+
+    from run_queue import enqueue
+    queued = []
+    failures: list[dict] = []
+    for idx, item in enumerate(items):
+        try:
+            content_data = item.get("preselected_content") or {}
+            if not isinstance(content_data, dict) or not content_data:
+                failures.append({"index": idx, "error": "missing preselected_content"})
+                continue
+            content_style = (item.get("content_style") or "story").strip()
+            niche = (item.get("niche") or "relationship_drama").strip()
+            content_filter = (item.get("content_filter") or "normal").strip().lower()
+            if content_filter not in ("safe", "normal", "edgy"):
+                content_filter = "normal"
+            target_audience = (item.get("target_audience") or "").strip() or None
+            tone = (item.get("tone") or "dramatic").strip().lower()
+            if tone not in ("dramatic", "funny", "heartfelt", "shocking", "cringe"):
+                tone = "dramatic"
+            custom_title = (item.get("custom_title") or "").strip() or None
+
+            post_id, title, subreddit, _ = _write_ai_post_to_disk(
+                content_data=content_data,
+                content_style=content_style,
+                niche=niche,
+                content_filter=content_filter,
+                target_audience=target_audience,
+                tone=tone,
+                custom_title=custom_title,
+            )
+
+            ng = (item.get("narrator_gender") or "auto").strip().lower()
+            voice_override = (item.get("voice_override") or "").strip() or None
+            bg = item.get("background_selector")
+            background_override = None if bg is None else str(bg).strip()
+
+            params = {
+                "kind": "post",
+                "narrator_gender": ng if ng != "auto" else None,
+                "voice_override": voice_override,
+                "background_override": background_override,
+                # Per-run video/tts knobs travel with the queue item so a
+                # later batch enqueue can't mutate config.json mid-run.
+                "video_mode": item.get("video_mode"),
+                "tts_enabled": item.get("tts_enabled"),
+            }
+            row = enqueue(PROJECT_ROOT, post_id=post_id, title=title,
+                          subreddit=subreddit, params=params)
+            queued.append(row)
+        except Exception as e:
+            _log(f"batch-run-ai item {idx} failed: {e}")
+            failures.append({"index": idx, "error": str(e)})
+
+    _log(f"batch-run-ai: queued {len(queued)} item(s) ({len(failures)} failed)")
+    return {"queued": queued, "count": len(queued), "failures": failures}
 
 
 async def reset_pipeline():
