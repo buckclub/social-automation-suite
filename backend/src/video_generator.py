@@ -581,6 +581,11 @@ class VideoGenerator:
 
         if words and words_per_caption > 0:
             highlight = bool(self.captions.get('highlight_word'))
+            # True when per-word timings came from the TTS engine itself
+            # (ElevenLabs /with-timestamps). These are sample-accurate, so we
+            # can anchor highlight frames to real speech boundaries instead of
+            # the char-weight estimate used for jittery whisper timings.
+            native = bool(isinstance(segment_or_text, dict) and segment_or_text.get("native_timings"))
 
             # Defensive cleanup: strip SentencePiece markers and zero-width chars
             # that occasionally leak through from whisper tokenization and render
@@ -664,6 +669,56 @@ class VideoGenerator:
                                     "words": word_list, "active_index": -1})
                     continue
 
+                # === NATIVE TIMINGS PATH ===
+                # ElevenLabs /with-timestamps gives us real per-word start/end
+                # timings. Use them to anchor each highlight frame to the
+                # actual moment the word is spoken — no char-weight guessing,
+                # no MIN_FRAME promotion that can eat short words.
+                if native:
+                    n = len(grp)
+                    # Absolute segment-relative starts for each word in the group.
+                    w_starts = [max(0.0, float(grp[j].get("start", 0.0))) for j in range(n)]
+                    w_ends   = [max(w_starts[j], float(grp[j].get("end", w_starts[j]))) for j in range(n)]
+
+                    # Each word's highlight window = [w_starts[j], w_starts[j+1])
+                    # clipped into the chunk's [start_t, end_t] display window.
+                    # For the last word, extend to end_t so the final highlight
+                    # holds until the next chunk begins.
+                    frames = []
+                    # Optional pre-hold if the chunk is displayed before word 0
+                    # is actually spoken (e.g. first chunk pinned at t=0).
+                    first_start = max(start_t, min(end_t, w_starts[0]))
+                    if first_start - start_t > 0.05:
+                        frames.append({"text": chunk_text,
+                                       "duration": first_start - start_t,
+                                       "words": word_list, "active_index": -1})
+                    for j in range(n):
+                        j_start = max(start_t, min(end_t, w_starts[j]))
+                        j_end   = end_t if j == n - 1 else max(j_start, min(end_t, w_starts[j + 1]))
+                        dur = j_end - j_start
+                        if dur <= 0.001:
+                            # Word has zero (or negative) on-screen time because
+                            # the NEXT word starts before this one in the timeline
+                            # (can happen on rapid-fire "I, uh," style runs).
+                            # Steal a tiny window from the next frame so this
+                            # word still briefly highlights.
+                            dur = 0.08
+                        frames.append({"text": chunk_text, "duration": dur,
+                                       "words": word_list, "active_index": j})
+                    # Normalize: native word timings are reported relative to
+                    # the TTS audio. If their sum overshoots total_dur (edge
+                    # case on last chunk), proportionally trim the last frame.
+                    tot = sum(f["duration"] for f in frames)
+                    if tot > total_dur + 0.02 and frames:
+                        overshoot = tot - total_dur
+                        # Trim from the last active frame, not a pre-hold.
+                        for k in range(len(frames) - 1, -1, -1):
+                            if frames[k]["duration"] > overshoot + 0.1:
+                                frames[k]["duration"] -= overshoot
+                                break
+                    out.extend(frames)
+                    continue
+
                 # Only the portion up to SOFT_MAX gets per-word highlight; the
                 # rest (if any) becomes a hold frame.
                 visible = min(total_dur, SOFT_MAX)
@@ -713,12 +768,26 @@ class VideoGenerator:
             # Final guard: merge any still-too-short frame forward into its
             # neighbor. Prevents any single flash no matter what upstream
             # produced (edge cases in hybrid back-fill, trailing squeeze, etc).
-            MIN_FINAL = 0.14
+            #
+            # For native ElevenLabs timings the merge threshold is lowered
+            # aggressively — every frame there is anchored to a real word
+            # boundary, and eating a 0.12s frame means losing that word's
+            # highlight entirely (user-visible "highlight doesn't appear"
+            # symptom). Only filter out true sub-frame flashes.
+            MIN_FINAL = 0.05 if native else 0.14
             merged = []
             for f in out:
                 if merged and f["duration"] < MIN_FINAL:
-                    # absorb into previous
-                    merged[-1] = {**merged[-1], "duration": merged[-1]["duration"] + f["duration"]}
+                    # absorb into previous, BUT preserve the absorbed frame's
+                    # active_index if the previous was a no-highlight hold
+                    # (otherwise a pre-hold would swallow word 0's highlight).
+                    prev = merged[-1]
+                    new_active = prev["active_index"]
+                    if prev["active_index"] == -1 and f.get("active_index", -1) >= 0:
+                        new_active = f["active_index"]
+                    merged[-1] = {**prev,
+                                  "duration": prev["duration"] + f["duration"],
+                                  "active_index": new_active}
                 else:
                     merged.append(dict(f))
             # If the very FIRST frame is too short, merge it forward.
