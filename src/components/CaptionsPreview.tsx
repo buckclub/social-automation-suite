@@ -26,6 +26,13 @@ export interface CaptionsPreviewProps {
   highlightScale?: number;
   highlightStrokeColor?: string;
   singleLine?: boolean;
+  // Drop-shadow (off by default for backward compat with callers)
+  shadowEnabled?: boolean;
+  shadowColor?: string;
+  shadowOpacity?: number;    // 0..255
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
+  shadowBlur?: number;
 }
 
 const SAMPLE =
@@ -143,19 +150,32 @@ export function CaptionsPreview(props: CaptionsPreviewProps) {
   const bgAlpha = Math.min(1, Math.max(0, props.bgOpacity / 255));
   const bgCss = props.bgEnabled ? colorToRgba(props.bgColor, bgAlpha) : "transparent";
 
-  // Multi-layer text-shadow emulates PIL's stroke_width.
+  // Multi-layer text-shadow emulates PIL's stroke_width. When the
+  // drop-shadow is on we ALSO append one blurred shadow layer so the
+  // preview matches what the backend renderer will produce.
   const strokeShadow = useMemo(() => {
-    if (scaledStroke <= 0) return "none";
     const steps: string[] = [];
-    const s = Math.max(1, Math.round(scaledStroke));
+    const s = Math.max(0, Math.round(scaledStroke));
     for (let dx = -s; dx <= s; dx++) {
       for (let dy = -s; dy <= s; dy++) {
         if (dx === 0 && dy === 0) continue;
-        steps.push(`${dx}px ${dy}px 0 ${props.strokeColor}`);
+        if (s > 0) steps.push(`${dx}px ${dy}px 0 ${props.strokeColor}`);
       }
     }
-    return steps.join(", ");
-  }, [scaledStroke, props.strokeColor]);
+    if (props.shadowEnabled) {
+      const dx = Math.round((props.shadowOffsetX ?? 4) * SCALE);
+      const dy = Math.round((props.shadowOffsetY ?? 4) * SCALE);
+      const blur = Math.max(0, Math.round((props.shadowBlur ?? 6) * SCALE));
+      const alpha = Math.min(1, Math.max(0, (props.shadowOpacity ?? 180) / 255));
+      const rgba = colorToRgba(props.shadowColor || "#000000", alpha);
+      steps.push(`${dx}px ${dy}px ${blur}px ${rgba}`);
+    }
+    return steps.length ? steps.join(", ") : "none";
+  }, [
+    scaledStroke, props.strokeColor,
+    props.shadowEnabled, props.shadowColor, props.shadowOpacity,
+    props.shadowOffsetX, props.shadowOffsetY, props.shadowBlur,
+  ]);
 
   const animKey = `${idx}-${props.animation}-${props.animationDuration}-${props.popOvershoot}-${props.popStartScale}`;
   const animDurMs = Math.max(20, Math.round(props.animationDuration * 1000));

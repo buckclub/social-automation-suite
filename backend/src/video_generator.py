@@ -31,10 +31,35 @@ except ImportError:
     pass  # moviepy/numpy not available – FFmpeg-only mode
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
+
+
+def _parse_color_rgba(spec: str, alpha: int = 255) -> tuple[int, int, int, int]:
+    """
+    Parse a '#RRGGBB' / '#RGB' / named color ('black','white') into an RGBA
+    tuple. Unknown strings fall back to black. Kept local to video_generator
+    so the shadow rendering stays standalone.
+    """
+    s = (spec or "").strip().lower()
+    named = {"black": (0, 0, 0), "white": (255, 255, 255),
+             "red": (255, 0, 0), "green": (0, 255, 0),
+             "blue": (0, 0, 255), "yellow": (255, 217, 61)}
+    if s in named:
+        r, g, b = named[s]
+        return (r, g, b, alpha)
+    if s.startswith("#"):
+        h = s[1:]
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        if len(h) == 6:
+            try:
+                return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), alpha)
+            except ValueError:
+                pass
+    return (0, 0, 0, alpha)
 
 def _norm_for_match(w: str) -> str:
     """Strip punctuation + lowercase for fuzzy whisper-to-text matching."""
@@ -519,6 +544,18 @@ class VideoGenerator:
             # chunk's font down until it fits — never wrap mid-word or to a
             # second row. Off by default for backward compatibility.
             'single_line':        bool(cfg.get('single_line', False)),
+
+            # ── Drop shadow (soft blurred shadow behind text) ─────────────
+            # Off by default so existing configs render identically. When on,
+            # a gaussian-blurred copy of the text is rendered beneath the
+            # real text at (offset_x, offset_y). Works on both the pill-box
+            # and the transparent/per-word caption paths.
+            'shadow_enabled':     bool(cfg.get('shadow_enabled', False)),
+            'shadow_color':       cfg.get('shadow_color', '#000000'),
+            'shadow_opacity':     int(cfg.get('shadow_opacity', 180)),
+            'shadow_offset_x':    int(cfg.get('shadow_offset_x', 4)),
+            'shadow_offset_y':    int(cfg.get('shadow_offset_y', 4)),
+            'shadow_blur':        int(cfg.get('shadow_blur', 6)),
         }
 
     def _caption_xy(self, w: int, h: int) -> tuple:
@@ -904,7 +941,8 @@ class VideoGenerator:
                          use_bg_box: bool = False, bg_opacity: int = 255, padding: int = 40,
                          font_path: Optional[str] = None, stroke_color: str = 'black',
                          stroke_width: Optional[int] = None, corner_radius: int = 20,
-                         uppercase: bool = False, single_line: bool = False) -> str:
+                         uppercase: bool = False, single_line: bool = False,
+                         shadow: Optional[dict] = None) -> str:
         """
         Create an image with text using Pillow.
         Returns path to temporary image file.
@@ -986,9 +1024,19 @@ class VideoGenerator:
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
 
-        img_width = text_width + padding * 2
-        img_height = text_height + padding * 2
-        
+        # Drop-shadow headroom — mirrors the logic in _render_highlighted_caption.
+        sh = shadow or {}
+        sh_on = bool(sh.get('enabled'))
+        sh_ox = int(sh.get('offset_x', 0)) if sh_on else 0
+        sh_oy = int(sh.get('offset_y', 0)) if sh_on else 0
+        sh_blur = max(0, int(sh.get('blur', 0))) if sh_on else 0
+        sh_rgba = _parse_color_rgba(sh.get('color') or '#000000',
+                                    alpha=max(0, min(255, int(sh.get('opacity', 180)))))
+        sh_pad = max(abs(sh_ox), abs(sh_oy)) + sh_blur * 3 + 2 if sh_on else 0
+
+        img_width = text_width + padding * 2 + 2 * sh_pad
+        img_height = text_height + padding * 2 + 2 * sh_pad
+
         # Create image
         if use_bg_box and bg_color:
             # Create a transparent base image first
@@ -1018,9 +1066,10 @@ class VideoGenerator:
                      # Default to black with opacity if logic fails
                      box_color = (0, 0, 0, bg_opacity)
             
-            # Draw rounded rectangle (pill shape-ish)
+            # Draw rounded rectangle (pill shape-ish). Inset by sh_pad so
+            # the shadow can extend outside the box edges when enabled.
             draw.rounded_rectangle(
-                [(0, 0), (img_width, img_height)],
+                [(sh_pad, sh_pad), (img_width - sh_pad, img_height - sh_pad)],
                 radius=corner_radius,
                 fill=box_color
             )
@@ -1042,8 +1091,28 @@ class VideoGenerator:
 
         # Offset the text by (-bbox_min + padding) so the stroke on the left/top
         # side stays inside the canvas.
-        draw_x = padding - bbox[0]
-        draw_y = padding - bbox[1]
+        draw_x = padding + sh_pad - bbox[0]
+        draw_y = padding + sh_pad - bbox[1]
+
+        # Drop shadow: render silhouette onto a separate RGBA layer, blur, and
+        # composite UNDER the real text. The pill box (drawn above) is kept as
+        # the under-under layer so the shadow falls on top of it.
+        if sh_on:
+            shadow_layer = Image.new('RGBA', (img_width, img_height), (0, 0, 0, 0))
+            shadow_draw = ImageDraw.Draw(shadow_layer)
+            shadow_draw.multiline_text(
+                (draw_x + sh_ox, draw_y + sh_oy),
+                wrapped_text,
+                font=font,
+                fill=sh_rgba,
+                align='center',
+                stroke_width=stroke_width,
+                stroke_fill=sh_rgba,
+            )
+            if sh_blur > 0:
+                shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=sh_blur))
+            img = Image.alpha_composite(img, shadow_layer)
+            draw = ImageDraw.Draw(img)  # rebind — `img` was replaced
 
         draw.multiline_text(
             (draw_x, draw_y),
@@ -1189,11 +1258,30 @@ class VideoGenerator:
         total_w = max(line_widths) if line_widths else 1
         total_h = sum(line_heights) + max(0, len(lines) - 1) * int(base_size * 0.15)
 
-        img_w = total_w + padding * 2 + stroke_w * 2
-        img_h = total_h + padding * 2 + stroke_w * 2
+        # ── Drop-shadow geometry ─────────────────────────────────────
+        # When shadow is enabled, pad the canvas so the blurred shadow
+        # doesn't clip at the edges. We add equal padding on all sides
+        # and shift all subsequent drawing by (sh_pad, sh_pad) so the
+        # visual centering the caller expects is preserved.
+        sh_on = bool(p.get('shadow_enabled'))
+        sh_ox = int(p.get('shadow_offset_x', 0)) if sh_on else 0
+        sh_oy = int(p.get('shadow_offset_y', 0)) if sh_on else 0
+        sh_blur = max(0, int(p.get('shadow_blur', 0))) if sh_on else 0
+        sh_rgba = _parse_color_rgba(p.get('shadow_color') or '#000000',
+                                    alpha=max(0, min(255, int(p.get('shadow_opacity', 180)))))
+        # Extra border so the blur + offset fit; GaussianBlur spreads ~3σ
+        # so reserve 3× radius worth of headroom.
+        sh_pad = max(abs(sh_ox), abs(sh_oy)) + sh_blur * 3 + 2 if sh_on else 0
+
+        img_w = total_w + padding * 2 + stroke_w * 2 + 2 * sh_pad
+        img_h = total_h + padding * 2 + stroke_w * 2 + 2 * sh_pad
 
         img = Image.new('RGBA', (img_w, img_h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
+        # Separate RGBA layer to collect the shadow silhouette in the same
+        # geometry as the real text, then blur + composite under the text.
+        shadow_layer = Image.new('RGBA', (img_w, img_h), (0, 0, 0, 0)) if sh_on else None
+        shadow_draw = ImageDraw.Draw(shadow_layer) if shadow_layer else None
 
         if use_bg:
             bg_color = p['bg_color']
@@ -1208,11 +1296,16 @@ class VideoGenerator:
                 box_color = (255, 255, 255, bg_opacity)
             else:
                 box_color = (0, 0, 0, bg_opacity)
-            draw.rounded_rectangle([(0, 0), (img_w, img_h)], radius=p['corner_radius'], fill=box_color)
+            # Pill box sits inside the sh_pad border so the shadow can fall
+            # outside it when offsets exceed the box edges.
+            draw.rounded_rectangle(
+                [(sh_pad, sh_pad), (img_w - sh_pad, img_h - sh_pad)],
+                radius=p['corner_radius'], fill=box_color,
+            )
 
         # Draw each line centered horizontally. Baseline-align mixed-size words
         # within a line so a shrunk word sits nicely next to full-size ones.
-        cur_y = padding + stroke_w
+        cur_y = padding + stroke_w + sh_pad
         for line, lw, lh in zip(lines, line_widths, line_heights):
             if not line:
                 cur_y += lh + int(base_size * 0.15)
@@ -1226,6 +1319,14 @@ class VideoGenerator:
                 word_y = cur_y + (line_ascent - tok_ascent)
                 txt_color  = hi_color  if tok["active"] else color
                 stroke_col = hi_stroke if tok["active"] else stroke
+                # Mirror onto the shadow layer in pure shadow color, matching
+                # position + font + stroke so the silhouette blurs identically.
+                if shadow_draw is not None:
+                    shadow_draw.text(
+                        (cur_x + sh_ox, word_y + sh_oy), tok["word"],
+                        font=f, fill=sh_rgba,
+                        stroke_width=stroke_w, stroke_fill=sh_rgba,
+                    )
                 draw.text(
                     (cur_x, word_y), tok["word"],
                     font=f, fill=txt_color,
@@ -1233,6 +1334,47 @@ class VideoGenerator:
                 )
                 cur_x += tok["w"] + space_w
             cur_y += lh + int(base_size * 0.15)
+
+        # Composite: blur the shadow, paint it BELOW the text but ABOVE the
+        # pill box. `img` already contains box+text; we rebuild from bottom up.
+        if shadow_layer is not None and (sh_ox or sh_oy or sh_blur):
+            if sh_blur > 0:
+                shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=sh_blur))
+            # Keep the pill box (use_bg) as-is underneath, overlay shadow, then
+            # the already-drawn text shows correctly because `img` holds both.
+            # To avoid double-text, we extract: box_only = copy of img BEFORE
+            # text was drawn. Simplest: re-render into a fresh canvas.
+            final = Image.new('RGBA', (img_w, img_h), (0, 0, 0, 0))
+            if use_bg:
+                fdraw = ImageDraw.Draw(final)
+                fdraw.rounded_rectangle(
+                    [(sh_pad, sh_pad), (img_w - sh_pad, img_h - sh_pad)],
+                    radius=p['corner_radius'], fill=box_color,
+                )
+            final = Image.alpha_composite(final, shadow_layer)
+            # Now stamp the actual text (colors + stroke) on top. Re-run the
+            # same draw loop onto `final`.
+            final_draw = ImageDraw.Draw(final)
+            cur_y = padding + stroke_w + sh_pad
+            for line, lw, lh in zip(lines, line_widths, line_heights):
+                if not line:
+                    cur_y += lh + int(base_size * 0.15); continue
+                line_ascent = max(tok["font"].getmetrics()[0] for tok in line)
+                cur_x = (img_w - lw) // 2
+                for tok in line:
+                    f = tok["font"]
+                    tok_ascent = f.getmetrics()[0]
+                    word_y = cur_y + (line_ascent - tok_ascent)
+                    txt_color  = hi_color  if tok["active"] else color
+                    stroke_col = hi_stroke if tok["active"] else stroke
+                    final_draw.text(
+                        (cur_x, word_y), tok["word"],
+                        font=f, fill=txt_color,
+                        stroke_width=stroke_w, stroke_fill=stroke_col,
+                    )
+                    cur_x += tok["w"] + space_w
+                cur_y += lh + int(base_size * 0.15)
+            img = final
 
         tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
         img.save(tmp.name)
@@ -1243,6 +1385,14 @@ class VideoGenerator:
         """Render a single caption PNG using the normalized caption config."""
         p = self.captions
         use_bg = bool(p['bg_color'])
+        shadow = {
+            'enabled':  p.get('shadow_enabled', False),
+            'color':    p.get('shadow_color'),
+            'opacity':  p.get('shadow_opacity', 180),
+            'offset_x': p.get('shadow_offset_x', 0),
+            'offset_y': p.get('shadow_offset_y', 0),
+            'blur':     p.get('shadow_blur', 0),
+        } if p.get('shadow_enabled') else None
         return self.create_text_image(
             text,
             fontsize=p['font_size'],
@@ -1258,6 +1408,7 @@ class VideoGenerator:
             corner_radius=p['corner_radius'],
             uppercase=p['uppercase'],
             single_line=p.get('single_line', False),
+            shadow=shadow,
         )
 
     def get_random_background(self, duration: float) -> VideoFileClip:

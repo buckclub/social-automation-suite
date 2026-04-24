@@ -136,7 +136,14 @@
 
     "max_chunk_duration": 2.5,
     "lead_in_grace": 1.0,
-    "single_line": false
+    "single_line": false,
+
+    "shadow_enabled": false,
+    "shadow_color": "#000000",
+    "shadow_opacity": 180,
+    "shadow_offset_x": 4,
+    "shadow_offset_y": 4,
+    "shadow_blur": 6
   },
 
   "output": {

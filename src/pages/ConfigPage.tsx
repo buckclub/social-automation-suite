@@ -186,6 +186,13 @@ export default function ConfigPage() {
   const [capHighlightScale, setCapHighlightScale] = useState(1.1);
   const [capHighlightStrokeColor, setCapHighlightStrokeColor] = useState("#000000");
   const [capSingleLine, setCapSingleLine] = useState(false);
+  // Drop-shadow controls (all optional, off by default).
+  const [capShadowEnabled, setCapShadowEnabled] = useState(false);
+  const [capShadowColor, setCapShadowColor] = useState("#000000");
+  const [capShadowOpacity, setCapShadowOpacity] = useState(180);
+  const [capShadowOffsetX, setCapShadowOffsetX] = useState(4);
+  const [capShadowOffsetY, setCapShadowOffsetY] = useState(4);
+  const [capShadowBlur, setCapShadowBlur] = useState(6);
 
   // ── Caption preset swap ────────────────────────────────────────
   // Two presets live in config: `captions` (Reddit/AI pipeline) and
@@ -213,6 +220,9 @@ export default function ConfigPage() {
     align_model_size: capAlignModelSize, highlight_word: capHighlightWord,
     highlight_color: capHighlightColor, highlight_scale: capHighlightScale,
     highlight_stroke_color: capHighlightStrokeColor, single_line: capSingleLine,
+    shadow_enabled: capShadowEnabled, shadow_color: capShadowColor,
+    shadow_opacity: capShadowOpacity, shadow_offset_x: capShadowOffsetX,
+    shadow_offset_y: capShadowOffsetY, shadow_blur: capShadowBlur,
   });
   const applyCaptionBuffer = (buf: Record<string, any>) => {
     setCapEnabled(buf.enabled ?? true);
@@ -243,6 +253,12 @@ export default function ConfigPage() {
     setCapHighlightScale(buf.highlight_scale ?? 1.1);
     setCapHighlightStrokeColor(buf.highlight_stroke_color ?? "#000000");
     setCapSingleLine(buf.single_line ?? false);
+    setCapShadowEnabled(buf.shadow_enabled ?? false);
+    setCapShadowColor(buf.shadow_color ?? "#000000");
+    setCapShadowOpacity(buf.shadow_opacity ?? 180);
+    setCapShadowOffsetX(buf.shadow_offset_x ?? 4);
+    setCapShadowOffsetY(buf.shadow_offset_y ?? 4);
+    setCapShadowBlur(buf.shadow_blur ?? 6);
   };
   const switchCaptionPreset = (next: CaptionPreset) => {
     if (next === activeCaptionPreset) return;
@@ -280,6 +296,12 @@ export default function ConfigPage() {
     highlight_scale:       buf.highlight_scale ?? 1.1,
     highlight_stroke_color: buf.highlight_stroke_color ?? "#000000",
     single_line:           buf.single_line ?? false,
+    shadow_enabled:        buf.shadow_enabled ?? false,
+    shadow_color:          buf.shadow_color ?? "#000000",
+    shadow_opacity:        buf.shadow_opacity ?? 180,
+    shadow_offset_x:       buf.shadow_offset_x ?? 4,
+    shadow_offset_y:       buf.shadow_offset_y ?? 4,
+    shadow_blur:           buf.shadow_blur ?? 6,
   });
 
   // Output
@@ -459,6 +481,12 @@ export default function ConfigPage() {
     setCapHighlightScale((cap as any).highlight_scale ?? 1.1);
     setCapHighlightStrokeColor((cap as any).highlight_stroke_color ?? (cap.stroke_color ?? "#000000"));
     setCapSingleLine((cap as any).single_line ?? false);
+    setCapShadowEnabled((cap as any).shadow_enabled ?? false);
+    setCapShadowColor((cap as any).shadow_color ?? "#000000");
+    setCapShadowOpacity((cap as any).shadow_opacity ?? 180);
+    setCapShadowOffsetX((cap as any).shadow_offset_x ?? 4);
+    setCapShadowOffsetY((cap as any).shadow_offset_y ?? 4);
+    setCapShadowBlur((cap as any).shadow_blur ?? 6);
 
     // Seed the OTHER preset's buffer too, so switching is instant. If
     // clip_captions is null/missing, it mirrors reddit captions initially
@@ -545,6 +573,7 @@ export default function ConfigPage() {
     capUppercase, capAttribution, capAnimation, capAnimationDuration,
     capPopOvershoot, capPopStartScale, capForceAlign, capAlignModelSize,
     capHighlightWord, capHighlightColor, capHighlightScale, capHighlightStrokeColor, capSingleLine,
+    capShadowEnabled, capShadowColor, capShadowOpacity, capShadowOffsetX, capShadowOffsetY, capShadowBlur,
     videoMode, hwAccel, engine, splitDuration, outroText,
     branding, threads, autoCleanup,
   }),
@@ -566,6 +595,7 @@ export default function ConfigPage() {
       capUppercase, capAttribution, capAnimation, capAnimationDuration,
       capPopOvershoot, capPopStartScale, capForceAlign, capAlignModelSize,
       capHighlightWord, capHighlightColor, capHighlightScale, capHighlightStrokeColor, capSingleLine,
+      capShadowEnabled, capShadowColor, capShadowOpacity, capShadowOffsetX, capShadowOffsetY, capShadowBlur,
       videoMode, hwAccel, engine, splitDuration, outroText,
       branding, threads, autoCleanup,
     ]
@@ -1715,6 +1745,76 @@ export default function ConfigPage() {
               </div>
 
               <Separator />
+              {/* Drop shadow */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex-1">
+                    <Label className="text-xs text-muted-foreground">Drop shadow</Label>
+                    <p className="text-[10px] text-muted-foreground leading-snug">
+                      Soft blurred shadow behind the text for extra pop on busy backgrounds.
+                      Adds a gaussian-blurred silhouette at the configured offset.
+                    </p>
+                  </div>
+                  <Switch checked={capShadowEnabled} onCheckedChange={setCapShadowEnabled} />
+                </div>
+                {capShadowEnabled && (
+                  <div className="space-y-2 pl-2 border-l border-border/60">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-muted-foreground">Color</Label>
+                        <Input
+                          type="color"
+                          value={/^#[0-9a-f]{6}$/i.test(capShadowColor) ? capShadowColor : "#000000"}
+                          onChange={(e) => setCapShadowColor(e.target.value)}
+                          className="h-8 w-full p-0.5 bg-secondary border-border"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-muted-foreground">
+                          Opacity ({Math.round((capShadowOpacity / 255) * 100)}%)
+                        </Label>
+                        <Slider
+                          value={[capShadowOpacity]}
+                          onValueChange={([v]) => setCapShadowOpacity(v)}
+                          min={0} max={255} step={5}
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-muted-foreground">Offset X ({capShadowOffsetX}px)</Label>
+                        <Slider
+                          value={[capShadowOffsetX]}
+                          onValueChange={([v]) => setCapShadowOffsetX(v)}
+                          min={-30} max={30} step={1}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-muted-foreground">Offset Y ({capShadowOffsetY}px)</Label>
+                        <Slider
+                          value={[capShadowOffsetY]}
+                          onValueChange={([v]) => setCapShadowOffsetY(v)}
+                          min={-30} max={30} step={1}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-muted-foreground">Blur ({capShadowBlur}px)</Label>
+                        <Slider
+                          value={[capShadowBlur]}
+                          onValueChange={([v]) => setCapShadowBlur(v)}
+                          min={0} max={40} step={1}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground leading-snug">
+                      Tip: for a clean cinematic look try <code>offset 4/4, blur 8, opacity 70%</code>.
+                      For a hard drop try <code>offset 6/6, blur 0</code>.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <Separator />
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Animation</Label>
                 <Select value={capAnimation} onValueChange={(v) => setCapAnimation(v as "none" | "fade" | "pop" | "fade_pop")}>
@@ -1861,6 +1961,12 @@ export default function ConfigPage() {
             highlightScale={capHighlightScale}
             highlightStrokeColor={capHighlightStrokeColor}
             singleLine={capSingleLine}
+            shadowEnabled={capShadowEnabled}
+            shadowColor={capShadowColor}
+            shadowOpacity={capShadowOpacity}
+            shadowOffsetX={capShadowOffsetX}
+            shadowOffsetY={capShadowOffsetY}
+            shadowBlur={capShadowBlur}
           />
         </div>
         </div>
