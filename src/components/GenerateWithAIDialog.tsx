@@ -140,6 +140,17 @@ export function GenerateWithAIDialog() {
   const [regeneratingAll, setRegeneratingAll] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
 
+  // Resumable draft — populated on dialog open by GET /api/ai/drafts.
+  // When non-null we show a "Resume previous draft?" banner above step 0.
+  const [savedDraft, setSavedDraft] = useState<
+    | null
+    | {
+        created_at: string;
+        params: Record<string, unknown>;
+        variants: Array<Record<string, unknown>>;
+      }
+  >(null);
+
   const [submitting, setSubmitting] = useState(false);
 
   const { toast } = useToast();
@@ -159,6 +170,77 @@ export function GenerateWithAIDialog() {
         setBgFolders([]);
       });
   }, [open]);
+
+  // On open, look for a previously-saved draft so the user can pick up
+  // where they left off after an accidental close. We do NOT auto-restore
+  // — we surface a banner and let the user choose Resume vs Discard, so
+  // a stale draft from a different intent doesn't surprise them.
+  useEffect(() => {
+    if (!open) { setSavedDraft(null); return; }
+    api.getAIDraft()
+      .then((r) => {
+        if (!r.draft || !Array.isArray(r.draft.variants) || r.draft.variants.length === 0) {
+          setSavedDraft(null);
+          return;
+        }
+        setSavedDraft(r.draft);
+      })
+      .catch(() => setSavedDraft(null));
+  }, [open]);
+
+  // Best-effort persistence — fire-and-forget. The dialog state is the
+  // source of truth; the draft is just a backup for accidental close.
+  const persistDraft = (variantsArr: Array<Record<string, unknown>>) => {
+    if (!variantsArr || variantsArr.length === 0) return;
+    api.saveAIDraft({
+      params: {
+        content_style: contentStyle, niche, custom_topic: customTopic,
+        custom_title: customTitle, interactive_format: interactiveFormat,
+        video_mode: videoMode, tts_enabled: ttsEnabled,
+        narrator_gender: narratorGender, voice_override: voiceOverride,
+        background_selector: bgSelector, content_filter: contentFilter,
+        target_audience: targetAudience, tone, candidate_count: candidateCount,
+      },
+      variants: variantsArr,
+    }).catch(() => { /* silent — draft saving is a backup, not critical */ });
+  };
+
+  const clearDraft = () => {
+    setSavedDraft(null);
+    api.clearAIDraft().catch(() => { /* silent */ });
+  };
+
+  // Restore a saved draft — populate every dialog input from `params` and
+  // jump straight to the review screen with the persisted variants.
+  const resumeDraft = (draft: NonNullable<typeof savedDraft>) => {
+    const p = draft.params || {};
+    if (typeof p.content_style === "string") setContentStyle(p.content_style);
+    if (typeof p.niche === "string") setNiche(p.niche);
+    if (typeof p.custom_topic === "string") setCustomTopic(p.custom_topic);
+    if (typeof p.custom_title === "string") setCustomTitle(p.custom_title);
+    if (typeof p.interactive_format === "string") setInteractiveFormat(p.interactive_format);
+    if (typeof p.video_mode === "string") setVideoMode(p.video_mode);
+    if (typeof p.tts_enabled === "boolean") setTtsEnabled(p.tts_enabled);
+    if (p.narrator_gender === "auto" || p.narrator_gender === "male" || p.narrator_gender === "female") {
+      setNarratorGender(p.narrator_gender);
+    }
+    if (typeof p.voice_override === "string") setVoiceOverride(p.voice_override);
+    if (typeof p.background_selector === "string") setBgSelector(p.background_selector);
+    if (p.content_filter === "safe" || p.content_filter === "normal" || p.content_filter === "edgy") {
+      setContentFilter(p.content_filter);
+    }
+    if (typeof p.target_audience === "string") setTargetAudience(p.target_audience);
+    if (
+      p.tone === "dramatic" || p.tone === "funny" || p.tone === "heartfelt"
+      || p.tone === "shocking" || p.tone === "cringe"
+    ) setTone(p.tone);
+    if (typeof p.candidate_count === "number") setCandidateCount(p.candidate_count);
+    setVariants(draft.variants);
+    setApprovedSet(draft.variants.length === 1 ? new Set([0]) : new Set());
+    setExpandedSet(new Set());
+    setShowPicker(true);
+    setSavedDraft(null);
+  };
 
   // Hydrate content-filter + target-audience + tone defaults from config on open.
   // Only apply once per open so we don't trample the user's in-dialog edits.
@@ -303,6 +385,7 @@ export function GenerateWithAIDialog() {
              : voiceOverride !== "__config__" ? "Using custom voice" : "Generating…"),
       });
       qc.invalidateQueries({ queryKey: ["pipeline"] });
+      clearDraft();
       setOpen(false);
       resetForm();
     } catch (e: any) {
@@ -332,6 +415,7 @@ export function GenerateWithAIDialog() {
         count: n,
       });
       setVariants(res.variants);
+      persistDraft(res.variants);
       // When there's only one candidate, auto-approve it so the user
       // can hit Run with one click — but we still show the script first.
       if (res.variants.length === 1) setApprovedSet(new Set([0]));
@@ -364,7 +448,11 @@ export function GenerateWithAIDialog() {
       });
       const fresh = res.variants[0];
       if (!fresh) throw new Error("Empty result");
-      setVariants((arr) => arr.map((v, i) => (i === idx ? fresh : v)));
+      setVariants((arr) => {
+        const next = arr.map((v, i) => (i === idx ? fresh : v));
+        persistDraft(next);
+        return next;
+      });
       // Replacing a card invalidates any prior approval on that slot.
       setApprovedSet((s) => {
         const next = new Set(s);
@@ -445,6 +533,7 @@ export function GenerateWithAIDialog() {
       });
       qc.invalidateQueries({ queryKey: ["pipeline"] });
       qc.invalidateQueries({ queryKey: ["queue"] });
+      clearDraft();
       setOpen(false);
       resetForm();
     } catch (e: any) {
@@ -688,6 +777,56 @@ export function GenerateWithAIDialog() {
     if (step === 0) {
       return (
         <div className="space-y-4">
+          {/* Resume-previous-draft banner — shown only on step 0 so it
+              doesn't follow the user as they navigate the wizard. */}
+          {savedDraft && (
+            <div className="rounded-md border border-accent/40 bg-accent/5 p-2.5 space-y-1.5">
+              <div className="flex items-start gap-2">
+                <Sparkles className="h-3.5 w-3.5 text-accent shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[11px] font-semibold">
+                    Resume previous draft?
+                  </p>
+                  <p className="text-[10px] text-muted-foreground leading-snug">
+                    {savedDraft.variants.length} candidate{savedDraft.variants.length === 1 ? "" : "s"} from{" "}
+                    {(() => {
+                      try {
+                        const t = new Date(savedDraft.created_at).getTime();
+                        const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+                        if (mins < 1) return "just now";
+                        if (mins < 60) return `${mins} min ago`;
+                        const hrs = Math.round(mins / 60);
+                        return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
+                      } catch { return "earlier"; }
+                    })()}
+                    {(() => {
+                      const cs = (savedDraft.params?.content_style as string) || "";
+                      const n = (savedDraft.params?.niche as string) || "";
+                      return cs || n ? ` · ${[cs, n].filter(Boolean).join(" / ")}` : "";
+                    })()}
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-1.5">
+                <Button
+                  size="sm"
+                  className="h-7 text-[10px] flex-1 gap-1 glow-accent"
+                  onClick={() => resumeDraft(savedDraft)}
+                >
+                  <ArrowRight className="h-3 w-3" /> Resume to review
+                </Button>
+                <Button
+                  size="sm" variant="outline"
+                  className="h-7 text-[10px] gap-1"
+                  onClick={clearDraft}
+                  title="Throw the draft away and start fresh"
+                >
+                  <Trash2 className="h-3 w-3" /> Discard
+                </Button>
+              </div>
+            </div>
+          )}
+
           {presets.length > 0 && (
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground uppercase tracking-wider flex items-center gap-1">

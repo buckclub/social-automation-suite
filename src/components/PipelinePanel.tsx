@@ -2,7 +2,6 @@ import { Search, FileText, Mic, Film, Send, XCircle, Sparkles, Image } from "luc
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PipelineStep } from "./PipelineStep";
-import { GenerateWithAIDialog } from "./GenerateWithAIDialog";
 import { usePipelineStatus, useRunPipeline, useResetPipeline, useCancelPipeline } from "@/hooks/use-api";
 import { useToast } from "@/hooks/use-toast";
 import type { StepStatus } from "./PipelineStep";
@@ -112,9 +111,9 @@ export function PipelinePanel() {
           )}
         </div>
 
-        <div className="mt-2">
-          <GenerateWithAIDialog />
-        </div>
+        {/* Generate-with-AI lives in the global header now (visible from
+            every page). Removed from this panel to avoid duplication;
+            this card is for the Reddit-fetch + render pipeline only. */}
       </CardContent>
     </Card>
   );

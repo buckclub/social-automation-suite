@@ -6,6 +6,7 @@ import { CommandPaletteProvider, useCommandPalette } from "@/components/CommandP
 import { KeyboardShortcuts } from "@/components/KeyboardShortcuts";
 import { StatusBar } from "@/components/StatusBar";
 import { SocialCopyQueueChip } from "@/components/SocialCopyQueueChip";
+import { GenerateWithAIDialog } from "@/components/GenerateWithAIDialog";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -70,6 +71,10 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Primary "create" CTA — accessible from every page so the
+                user never has to navigate to the dashboard just to kick
+                off a generation run. */}
+            <GenerateWithAIDialog />
             <button
               onClick={toggleCommand}
               title="Command palette (⌘K / Ctrl+K)"

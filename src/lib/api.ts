@@ -841,6 +841,19 @@ export const api = {
       body: JSON.stringify(params),
     }),
 
+  // Persist the Generate-with-AI dialog's in-flight state to disk so an
+  // accidental close / refresh / device switch can resume it. Single-slot.
+  saveAIDraft: (body: { params: Record<string, unknown>; variants: Array<Record<string, unknown>> }) =>
+    request<{ saved: boolean; created_at: string; count: number }>(
+      "/api/ai/drafts", { method: "POST", body: JSON.stringify(body) },
+    ),
+  getAIDraft: () =>
+    request<{ draft: null | { created_at: string; params: Record<string, unknown>; variants: Array<Record<string, unknown>> } }>(
+      "/api/ai/drafts",
+    ),
+  clearAIDraft: () =>
+    request<{ cleared: boolean }>("/api/ai/drafts", { method: "DELETE" }),
+
   // Generate N candidate variants WITHOUT starting the pipeline.
   // Caller picks one, then hands it to runPipelineAI via preselected_content.
   generateAIVariants: (params: {

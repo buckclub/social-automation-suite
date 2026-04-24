@@ -2262,6 +2262,80 @@ async def run_pipeline_custom(req: dict = {}):
     return {"started": True}
 
 
+# ──────────────────────────────────────────────────────────────────────
+# AI-script drafts — survive accidental dialog-close / browser refresh.
+#
+# The dialog now writes the latest set of generated candidates here as
+# soon as they're produced (and on every per-card regenerate). When the
+# user re-opens the dialog, the frontend fetches this and offers to
+# resume. Once the user runs/approves or explicitly discards, the draft
+# is deleted.
+#
+# Single-slot store at .cache/ai_drafts.json. Multi-user isn't a concern
+# in self-hosted mode and a single record keeps the UI uncluttered.
+# ──────────────────────────────────────────────────────────────────────
+
+def _ai_drafts_path() -> str:
+    d = os.path.join(PROJECT_ROOT, ".cache")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "ai_drafts.json")
+
+
+@app.post("/api/ai/drafts")
+async def save_ai_draft(req: dict):
+    """
+    Persist the in-flight Generate-with-AI state. Body:
+      {
+        "params":   {<dialog state — content_style, niche, ..., target_audience, tone, count, etc>},
+        "variants": [<variant dicts from /generate-variants>]
+      }
+    """
+    variants = req.get("variants")
+    params = req.get("params") or {}
+    if not isinstance(variants, list):
+        raise HTTPException(400, "variants[] required")
+    payload = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "params": params,
+        "variants": variants,
+    }
+    try:
+        path = _ai_drafts_path()
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"last_draft": payload}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to save draft: {e}")
+    return {"saved": True, "created_at": payload["created_at"], "count": len(variants)}
+
+
+@app.get("/api/ai/drafts")
+async def get_ai_draft():
+    """Return the most recent draft, or {draft: None}."""
+    path = _ai_drafts_path()
+    if not os.path.isfile(path):
+        return {"draft": None}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {"draft": data.get("last_draft")}
+    except Exception:
+        return {"draft": None}
+
+
+@app.delete("/api/ai/drafts")
+async def clear_ai_draft():
+    """Discard the saved draft (on Run approved, or explicit Discard)."""
+    path = _ai_drafts_path()
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+    return {"cleared": True}
+
+
 @app.post("/api/ai/generate-variants")
 async def generate_ai_variants(req: dict = {}):
     """
