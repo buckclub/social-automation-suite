@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   Search, RefreshCw, Loader2, Play, Filter, ArrowUpDown, ExternalLink,
   CheckCircle2, XCircle, AlertTriangle, Flame, TrendingUp, Clock, Star,
-  Trophy, Sparkles, Save, X,
+  Trophy, Sparkles, Save, X, ListOrdered,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -643,6 +643,28 @@ export default function PostsPage() {
                     >
                       <Play className="h-3 w-3" />
                       Use This Post
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!isEligible}
+                      onClick={async () => {
+                        try {
+                          await api.queueAdd({
+                            post_id: post.id,
+                            title: post.title,
+                            subreddit: post.subreddit,
+                          });
+                          toast({ title: "Queued", description: "Will run when the pipeline is free." });
+                        } catch (e: any) {
+                          toast({ title: "Queue failed", description: e.message, variant: "destructive" });
+                        }
+                      }}
+                      title="Add to queue — runs when the pipeline is free"
+                      className="h-7 text-xs gap-1 px-2"
+                    >
+                      <ListOrdered className="h-3 w-3" />
+                      Queue
                     </Button>
                     <Button
                       size="sm"

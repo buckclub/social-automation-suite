@@ -4,12 +4,16 @@ import { RecentVideos } from "@/components/RecentVideos";
 import { ResumePanel } from "@/components/ResumePanel";
 import { RenderHistoryChart } from "@/components/RenderHistoryChart";
 import { CostTrackerPanel } from "@/components/CostTrackerPanel";
+import { QueuePanel } from "@/components/QueuePanel";
 
 export default function Index() {
   return (
     <div className="space-y-6">
       {/* Stats + 30-day bar chart in one panel */}
       <RenderHistoryChart />
+
+      {/* Run queue — auto-hides when empty */}
+      <QueuePanel />
 
       {/* Resume panel — auto-hides when there are no audio_only videos */}
       <ResumePanel />

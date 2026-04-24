@@ -154,6 +154,19 @@ export interface SocialCopy {
   }>;
 }
 
+export interface QueueItem {
+  queue_id: string;
+  post_id: string;
+  title: string;
+  subreddit: string;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  added_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  params: Record<string, unknown>;
+}
+
 export interface AiScore {
   score: number;                       // 0-100 overall
   hook_strength: number | null;        // 0-100
@@ -365,6 +378,36 @@ export const api = {
   clearProfilePic: () =>
     request<{ cleared: boolean }>("/api/branding/profile-pic", { method: "DELETE" }),
   profilePicUrl: () => `${API_BASE}/api/branding/profile-pic?v=${Date.now()}`,
+
+  // Run queue
+  getQueue: () =>
+    request<{
+      paused: boolean;
+      history_cap: number;
+      items: QueueItem[];
+    }>("/api/pipeline/queue"),
+  queueAdd: (body: { post_id: string; title?: string; subreddit?: string; params?: Record<string, unknown> }) =>
+    request<{ queued: boolean; item: QueueItem }>("/api/pipeline/queue/add", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  queueAddMany: (items: { post_id: string; title?: string; subreddit?: string; params?: Record<string, unknown> }[]) =>
+    request<{ queued: number; items: QueueItem[] }>("/api/pipeline/queue/add-many", {
+      method: "POST",
+      body: JSON.stringify({ items }),
+    }),
+  queueRemove: (queue_id: string) =>
+    request<{ removed: boolean }>(`/api/pipeline/queue/${queue_id}`, { method: "DELETE" }),
+  queueRetry: (queue_id: string) =>
+    request<{ requeued: boolean; item: QueueItem }>(`/api/pipeline/queue/${queue_id}/retry`, { method: "POST" }),
+  queueMove: (queue_id: string, direction: -1 | 1) =>
+    request<{ moved: boolean }>(`/api/pipeline/queue/${queue_id}/move`, {
+      method: "POST",
+      body: JSON.stringify({ direction }),
+    }),
+  queuePause:        () => request<{ paused: boolean }>("/api/pipeline/queue/pause",   { method: "POST" }),
+  queueResume:       () => request<{ paused: boolean }>("/api/pipeline/queue/resume",  { method: "POST" }),
+  queueClearHistory: () => request<{ dropped: number }>("/api/pipeline/queue/clear-history", { method: "POST" }),
 
   // Cost tracker (TTS + AI provider usage)
   getCostSummary: () =>

@@ -531,12 +531,72 @@ def _used_post_titles() -> List[str]:
     return titles
 
 
+async def _queue_worker():
+    """
+    Background task that drains the run queue. Sleeps when the pipeline
+    is busy or the queue is empty/paused. Starts the next queued item
+    by calling _run_pipeline_async directly in-process.
+    """
+    from run_queue import next_queued, mark_running, mark_finished
+    # Small startup grace so lifespan yield completes first.
+    await asyncio.sleep(2)
+    while True:
+        try:
+            if pipeline_state.get("is_running"):
+                await asyncio.sleep(2)
+                continue
+            item = next_queued(PROJECT_ROOT)
+            if not item:
+                await asyncio.sleep(3)
+                continue
+
+            qid = item["queue_id"]
+            pid = item.get("post_id") or ""
+            params = item.get("params") or {}
+            _log(f"Queue: starting {pid} — {item.get('title','')[:60]} ({qid[:8]})")
+            mark_running(PROJECT_ROOT, qid)
+
+            # Dispatch into the existing pipeline runner.
+            await _run_pipeline_async(
+                specific_post_id=pid,
+                selected_comments=params.get("selected_comments"),
+                max_comment_chars=int(params.get("max_comment_chars") or 0),
+                narrator_gender=params.get("narrator_gender"),
+                voice_override=params.get("voice_override"),
+            )
+
+            err = pipeline_state.get("error")
+            success = not err
+            mark_finished(PROJECT_ROOT, qid, success=success, error=err if err else None)
+            _log(f"Queue: finished {pid} ({'OK' if success else 'FAILED'})")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _log(f"Queue worker error: {e}")
+            await asyncio.sleep(5)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _ensure_config()
     _load_videos_from_disk()
+    # Recover from any 'running' items left by a crashed/restarted server.
+    try:
+        from run_queue import init_on_startup
+        init_on_startup(PROJECT_ROOT)
+    except Exception as e:
+        _log(f"Run queue recovery failed: {e}")
+    # Kick off the background worker.
+    task = asyncio.create_task(_queue_worker())
     _log("Server started")
-    yield
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 # ── App ──────────────────────────────────────────────────────────────
@@ -616,6 +676,109 @@ async def delete_profile_pic():
     cfg.setdefault("thumbnail", {})["profile_pic_path"] = ""
     _save_config(cfg)
     return {"cleared": True}
+
+
+# ── Run queue ───────────────────────────────────────────────────────
+@app.get("/api/pipeline/queue")
+async def get_queue():
+    from run_queue import snapshot
+    return snapshot(PROJECT_ROOT)
+
+
+@app.post("/api/pipeline/queue/add")
+async def queue_add(req: dict):
+    """
+    Body: {
+      post_id: str,
+      title?, subreddit?: str  (cached for UI display),
+      params?: {
+        narrator_gender?, voice_override?, selected_comments?, max_comment_chars?, fresh?
+      }
+    }
+    """
+    from run_queue import enqueue
+    pid = (req.get("post_id") or "").strip()
+    if not pid:
+        raise HTTPException(400, "post_id is required")
+    item = enqueue(
+        PROJECT_ROOT,
+        post_id=pid,
+        title=(req.get("title") or "").strip(),
+        subreddit=(req.get("subreddit") or "").strip(),
+        params=req.get("params") or {},
+    )
+    return {"queued": True, "item": item}
+
+
+@app.post("/api/pipeline/queue/add-many")
+async def queue_add_many(req: dict):
+    """Body: { items: [{post_id, title, subreddit, params}, ...] }"""
+    from run_queue import enqueue
+    created = []
+    for it in (req.get("items") or []):
+        pid = (it.get("post_id") or "").strip()
+        if not pid:
+            continue
+        created.append(enqueue(
+            PROJECT_ROOT,
+            post_id=pid,
+            title=(it.get("title") or "").strip(),
+            subreddit=(it.get("subreddit") or "").strip(),
+            params=it.get("params") or {},
+        ))
+    return {"queued": len(created), "items": created}
+
+
+@app.delete("/api/pipeline/queue/{queue_id}")
+async def queue_remove(queue_id: str):
+    from run_queue import remove
+    ok = remove(PROJECT_ROOT, queue_id)
+    if not ok:
+        raise HTTPException(404, "Queue item not found")
+    return {"removed": True}
+
+
+@app.post("/api/pipeline/queue/{queue_id}/retry")
+async def queue_retry(queue_id: str):
+    from run_queue import retry
+    item = retry(PROJECT_ROOT, queue_id)
+    if not item:
+        raise HTTPException(400, "Queue item isn't in a retryable state (only failed/cancelled)")
+    return {"requeued": True, "item": item}
+
+
+@app.post("/api/pipeline/queue/{queue_id}/move")
+async def queue_move(queue_id: str, req: dict):
+    """Body: {direction: -1 | +1}"""
+    from run_queue import reorder
+    direction = int(req.get("direction") or 0)
+    if direction not in (-1, 1):
+        raise HTTPException(400, "direction must be -1 or 1")
+    ok = reorder(PROJECT_ROOT, queue_id, direction)
+    if not ok:
+        raise HTTPException(400, "Can't move that far / item not queued")
+    return {"moved": True}
+
+
+@app.post("/api/pipeline/queue/pause")
+async def queue_pause():
+    from run_queue import set_paused
+    set_paused(PROJECT_ROOT, True)
+    return {"paused": True}
+
+
+@app.post("/api/pipeline/queue/resume")
+async def queue_resume():
+    from run_queue import set_paused
+    set_paused(PROJECT_ROOT, False)
+    return {"paused": False}
+
+
+@app.post("/api/pipeline/queue/clear-history")
+async def queue_clear_history():
+    from run_queue import clear_history
+    dropped = clear_history(PROJECT_ROOT)
+    return {"dropped": dropped}
 
 
 @app.get("/api/cost/summary")
