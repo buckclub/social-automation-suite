@@ -416,6 +416,45 @@ class StreamlabsTTS:
         return results
 
 
+def _chars_to_words(chars: list, starts: list, ends: list) -> list[dict]:
+    """
+    Aggregate ElevenLabs' per-character timing arrays into per-word
+    {word, start, end} dicts. Whitespace characters delimit words; we
+    also treat apostrophes as part of the adjacent word so "don't" stays
+    one token. Never raises — returns [] on malformed input.
+    """
+    if not chars or not starts or not ends:
+        return []
+    n = min(len(chars), len(starts), len(ends))
+    out: list[dict] = []
+    cur: list[str] = []
+    cur_start: float | None = None
+    cur_end: float | None = None
+
+    def _flush():
+        nonlocal cur, cur_start, cur_end
+        if cur and cur_start is not None and cur_end is not None:
+            word = "".join(cur).strip()
+            if word:
+                out.append({"word": word, "start": float(cur_start), "end": float(cur_end)})
+        cur = []
+        cur_start = None
+        cur_end = None
+
+    for i in range(n):
+        ch = chars[i] or ""
+        if not ch.strip():
+            # whitespace flushes the current word
+            _flush()
+            continue
+        if cur_start is None:
+            cur_start = starts[i]
+        cur_end = ends[i]
+        cur.append(ch)
+    _flush()
+    return out
+
+
 class ElevenLabsTTS:
     """
     ElevenLabs TTS integration (cloud, paid / metered).
@@ -424,6 +463,7 @@ class ElevenLabsTTS:
     """
 
     API_URL_TMPL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    API_URL_TIMESTAMPS_TMPL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
     VOICES_URL   = "https://api.elevenlabs.io/v2/voices"
     # Kept short on purpose: shorter audio clips align far more accurately in
     # faster-whisper. ElevenLabs bills per character so splitting doesn't cost
@@ -440,12 +480,18 @@ class ElevenLabsTTS:
                  api_key: str = "", model_id: str = "eleven_multilingual_v2",
                  stability: float = 0.5, similarity_boost: float = 0.75,
                  style: float = 0.0, use_speaker_boost: bool = True,
-                 cancel_check=None, delay_between_requests: float = 0.0):
+                 cancel_check=None, delay_between_requests: float = 0.0,
+                 use_native_timestamps: bool = True):
         self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY", "")
         self.output_dir = output_dir
         self.cancel_check = cancel_check
         self.delay_between_requests = delay_between_requests
         self.model_id = model_id
+        # When True, generate_segments() calls /with-timestamps and attaches
+        # per-word timings to each returned segment so the pipeline can skip
+        # whisper realignment entirely. ~2× the JSON payload but MUCH better
+        # caption sync since the timings come from the TTS engine itself.
+        self.use_native_timestamps = bool(use_native_timestamps)
         self.voice_settings = {
             "stability": float(stability),
             "similarity_boost": float(similarity_boost),
@@ -697,6 +743,119 @@ class ElevenLabsTTS:
                     return None
         return None
 
+    def synthesize_with_timestamps(
+        self, text: str, output_filename: Optional[str] = None, max_retries: int = 3
+    ) -> Optional[dict]:
+        """
+        Same as synthesize() but uses the /with-timestamps endpoint, which
+        returns sample-accurate per-character timings alongside the audio.
+
+        Returns None on failure, else:
+          {
+            "audio_path": <absolute path to written mp3>,
+            "words": [{"word": "Hello", "start": 0.0, "end": 0.42}, ...]
+          }
+
+        Word timings are aggregated from the per-character timings by grouping
+        runs of non-whitespace characters. This beats whisper realignment
+        because the TTS engine itself reports exactly when each character
+        sample was rendered — no listening-back, no hallucination risk, no
+        missed words on unusual names or numbers.
+        """
+        import base64
+        if not text or not text.strip():
+            return None
+        if not self.api_key:
+            print("❌ ElevenLabs (with-timestamps): missing api_key")
+            return None
+        if not output_filename:
+            output_filename = self._generate_filename(text, self.voice)
+        output_path = os.path.join(self.output_dir, output_filename)
+        # Store the aligned words alongside the mp3 so Re-render / Resume
+        # can reuse them without calling the API again.
+        sidecar_path = output_path + ".words.json"
+
+        # Cached? (both pieces must exist)
+        if os.path.exists(output_path) and os.path.exists(sidecar_path):
+            try:
+                import json as _json
+                with open(sidecar_path, "r", encoding="utf-8") as f:
+                    cached_words = _json.load(f)
+                print(f"✓ Using cached audio+timings: {output_filename}")
+                return {"audio_path": output_path, "words": cached_words}
+            except Exception:
+                pass  # fall through and re-synth
+
+        url = self.API_URL_TIMESTAMPS_TMPL.format(voice_id=self.voice_id)
+        headers = {
+            "xi-api-key":   self.api_key,
+            "Content-Type": "application/json",
+            "Accept":       "application/json",  # returns JSON with base64 audio
+        }
+        body = {
+            "text":           text,
+            "model_id":       self.model_id,
+            "voice_settings": self.voice_settings,
+        }
+        preview = (text[:60] + "…") if len(text) > 60 else text
+        for attempt in range(max_retries):
+            if self.cancel_check:
+                self.cancel_check()
+            try:
+                if attempt > 0 or self.delay_between_requests > 0:
+                    time.sleep(self.delay_between_requests * (2 ** attempt))
+                t0 = time.time()
+                print(f"   → ElevenLabs+timestamps (attempt {attempt + 1}/{max_retries}): \"{preview}\"", flush=True)
+                resp = requests.post(url, headers=headers, json=body, timeout=90)
+                if resp.status_code in (401, 404, 422):
+                    print(f"❌ ElevenLabs+timestamps [{resp.status_code}]: {resp.text[:200]}")
+                    return None
+                if resp.status_code == 429:
+                    wait = 2.0 * (2 ** attempt)
+                    print(f"⚠️  ElevenLabs rate-limited, waiting {wait:.1f}s...")
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                audio_b64 = data.get("audio_base64") or ""
+                if not audio_b64:
+                    print("❌ ElevenLabs+timestamps: response missing audio_base64")
+                    return None
+                with open(output_path, "wb") as f:
+                    f.write(base64.b64decode(audio_b64))
+
+                # Prefer `normalized_alignment` (handles text-normalization like
+                # number spell-out — e.g. "25M" → "twenty five million") when
+                # present; fall back to raw `alignment`.
+                align = data.get("normalized_alignment") or data.get("alignment") or {}
+                chars      = align.get("characters") or []
+                start_s    = align.get("character_start_times_seconds") or []
+                end_s      = align.get("character_end_times_seconds") or []
+                words = _chars_to_words(chars, start_s, end_s)
+
+                # Persist sidecar so rerun doesn't need to call the API.
+                try:
+                    import json as _json
+                    with open(sidecar_path, "w", encoding="utf-8") as f:
+                        _json.dump(words, f, ensure_ascii=False)
+                except Exception:
+                    pass
+
+                elapsed = time.time() - t0
+                print(f"✓ Generated TTS+timings: {output_filename} "
+                      f"(ElevenLabs/{self.voice}, {len(words)} words, {elapsed:.1f}s)", flush=True)
+                try:
+                    from cost_tracker import record_tts
+                    record_tts(PROJECT_ROOT, "elevenlabs", len(text))
+                except Exception:
+                    pass
+                return {"audio_path": output_path, "words": words}
+            except requests.exceptions.RequestException as e:
+                print(f"✗ ElevenLabs+timestamps error (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt >= max_retries - 1:
+                    return None
+        return None
+
     def _generate_silence(self, duration_seconds: int, output_path: str) -> str:
         import struct, wave
         wav_path = output_path.replace('.mp3', '.wav') if output_path.endswith('.mp3') else output_path
@@ -708,9 +867,20 @@ class ElevenLabsTTS:
         return wav_path
 
     def generate_segments(self, text: str, progress_callback=None, cancel_check=None) -> List[dict]:
+        """
+        Produce audio segments for `text`. Each non-pause segment includes
+        ElevenLabs' native per-word timestamps (via /with-timestamps) when
+        `self.use_native_timestamps` is True — this lets the render path
+        skip the whisper realignment step and its inherent inaccuracy.
+
+        Falls back to the plain synthesize() call (no timings) if the
+        with-timestamps endpoint fails; the pipeline will then run whisper
+        over those segments as before.
+        """
         import re
         segments = self.segment_text(text)
-        results = []
+        results: List[dict] = []
+        use_native = getattr(self, "use_native_timestamps", True)
         for i, seg in enumerate(segments):
             if cancel_check:
                 cancel_check()
@@ -723,7 +893,27 @@ class ElevenLabsTTS:
                 if progress_callback:
                     progress_callback(i + 1, len(segments), f"[Pause {secs}s]")
                 continue
-            audio_path = self.synthesize(seg, output_filename=self._generate_filename(seg, self.voice))
+
+            filename = self._generate_filename(seg, self.voice)
+            if use_native:
+                tr = self.synthesize_with_timestamps(seg, output_filename=filename)
+                if tr and tr.get("audio_path"):
+                    # Timestamps are absolute within THIS segment (starts at 0).
+                    # The render pipeline treats each segment's words as
+                    # segment-relative, same contract as whisper_align output.
+                    results.append({
+                        "text":        seg,
+                        "audio_path":  tr["audio_path"],
+                        "words":       tr.get("words") or [],
+                        "native_timings": True,
+                    })
+                    if progress_callback:
+                        progress_callback(i + 1, len(segments), seg)
+                    continue
+                # Fall through to plain synthesize on failure.
+                print("   ⚠️  /with-timestamps failed — falling back to plain synthesis for this segment")
+
+            audio_path = self.synthesize(seg, output_filename=filename)
             if audio_path:
                 results.append({'text': seg, 'audio_path': audio_path})
             if progress_callback:

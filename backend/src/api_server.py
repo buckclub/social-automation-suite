@@ -3018,6 +3018,15 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                     from tts_engine import ElevenLabsTTS
                     audio_dir = os.path.join(PROJECT_ROOT, "posts", post_id, "audio")
                     el_cfg = tts_config.get("elevenlabs", {}) if isinstance(tts_config.get("elevenlabs"), dict) else {}
+                    # Default native_timestamps = on. Users can flip off
+                    # tts.elevenlabs.use_native_timestamps if they hit API
+                    # quirks (e.g. a deprecated-endpoint scenario on an
+                    # older plan) and want to fall back to whisper alignment.
+                    use_native_ts = True
+                    if "use_native_timestamps" in el_cfg:
+                        use_native_ts = bool(el_cfg.get("use_native_timestamps"))
+                    elif "use_native_timestamps" in tts_config:
+                        use_native_ts = bool(tts_config.get("use_native_timestamps"))
                     tts_instance = ElevenLabsTTS(
                         voice=main_voice,
                         output_dir=audio_dir,
@@ -3028,8 +3037,12 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                         style=float(el_cfg.get("style", 0.0)),
                         use_speaker_boost=bool(el_cfg.get("use_speaker_boost", True)),
                         cancel_check=_check_cancelled,
+                        use_native_timestamps=use_native_ts,
                     )
-                    _log(f"Using ElevenLabs (voice={main_voice}, model={tts_instance.model_id})")
+                    _log(
+                        f"Using ElevenLabs (voice={main_voice}, model={tts_instance.model_id}, "
+                        f"native_timings={'on' if use_native_ts else 'off'})"
+                    )
 
                 # Real-time progress tracking
                 tts_sub_steps_live = []
@@ -3131,23 +3144,44 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                     # misses words on stretched audio, so we do ASR before any
                     # time-stretch and scale the timings mathematically.
 
-                    # 1) Whisper alignment — on the ORIGINAL pre-stretch audio.
-                    if caption_cfg.get("force_align", False):
+                    # 1a) Count how many segments already have NATIVE per-word
+                    # timings from the TTS engine (ElevenLabs /with-timestamps).
+                    # Those are sample-accurate and skip whisper entirely.
+                    native_hits = sum(
+                        1 for _s in timeline
+                        if _s.get("native_timings") and _s.get("words")
+                    )
+                    if native_hits:
+                        _log(
+                            f"TTS native timings: using {native_hits}/{len(timeline)} "
+                            "segments directly from ElevenLabs /with-timestamps (no whisper needed)"
+                        )
+
+                    # 1b) Whisper alignment — on the ORIGINAL pre-stretch audio.
+                    # Only runs when at least one segment is MISSING native
+                    # timings (e.g. mixed-provider runs or a fallback from a
+                    # /with-timestamps failure). Saves 15-30s per render on a
+                    # 3080 when every segment came back with native timings.
+                    needs_whisper = [
+                        _s for _s in timeline
+                        if not _s.get("is_pause") and not _s.get("words")
+                    ]
+                    if caption_cfg.get("force_align", False) and needs_whisper:
                         try:
                             from whisper_align import is_available as _wh_ok, align_audio, install_hint
                             if not _wh_ok():
                                 _log(f"Whisper alignment requested but not installed. Skipping. ({install_hint()})")
                             else:
                                 model_size = caption_cfg.get("align_model_size", "base")
-                                _set_step("tts", "running", f"Aligning captions (whisper {model_size}) on original audio...")
-                                _log(f"Whisper alignment starting (model={model_size}, pre-atempo)...")
+                                _set_step("tts", "running",
+                                          f"Aligning {len(needs_whisper)} segment(s) without native timings (whisper {model_size})...")
+                                _log(f"Whisper alignment starting on {len(needs_whisper)}/{len(timeline)} segments "
+                                     f"(model={model_size}, pre-atempo)...")
                                 _t0 = time.time()
                                 aligned = 0
-                                for _seg in timeline:
+                                for _seg in needs_whisper:
                                     if _check_cancelled():
                                         pass
-                                    if _seg.get("is_pause"):
-                                        continue
                                     words = await asyncio.to_thread(
                                         align_audio, _seg.get("audio_path", ""),
                                         text_hint=_seg.get("text", ""),
@@ -3156,7 +3190,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                                     if words:
                                         _seg["words"] = words
                                         aligned += 1
-                                _log(f"Whisper alignment done: {aligned}/{len(timeline)} segments in {time.time() - _t0:.1f}s")
+                                _log(f"Whisper alignment done: {aligned}/{len(needs_whisper)} segments in {time.time() - _t0:.1f}s")
                         except Exception as _e:
                             _log(f"Whisper alignment error (continuing without): {_e}")
 
