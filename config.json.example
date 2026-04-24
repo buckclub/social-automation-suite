@@ -175,6 +175,7 @@
     "min_len_s":       15,
     "max_len_s":       60,
     "mode":            "ai_only",
+    "//mode_options":  "ai_only | ai_plus (+ audio-energy peaks) | ai_visual (+ scene cuts) | manual",
     "transcribe_model": "base"
   },
 

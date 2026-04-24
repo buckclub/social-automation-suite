@@ -43,7 +43,7 @@ export default function ClipProjectPage() {
   const [targetCount, setTargetCount] = useState(5);
   const [minLen, setMinLen] = useState(15);
   const [maxLen, setMaxLen] = useState(60);
-  const [mode, setMode] = useState<"ai_only" | "manual">("ai_only");
+  const [mode, setMode] = useState<"ai_only" | "ai_plus" | "ai_visual" | "manual">("ai_only");
 
   // Action-in-flight flags
   const [transcribing, setTranscribing] = useState(false);
@@ -252,6 +252,8 @@ export default function ClipProjectPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="ai_only">AI only (LLM over transcript)</SelectItem>
+                      <SelectItem value="ai_plus">AI + audio-energy peaks</SelectItem>
+                      <SelectItem value="ai_visual">AI + audio peaks + scene cuts</SelectItem>
                       <SelectItem value="manual">Manual (skip AI)</SelectItem>
                     </SelectContent>
                   </Select>

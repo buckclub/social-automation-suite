@@ -64,11 +64,18 @@ def propose_clips(
     min_len_s: int = 15,
     max_len_s: int = 60,
     mode: str = "ai_only",
+    source_path: Optional[str] = None,
 ) -> list[dict]:
     """
     Returns up to `target_count` proposals. Never raises — failures
     come back as an empty list so the caller (the clip pipeline) can
     fall back to a single "the whole thing" manual window.
+
+    Modes:
+      ai_only    — transcript → LLM
+      ai_plus    — transcript + audio-energy peaks → LLM
+      ai_visual  — transcript + audio-energy peaks + scene cuts → LLM
+      manual     — skip AI entirely
     """
     if mode == "manual" or not segments:
         return []
@@ -77,6 +84,18 @@ def propose_clips(
         from gemini_hooks import _call_ai
     except Exception:
         return []
+
+    # Gather heuristic signals when the user asked for them. Best effort —
+    # any failure downgrades cleanly to ai_only quality.
+    hint_block = ""
+    if mode in ("ai_plus", "ai_visual") and source_path:
+        try:
+            from clip_heuristics import audio_energy, scene_cuts, build_hint_block
+            peaks = audio_energy(source_path)
+            cuts = scene_cuts(source_path) if mode == "ai_visual" else []
+            hint_block = build_hint_block(peaks, cuts)
+        except Exception as e:
+            print(f"⚠️  Clip heuristics failed ({mode}): {e}")
 
     system = (
         "You are a viral short-form video editor. Pick the most Shorts-worthy "
@@ -91,7 +110,8 @@ def propose_clips(
         f"Allowed clip length: {min_len_s}-{max_len_s} seconds\n\n"
         f"Transcript with timecodes:\n"
         f"{_transcript_to_block(segments)}\n\n"
-        "Return a JSON object with key 'clips' whose value is an array. Each item:\n"
+        + (hint_block + "\n\n" if hint_block else "")
+        + "Return a JSON object with key 'clips' whose value is an array. Each item:\n"
         "{\n"
         '  "start_time":   "HH:MM:SS",\n'
         '  "end_time":     "HH:MM:SS",\n'

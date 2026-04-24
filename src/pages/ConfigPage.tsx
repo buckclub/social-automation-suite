@@ -187,6 +187,101 @@ export default function ConfigPage() {
   const [capHighlightStrokeColor, setCapHighlightStrokeColor] = useState("#000000");
   const [capSingleLine, setCapSingleLine] = useState(false);
 
+  // ── Caption preset swap ────────────────────────────────────────
+  // Two presets live in config: `captions` (Reddit/AI pipeline) and
+  // `clip_captions` (Clip Maker). The UI edits one at a time; flipping
+  // the switcher below flushes the current values into the inactive
+  // preset's buffer and loads the other buffer into the cap* state.
+  type CaptionPreset = "reddit" | "clip";
+  const [activeCaptionPreset, setActiveCaptionPreset] = useState<CaptionPreset>("reddit");
+  // Buffers hold the other preset's values while we're editing the active one.
+  const captionBuffers = useRef<Record<CaptionPreset, Record<string, any>>>({
+    reddit: {}, clip: {},
+  });
+
+  // Snapshot all cap* state into a plain object so we can swap it wholesale.
+  const readCurrentCaps = (): Record<string, any> => ({
+    enabled: capEnabled, font_path: capFontPath, font_size: capFontSize,
+    color: capColor, stroke_color: capStrokeColor, stroke_width: capStrokeWidth,
+    bg_enabled: capBgEnabled, bg_color: capBgColor, bg_opacity: capBgOpacity,
+    padding: capPadding, corner_radius: capCornerRadius,
+    max_width_pct: capMaxWidthPct, position: capPosition, position_offset: capPositionOffset,
+    words_per_caption: capWordsPerCaption, uppercase: capUppercase,
+    attribution: capAttribution, animation: capAnimation,
+    animation_duration: capAnimationDuration, pop_overshoot: capPopOvershoot,
+    pop_start_scale: capPopStartScale, force_align: capForceAlign,
+    align_model_size: capAlignModelSize, highlight_word: capHighlightWord,
+    highlight_color: capHighlightColor, highlight_scale: capHighlightScale,
+    highlight_stroke_color: capHighlightStrokeColor, single_line: capSingleLine,
+  });
+  const applyCaptionBuffer = (buf: Record<string, any>) => {
+    setCapEnabled(buf.enabled ?? true);
+    setCapFontPath(buf.font_path ?? "arial.ttf");
+    setCapFontSize(buf.font_size ?? 80);
+    setCapColor(buf.color ?? "white");
+    setCapStrokeColor(buf.stroke_color ?? "black");
+    setCapStrokeWidth(buf.stroke_width ?? 4);
+    setCapBgEnabled(Boolean(buf.bg_enabled ?? (buf.bg_color != null && buf.bg_color !== "")));
+    setCapBgColor(buf.bg_color ?? "black");
+    setCapBgOpacity(buf.bg_opacity ?? 160);
+    setCapPadding(buf.padding ?? 30);
+    setCapCornerRadius(buf.corner_radius ?? 20);
+    setCapMaxWidthPct(buf.max_width_pct ?? 0.85);
+    setCapPosition(buf.position ?? "bottom");
+    setCapPositionOffset(buf.position_offset ?? 0);
+    setCapWordsPerCaption(buf.words_per_caption ?? 3);
+    setCapUppercase(buf.uppercase ?? true);
+    setCapAttribution(buf.attribution ?? false);
+    setCapAnimation(buf.animation ?? "none");
+    setCapAnimationDuration(buf.animation_duration ?? 0.15);
+    setCapPopOvershoot(buf.pop_overshoot ?? 1.12);
+    setCapPopStartScale(buf.pop_start_scale ?? 0.7);
+    setCapForceAlign(buf.force_align ?? false);
+    setCapAlignModelSize(buf.align_model_size ?? "base");
+    setCapHighlightWord(buf.highlight_word ?? false);
+    setCapHighlightColor(buf.highlight_color ?? "#FFD93D");
+    setCapHighlightScale(buf.highlight_scale ?? 1.1);
+    setCapHighlightStrokeColor(buf.highlight_stroke_color ?? "#000000");
+    setCapSingleLine(buf.single_line ?? false);
+  };
+  const switchCaptionPreset = (next: CaptionPreset) => {
+    if (next === activeCaptionPreset) return;
+    // Flush current state into the active buffer, then load the other.
+    captionBuffers.current[activeCaptionPreset] = readCurrentCaps();
+    applyCaptionBuffer(captionBuffers.current[next] || {});
+    setActiveCaptionPreset(next);
+  };
+  // Serialize a buffer into the exact shape the backend config expects.
+  const _captionPayload = (buf: Record<string, any>) => ({
+    enabled:               buf.enabled ?? true,
+    font_path:             buf.font_path ?? "arial.ttf",
+    font_size:             buf.font_size ?? 80,
+    color:                 buf.color ?? "white",
+    stroke_color:          buf.stroke_color ?? "black",
+    stroke_width:          buf.stroke_width ?? 4,
+    bg_color:              buf.bg_enabled ? (buf.bg_color ?? "black") : null,
+    bg_opacity:            buf.bg_opacity ?? 160,
+    padding:               buf.padding ?? 30,
+    corner_radius:         buf.corner_radius ?? 20,
+    max_width_pct:         buf.max_width_pct ?? 0.85,
+    position:              buf.position ?? "bottom",
+    position_offset:       buf.position_offset ?? 0,
+    words_per_caption:     buf.words_per_caption ?? 3,
+    uppercase:             buf.uppercase ?? true,
+    attribution:           buf.attribution ?? false,
+    animation:             buf.animation ?? "none",
+    animation_duration:    buf.animation_duration ?? 0.15,
+    pop_overshoot:         buf.pop_overshoot ?? 1.12,
+    pop_start_scale:       buf.pop_start_scale ?? 0.7,
+    force_align:           buf.force_align ?? false,
+    align_model_size:      buf.align_model_size ?? "base",
+    highlight_word:        buf.highlight_word ?? false,
+    highlight_color:       buf.highlight_color ?? "#FFD93D",
+    highlight_scale:       buf.highlight_scale ?? 1.1,
+    highlight_stroke_color: buf.highlight_stroke_color ?? "#000000",
+    single_line:           buf.single_line ?? false,
+  });
+
   // Output
   const [postsDir, setPostsDir] = useState("posts");
   const [usedPostsFile, setUsedPostsFile] = useState("used_posts.json");
@@ -365,6 +460,16 @@ export default function ConfigPage() {
     setCapHighlightStrokeColor((cap as any).highlight_stroke_color ?? (cap.stroke_color ?? "#000000"));
     setCapSingleLine((cap as any).single_line ?? false);
 
+    // Seed the OTHER preset's buffer too, so switching is instant. If
+    // clip_captions is null/missing, it mirrors reddit captions initially
+    // so the user sees sane defaults instead of blanks.
+    const redditCap = { ...(cap || {}) };
+    const clipCap = { ...((c as any).clip_captions || cap || {}) };
+    captionBuffers.current = {
+      reddit: redditCap as Record<string, any>,
+      clip:   clipCap as Record<string, any>,
+    };
+
     const o = c.output ?? {} as FullConfig["output"];
     setPostsDir(o.posts_directory ?? "posts");
     setUsedPostsFile(o.used_posts_file ?? "used_posts.json");
@@ -505,6 +610,11 @@ export default function ConfigPage() {
   };
 
   const handleSave = () => {
+    // Flush whichever caption preset is being edited into its buffer so
+    // both `captions` and `clip_captions` go out with fresh values.
+    captionBuffers.current[activeCaptionPreset] = readCurrentCaps();
+    const redditCapOut = _captionPayload(captionBuffers.current.reddit || {});
+    const clipCapOut   = _captionPayload(captionBuffers.current.clip   || {});
     updateMutation.mutate(
       {
         subreddits,
@@ -562,35 +672,8 @@ export default function ConfigPage() {
           branding,
           background_selector: videoBgSelector,
         },
-        captions: {
-          enabled: capEnabled,
-          font_path: capFontPath,
-          font_size: capFontSize,
-          color: capColor,
-          stroke_color: capStrokeColor,
-          stroke_width: capStrokeWidth,
-          bg_color: capBgEnabled ? capBgColor : null,
-          bg_opacity: capBgOpacity,
-          padding: capPadding,
-          corner_radius: capCornerRadius,
-          max_width_pct: capMaxWidthPct,
-          position: capPosition,
-          position_offset: capPositionOffset,
-          words_per_caption: capWordsPerCaption,
-          uppercase: capUppercase,
-          attribution: capAttribution,
-          animation: capAnimation,
-          animation_duration: capAnimationDuration,
-          pop_overshoot: capPopOvershoot,
-          pop_start_scale: capPopStartScale,
-          force_align: capForceAlign,
-          align_model_size: capAlignModelSize,
-          highlight_word: capHighlightWord,
-          highlight_color: capHighlightColor,
-          highlight_scale: capHighlightScale,
-          highlight_stroke_color: capHighlightStrokeColor,
-          single_line: capSingleLine,
-        },
+        captions: redditCapOut,
+        clip_captions: clipCapOut,
         output: {
           posts_directory: postsDir,
           used_posts_file: usedPostsFile,
@@ -1452,6 +1535,33 @@ export default function ConfigPage() {
         </div>
 
         <div className={activeTab === "captions" ? "" : "hidden"}>
+        {/* Preset switcher — the same UI below edits either `captions`
+            (Reddit / AI pipeline) or `clip_captions` (Clip Maker). Values
+            swap in and out of buffers on toggle; both get saved regardless
+            of which one you were editing when you clicked Save. */}
+        <div className="flex items-center gap-2 p-2 rounded-md border border-border bg-secondary/40 mb-3">
+          <Type className="h-3.5 w-3.5 text-primary" />
+          <span className="text-[11px] font-medium">Editing preset:</span>
+          <div className="flex items-center gap-1">
+            {(["reddit", "clip"] as const).map((p) => (
+              <button
+                key={p}
+                onClick={() => switchCaptionPreset(p)}
+                className={`h-6 px-2.5 text-[10px] rounded border transition-colors capitalize ${
+                  activeCaptionPreset === p
+                    ? "border-primary bg-primary/15 text-primary font-medium"
+                    : "border-border bg-secondary/60 text-muted-foreground hover:border-primary/30"
+                }`}
+              >
+                {p === "reddit" ? "Reddit / AI" : "Clip Maker"}
+              </button>
+            ))}
+          </div>
+          <span className="text-[10px] text-muted-foreground ml-auto">
+            Both presets save together when you hit Save All.
+          </span>
+        </div>
+
         <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-5 items-start">
         <div className="space-y-5 min-w-0">
         {/* Captions */}

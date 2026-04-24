@@ -115,16 +115,27 @@ DEFAULT_CONFIG = {
     },
 }
 
+def _initial_reddit_steps() -> list[dict]:
+    """Canonical Reddit pipeline step list. Pulled from reddit_pipeline so
+    the step set is defined in one place for both the runner and the UI."""
+    try:
+        from reddit_pipeline import REDDIT_STEP_DEFS
+        return [dict(s) for s in REDDIT_STEP_DEFS]
+    except Exception:
+        # Fallback if the new module isn't importable for any reason.
+        return [
+            {"id": "ai_generate", "title": "AI Content Generation", "status": "idle", "detail": ""},
+            {"id": "fetch", "title": "Fetch Reddit Post", "status": "idle", "detail": ""},
+            {"id": "format", "title": "Format Story", "status": "idle", "detail": ""},
+            {"id": "tts", "title": "Generate TTS Audio", "status": "idle", "detail": ""},
+            {"id": "video", "title": "Render Video", "status": "idle", "detail": ""},
+            {"id": "thumbnail", "title": "Generate Thumbnails", "status": "idle", "detail": ""},
+            {"id": "notify", "title": "Notify & Upload", "status": "idle", "detail": ""},
+        ]
+
+
 pipeline_state = {
-    "steps": [
-        {"id": "ai_generate", "title": "AI Content Generation", "status": "idle", "detail": ""},
-        {"id": "fetch", "title": "Fetch Reddit Post", "status": "idle", "detail": ""},
-        {"id": "format", "title": "Format Story", "status": "idle", "detail": ""},
-        {"id": "tts", "title": "Generate TTS Audio", "status": "idle", "detail": ""},
-        {"id": "video", "title": "Render Video", "status": "idle", "detail": ""},
-        {"id": "thumbnail", "title": "Generate Thumbnails", "status": "idle", "detail": ""},
-        {"id": "notify", "title": "Notify & Upload", "status": "idle", "detail": ""},
-    ],
+    "steps": _initial_reddit_steps(),
     "is_running": False,
     "current_post": None,
     "started_at": None,
@@ -1367,6 +1378,10 @@ async def propose_clip_project(project_id: str, req: dict = {}):
     ollama_url = g.get("ollama_url", "http://localhost:11434")
 
     from clip_propose import propose_clips
+    # Heuristic modes (ai_plus, ai_visual) need the source file to compute
+    # audio-energy peaks + scene cuts. Pass it through so the propose module
+    # can pull those signals; None is fine for ai_only / manual.
+    source_path_for_heuristics = proj.get("source_file") or None
     def _run():
         return propose_clips(
             segs,
@@ -1376,6 +1391,7 @@ async def propose_clip_project(project_id: str, req: dict = {}):
             min_len_s=int(req.get("min_len_s") or cm.get("min_len_s", 15)),
             max_len_s=int(req.get("max_len_s") or cm.get("max_len_s", 60)),
             mode=req.get("mode") or cm.get("mode", "ai_only"),
+            source_path=source_path_for_heuristics,
         )
 
     proposals = await asyncio.to_thread(_run)
