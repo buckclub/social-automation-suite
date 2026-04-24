@@ -39,6 +39,12 @@ This is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/r
 - **Expanded filter bar** — exclude keywords, must-contain, deny-subreddit list, min upvotes, min comments, min viral/hr, max duration, min AI score, hide near-duplicates.
 - **Filter presets** — save/load/delete named filter bundles (persisted per browser).
 
+### Video / backgrounds
+
+- **Backgrounds library page** (new top-level nav entry, also reachable via `g b` or the command palette). A file-browser UI over the `backgrounds/` folder — upload multiple videos via picker or drag-and-drop anywhere on the card, with live per-file progress bars. Create nested folders (e.g. *minecraft-parkour*, *subway-surfers*, *GTA*) to organize footage by theme. Per-video autoplay preview on click, per-folder / per-video delete with a recursive-confirm for non-empty folders. Path-traversal guards on the backend reject anything escaping `backgrounds/`.
+- **Default-background selector** (Config → Video). Dropdown lists every subfolder under `backgrounds/` with its video count plus a top-level *"🎲 All backgrounds — random"* option. The pipeline then resolves the `video.background_selector` to: specific file → random within folder (recursive) → random across everything, with safe fallback if a saved selector disappears from disk.
+- **Fully customizable title card** with a live mini-preview next to the controls (same pattern as the captions preview). Config → Video → **Title Card** now exposes: circular profile-pic upload (masked onto the card), display handle, hide-stats toggle, 4 color pickers (card background / title text / username text / accent), and 4 dimension sliders (card width % / corner radius / title font size / username font size). Every tweak reflects instantly in the scaled 9:16 mockup, inner padding + avatar radius scale proportionally so the layout stays balanced at any font size, and the backend render reads every value from the `thumbnail` config block — no hard-coded colors or sizes left.
+
 ### Publishing / output
 
 - **Social copy generator** — per-video "Social Copy" button generates YouTube Shorts titles (3 variants) + description + tags, TikTok caption + hashtags, Instagram caption + hashtags, via your configured AI provider. Saved to `posts/<id>/social.json` with per-field copy buttons.
@@ -105,10 +111,21 @@ Copy `config.json.example` to `config.json` on first run. All new keys have defa
   "max_chunk_duration": 2.5, "lead_in_grace": 1.0
 },
 "youtube": { "api_key": "" },   // optional — enables YouTube-benchmark style refs
-"thumbnail": {                  // title-card branding
-  "profile_pic_path": "",       // set via Config → Video → Title Card uploader
-  "username": "",               // "@yourchannel" shown next to the avatar
-  "hide_stats": true            // default true: drops the fake ♡ / ⤴ bottom bar
+"video": {                      // new:
+  "background_selector": ""     // "" = random across all, "folder/sub" = folder random, "folder/clip.mp4" = exact file
+},
+"thumbnail": {                  // title-card branding — fully live-previewable in Config → Video
+  "profile_pic_path":   "",     // set via the uploader — masked into a circle in the render
+  "username":           "",     // "@yourchannel" shown next to the avatar
+  "hide_stats":         true,   // default true: drops the fake ♡ / ⤴ bottom bar
+  "card_bg_color":      "#FFFFFF",
+  "text_color":         "#141414",
+  "username_color":     "#1E1E1E",
+  "accent_color":       "#FF4500",   // fallback avatar fill + part badge
+  "corner_radius":      30,
+  "card_max_width_pct": 0.84,
+  "title_font_size":    52,
+  "username_font_size": 36
 },
 "publishing": {
   "youtube": {
