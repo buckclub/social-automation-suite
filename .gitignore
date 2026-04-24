@@ -28,6 +28,7 @@ __pycache__/
 .venv/
 venv/
 used_posts.json
+used_topics.json
 posts/
 backgrounds/
 config.json
