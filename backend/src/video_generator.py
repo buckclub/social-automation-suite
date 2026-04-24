@@ -1689,10 +1689,15 @@ class VideoGenerator:
             _stats_hidden = (getattr(self, 'thumbnail', None) or {}).get('hide_stats', True)
             bottom_bar_h = 0 if _stats_hidden else 40
 
-            # Calculate total card height dynamically
-            card_h = inner_pad + header_h + 20 + title_text_h + 25 + bottom_bar_h + inner_pad
-            card_h = max(card_h, int(h * 0.18))  # minimum height
-            card_h = min(card_h, int(h * 0.55))  # maximum height
+            # Natural card height follows content exactly — no hard-coded
+            # floor, because for short titles like 'I think my husband might
+            # be having an affair…' the old 18%-of-frame minimum inflated
+            # the card with 75+ pixels of dead white space below the text.
+            # Tight gap below the title when stats are hidden.
+            tail_gap = 10 if _stats_hidden else 25
+            card_h = inner_pad + header_h + 20 + title_text_h + tail_gap + bottom_bar_h + inner_pad
+            # Only cap at MAX — very long titles shouldn't eat half the frame.
+            card_h = min(card_h, int(h * 0.55))
 
             card_y = (h - card_h) // 2
             card_x = card_margin_x
