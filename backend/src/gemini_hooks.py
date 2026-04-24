@@ -353,16 +353,29 @@ def _call_nvidia_nim(api_key: str, prompt: str, system_prompt: str, model: str =
 
 
 def _call_ai(provider: str, api_key: str, prompt: str, system_prompt: str, model: str, ollama_url: str = "") -> Optional[str]:
-    """Route to the correct provider."""
+    """Route to the correct provider, log usage to the local cost ledger."""
     if provider == "openrouter":
-        return _call_openrouter(api_key, prompt, system_prompt, model)
+        out = _call_openrouter(api_key, prompt, system_prompt, model)
     elif provider == "ollama":
         base_url = ollama_url or DEFAULT_OLLAMA_URL
-        return _call_ollama(base_url, prompt, system_prompt, model)
+        out = _call_ollama(base_url, prompt, system_prompt, model)
     elif provider == "nvidia_nim":
-        return _call_nvidia_nim(api_key, prompt, system_prompt, model)
+        out = _call_nvidia_nim(api_key, prompt, system_prompt, model)
     else:
-        return _call_gemini(api_key, prompt, system_prompt, model)
+        out = _call_gemini(api_key, prompt, system_prompt, model)
+
+    # Best-effort usage tally for the cost tracker. PROJECT_ROOT lives two
+    # dirs above this file.
+    try:
+        import os as _os
+        from cost_tracker import record_ai
+        _root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+        in_chars  = len(system_prompt or "") + len(prompt or "")
+        out_chars = len(out or "")
+        record_ai(_root, provider, in_chars=in_chars, out_chars=out_chars)
+    except Exception:
+        pass
+    return out
 
 
 # ── Public API ───────────────────────────────────────────────────────

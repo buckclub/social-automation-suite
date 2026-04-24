@@ -366,6 +366,32 @@ export const api = {
     request<{ cleared: boolean }>("/api/branding/profile-pic", { method: "DELETE" }),
   profilePicUrl: () => `${API_BASE}/api/branding/profile-pic?v=${Date.now()}`,
 
+  // Cost tracker (TTS + AI provider usage)
+  getCostSummary: () =>
+    request<{
+      today: Record<string, Record<string, number>>;
+      month: Record<string, Record<string, number>>;
+      series_30d: { date: string; chars: number }[];
+    }>("/api/cost/summary"),
+  getElevenLabsBalance: () =>
+    request<{
+      available: boolean;
+      reason?: string;
+      character_count?: number;
+      character_limit?: number;
+      next_character_count_reset_unix?: number;
+      tier?: string;
+    }>("/api/cost/elevenlabs-balance"),
+
+  // Render history (for Dashboard chart)
+  getRenderHistory: (days = 30) =>
+    request<{
+      series: { date: string; renders: number; successes: number; failures: number; total_time_s: number; resumes: number }[];
+      days_covered: number;
+      totals: { renders: number; successes: number; failures: number; success_rate: number; avg_render_s: number };
+      today: { renders: number; successes: number; failures: number };
+    }>(`/api/render-history?days=${days}`),
+
   // System status (for the bottom status bar)
   getSystemStatus: () =>
     request<{

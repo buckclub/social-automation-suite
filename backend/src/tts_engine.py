@@ -678,6 +678,12 @@ class ElevenLabsTTS:
                 with open(output_path, 'wb') as f:
                     f.write(resp.content)
                 print(f"✓ Generated TTS: {output_filename} (ElevenLabs/{self.voice})")
+                # Bill this call's character count into the local cost ledger.
+                try:
+                    from cost_tracker import record_tts
+                    record_tts(PROJECT_ROOT, "elevenlabs", len(text))
+                except Exception:
+                    pass
                 return output_path
             except requests.exceptions.RequestException as e:
                 print(f"✗ ElevenLabs error (attempt {attempt + 1}/{max_retries}): {e}")

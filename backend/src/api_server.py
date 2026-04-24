@@ -618,6 +618,36 @@ async def delete_profile_pic():
     return {"cleared": True}
 
 
+@app.get("/api/cost/summary")
+async def cost_summary():
+    """Local TTS/AI usage ledger — today + current month + 30-day spark."""
+    from cost_tracker import snapshot
+    return snapshot(PROJECT_ROOT)
+
+
+@app.get("/api/cost/elevenlabs-balance")
+async def cost_elevenlabs_balance():
+    """Live character balance from the ElevenLabs /v1/user endpoint."""
+    from cost_tracker import fetch_elevenlabs_balance
+    cfg = _load_config()
+    tts = cfg.get("tts") or {}
+    key = (tts.get("elevenlabs") or {}).get("api_key") or tts.get("elevenlabs_api_key") or ""
+    if not key:
+        return {"available": False, "reason": "no_api_key"}
+    info = fetch_elevenlabs_balance(key)
+    if not info:
+        return {"available": False, "reason": "fetch_failed"}
+    return {"available": True, **info}
+
+
+@app.get("/api/render-history")
+async def render_history_endpoint(days: int = 30):
+    """30/60/90-day render history for the Dashboard chart."""
+    from render_history import snapshot
+    days = max(7, min(90, int(days or 30)))
+    return snapshot(PROJECT_ROOT, days=days)
+
+
 @app.get("/api/system/status")
 async def system_status():
     """
@@ -1680,10 +1710,20 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
             "video_paths": list(generated_video_paths),
         })
         _persist_videos_db()
+        try:
+            from render_history import record as _rh_record
+            _rh_record(PROJECT_ROOT, success=bool(generated_video_paths), render_time_s=elapsed, resume=True)
+        except Exception:
+            pass
         _log(f"Resume pipeline completed in {elapsed:.1f}s")
 
     except Exception as e:
         pipeline_state["error"] = str(e)
+        try:
+            from render_history import record as _rh_record
+            _rh_record(PROJECT_ROOT, success=False, resume=True)
+        except Exception:
+            pass
         for step in pipeline_state["steps"]:
             if step["status"] == "running":
                 step["status"] = "error"
@@ -2586,10 +2626,20 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
             "timeline_path": locals().get("preserved_timeline"),
         })
         _persist_videos_db()
+        try:
+            from render_history import record as _rh_record
+            _rh_record(PROJECT_ROOT, success=bool(generated_video_paths), render_time_s=elapsed, resume=False)
+        except Exception:
+            pass
         _log(f"Pipeline completed in {elapsed:.1f}s")
 
     except Exception as e:
         pipeline_state["error"] = str(e)
+        try:
+            from render_history import record as _rh_record
+            _rh_record(PROJECT_ROOT, success=False, resume=False)
+        except Exception:
+            pass
         for step in pipeline_state["steps"]:
             if step["status"] == "running":
                 step["status"] = "error"
