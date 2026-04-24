@@ -144,7 +144,18 @@ export interface SocialCopy {
   source_title?: string;
   subreddit?: string;
   youtube?: { titles?: string[]; description?: string; tags?: string[] };
+  /**
+   * Single caption used verbatim on BOTH TikTok and Instagram Reels —
+   * they take the exact same Reddit-story-with-gameplay-captions format,
+   * so we no longer split them. `format` is one of:
+   *   "A" = run-on story summary with ALL-CAPS emphasis
+   *   "B" = "only part." cliffhanger teaser + hook question
+   *   "C" = punchy single-line hot take / quote
+   */
+  reel?: { caption?: string; hashtags?: string[]; format?: "A" | "B" | "C" };
+  /** @deprecated — older social.json files, kept for backward compat rendering. */
   tiktok?: { caption?: string; hashtags?: string[] };
+  /** @deprecated — older social.json files, kept for backward compat rendering. */
   instagram?: { caption?: string; hashtags?: string[] };
   benchmarks_used?: Array<{
     title: string;

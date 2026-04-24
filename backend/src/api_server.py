@@ -4186,24 +4186,49 @@ async def generate_social_copy(post_id: str):
             _log(f"YouTube benchmarks failed: {e}")
 
     system = (
-        "You are a viral short-form video strategist writing for YouTube Shorts, "
-        "TikTok, and Instagram Reels — NOT long-form YouTube. Return ONLY valid "
-        "minified JSON, no markdown, no commentary. "
-        "Titles must be short, bait-y, and hook the viewer in <2 seconds — they are "
-        "SHORTS titles, not full-video titles. Avoid colons unless the second half "
-        "is a punchline. Prefer ALL-CAPS fragments, questions, cliffhangers, POV "
-        "setups, and direct 'Reddit' callouts. Examples of good shape:\n"
-        "  - 'SHE WAS CAUGHT CHEATING AND STILL DENIED IT 😳'\n"
-        "  - 'POV: your wife is caught red-handed…'\n"
-        "  - 'Wait until you hear what she said next'\n"
-        "  - 'Caught cheating then BLAMED HIM for it?!'\n"
-        "  - 'My wife cheated. What she did next is unreal.'\n"
-        "Hashtags must include the high-volume Reddit-storytime tags viewers follow: "
-        "#reddit, #redditstories, #redditstorytime, plus the subreddit-specific one "
-        "(e.g. r/relationship_advice → #relationshipadvice, r/AmItheAsshole → #AITA, "
-        "#aitah, r/tifu → #tifu). Then 3-5 topical tags drawn from the story. "
-        "When benchmark videos are provided, MATCH their hashtag density and "
-        "hook phrasing — without copying text verbatim."
+        "You are a viral short-form video strategist writing for YouTube Shorts AND "
+        "the TikTok/Reels pair (they share the same caption format on Reddit-story "
+        "gameplay videos). Return ONLY valid minified JSON, no markdown, no commentary.\n\n"
+        "=== THE TWO FORMATS ===\n"
+        "1) YouTube Shorts — separate TITLE + DESCRIPTION. Title ≤55 chars, bait-y, "
+        "hook in <2 s. Description is 1-2 lines then a blank line then a hashtag block.\n"
+        "2) Reels/TikTok — ONE field: a long, run-on descriptive caption that spoils "
+        "the story arc, followed by an inline hashtag tail. TikTok and Instagram Reels "
+        "receive the SAME text.\n\n"
+        "=== STYLE EXAMPLES TO MATCH (for the Reels/TikTok caption) ===\n"
+        "Format A — run-on story summary, ALL-CAPS emphasis on payoffs:\n"
+        "  'My coworker kept \"FORGETTING\" my name in meetings, so I let her do it in "
+        "front of the one person she wanted to IMPRESS. #redditreadings #storytime "
+        "#reddit #storytelling #relationship #fyp #aita #redditstories #fullstories "
+        "#askreddit #reddit_tiktok'\n"
+        "  'I Found Out My Wife Cheated With a Coworker, He Came to My Gym to Intimidate "
+        "Me, Assaulted Me, I Defended Myself and Knocked Him Out, Pressed Charges Despite "
+        "Her Begging, Took a Plea Deal, and Now I'm Moving On #gaming #redditposts "
+        "#redditstorytimes #reddittreading'\n"
+        "Format B — cliffhanger teaser with 'only part.' prefix + hook question:\n"
+        "  'only part. why didn't he or she get a second date? #redd #reddit_tiktok "
+        "#askreddit #fyp #foryoupage'\n"
+        "  'only part. what are hints that women give that most men don't pick up on? "
+        "#foryourpage #fyp #askreddit #redd #reddit_tiktok'\n"
+        "Format C — punchy single-line hot take:\n"
+        "  'Knowing how some women work makes me less of a feminist, apparently. "
+        "#reddit #redditstories #redditreadings #reddit_tiktok #redditstorytime'\n"
+        "  '\"The worst she can say is no\". What was the worst she ever said? "
+        "#redditreadings #askreddit #reddit #fyp #rejected'\n\n"
+        "Pick Format A for full-story videos, Format B when the video is a teaser cut "
+        "from a longer series (use the literal prefix 'only part. '), and Format C when "
+        "the video is a short hot-take / quote.\n\n"
+        "=== HASHTAG RULES ===\n"
+        "The hashtag tail MUST blend generic discovery tags + Reddit-TikTok niche tags "
+        "+ story-specific tags. Always include at least 3 of these Reddit-TikTok core "
+        "tags: #reddit #redditstories #redditstorytime #redditreadings #reddit_tiktok "
+        "#redd #askreddit. Add 2-3 algorithmic tags (#fyp #foryoupage). Add the "
+        "subreddit-specific tag when applicable (r/AmItheAsshole → #aita / #aitah, "
+        "r/relationship_advice → #relationshipadvice / #relationship, r/tifu → #tifu, "
+        "r/maliciouscompliance → #maliciouscompliance, r/pettyrevenge → #pettyrevenge). "
+        "Then 2-4 topic nouns (#cheating #workplace #divorce etc). 8-14 hashtags total "
+        "for Reels/TikTok captions. When benchmark videos are provided, MATCH their "
+        "hashtag density and hook phrasing — without copying text verbatim."
     )
 
     # Build a benchmarks block that the LLM can pattern-match against.
@@ -4259,25 +4284,27 @@ Story excerpt:
 {story_text[:1500]}
 {benchmarks_block}
 HARD REQUIREMENTS:
-- Titles are for SHORTS — ≤55 chars, bait-y, one-line hooks. NO long descriptive colons.
-- Each hashtag list MUST include these exact tags somewhere: {required_tags_str}.
-- Then add 3-6 story-specific tags (people, emotions, topic nouns). No generic filler like #viral #fyp unless the benchmark videos also use them.
-- Don't reuse the same title across platforms — give each platform its own hook.
+- YouTube Shorts titles — ≤55 chars, bait-y, one-line hooks. NO long descriptive colons.
+- Reels/TikTok uses ONE caption that's used verbatim on BOTH platforms (same format).
+  Pick Format A/B/C as described. Write the whole caption + inline hashtag tail as
+  a single string.
+- Hashtag tail MUST include at least 3 Reddit-TikTok core tags from this set:
+  #reddit #redditstories #redditstorytime #redditreadings #reddit_tiktok #redd #askreddit.
+  Plus the required baseline: {required_tags_str}.
+- Add 2-4 story-specific topic tags. 8-14 tags total on the Reels/TikTok caption.
+- Don't reuse the exact same hook text across YouTube and Reels — give each its own angle.
 
 Return JSON with exactly this shape:
 {{
   "youtube": {{
-    "titles": ["<≤55 chars, curiosity/shock hook, Shorts-style>", "<variant 2, different angle>", "<variant 3, POV or question format>"],
-    "description": "<1-2 lines setting up the story, then a blank line, then 6-10 hashtags including the required ones>",
+    "titles": ["<≤55 chars hook>", "<variant 2>", "<variant 3>"],
+    "description": "<1-2 lines setting up the story, blank line, then 6-10 hashtags including the required ones>",
     "tags": ["reddit", "redditstories", "redditstorytime", "<sub-specific>", "<topic tags>", ...up to 12, NO leading #]
   }},
-  "tiktok": {{
-    "caption": "<≤140 chars, punchy hook + 1-2 emojis + 5-8 inline hashtags including the required ones>",
-    "hashtags": ["#reddit", "#redditstories", "#redditstorytime", "<sub-specific>", "<topic>", ...up to 10]
-  }},
-  "instagram": {{
-    "caption": "<1-3 line hook, then blank line, then 12-20 hashtags in one block — include the required tags>",
-    "hashtags": ["<tag>", ...up to 20, MUST include the required ones]
+  "reel": {{
+    "format":   "A",
+    "caption":  "<the full Reels/TikTok caption INCLUDING the inline hashtag tail — single string, used verbatim on both platforms>",
+    "hashtags": ["#reddit", "#redditstories", "#redditstorytime", "#reddit_tiktok", "<sub-specific>", "<topic>", "...8-14 total"]
   }}
 }}
 """
