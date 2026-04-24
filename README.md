@@ -48,10 +48,21 @@ This is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/FaheemAlvii/r
 - **Full Redo dialog** — re-runs the entire pipeline (fetch → TTS → render) for a post. Lets you force a male/female preset or override the voice for this one run without touching your global config. Deletes old audio/video/workspace first and re-marks the post as eligible for discovery. Explicit cost warning since this **does** spend TTS credits.
 - **Delete dialog** — two options: "List only" (keeps files) and "Delete files too" (removes the .mp4s, thumbnail, and preserved workspace). Exact-path matching — deleting one video no longer wipes siblings with similar titles.
 - **Confirmation popups** on Re-render, Full Redo, Delete, and Clear All — hard to accidentally nuke hours of rendering.
+- **Run queue** — stage N posts from the Posts page (`Queue` button on each card), walk away, wake up to N rendered shorts. Background worker drains the queue the moment the pipeline goes idle. Dashboard panel shows current running item with live spinner + elapsed, queued items with up/down/remove, collapsible history with Retry for failures, Pause/Resume toggle. Recovery pass on server start demotes any `running` item that got orphaned by a crash.
+- **Resume panel on dashboard** — every post that has preserved TTS audio but no rendered video surfaces in an amber-bordered card with one-click per-item **Resume** + **Resume all N** that sequences through them.
+- **Render history chart** replaces the old flat stats cards — Today / Last Nd / Success rate / Avg render time plus a clickable 30-day stacked bar chart (blue=success, red=failure). 7/30/90-day toggle.
+- **Cost tracker panel** — live ElevenLabs character balance via their `/v1/user` endpoint (tier badge + next-reset date + traffic-light bar), plus a local ledger tracking AI token usage per provider (gemini / openrouter / ollama / nvidia_nim, approx token in/out via chars÷4), plus a 30-day daily-character sparkline.
+- **YouTube publishing + scheduling** — one-click upload to YouTube Shorts from any video card. Built-in scheduled release via YouTube's own `publishAt` field, so your server can be offline when the video actually goes live. Batch upload dialog on the Videos page can stage N videos at staggered release times in a single click (a week of Shorts in 30 seconds). Live quota widget on the Publishing tab shows units used today + "~N uploads left" + per-operation breakdown + 14-day sparkline + editable daily limit for users with a Google quota bump.
 
 ### Dev experience
 
-- **Tabbed config page** — sidebar navigation (General / Formatting / TTS / Video / Captions / AI Hooks / Output & Discord) instead of one long scrolling page. AI Hooks tab now includes a **YouTube Benchmarks** section for the Data API v3 key.
+- **Tabbed config page** — sidebar navigation (General / Formatting / TTS / Video / Captions / AI Hooks / Publishing / Output & Discord) with a collapse-to-icons toggle, plus URL-backed tab state so the command palette can deep-link into any section.
+- **Command palette (⌘K / Ctrl+K)** — fuzzy-search pages, actions, Config sub-tabs, and the last eight rendered videos by title from anywhere in the app.
+- **Persistent status bar** at the bottom of every page — live pipeline status (current step + detail), backend + Ollama health dots, YouTube quota chip, disk-free gauge with current `videos/` footprint. Clickable segments jump to the relevant page.
+- **Keyboard shortcuts** — `g h` / `g p` / `g v` / `g c` to navigate, `/` focuses the first search/filter input on the page, `?` opens a cheatsheet modal.
+- **Unsaved-changes detection** — the Config page builds a signature of every editable field and compares to the last saved snapshot. Surfaces as an "Unsaved changes" pill next to both save buttons, an amber callout row in the Subreddits section, and a `beforeunload` warning so refresh / tab close doesn't silently discard edits.
+- **Videos page batch operations** — checkbox on every card; select any → floating action bar appears with **Select all published**, **Social copy** (batch generate-social), **YouTube (N)** (staggered-schedule dialog), **Delete** (one confirm).
+- **Pipeline timeline shows per-step elapsed** that ticks live while running and freezes on done/error.
 - **`start.ps1` dev loop** — wraps the server with Ctrl+C-restarts-server behavior (double-tap Ctrl+C within 2s to exit). Also checks whether Ollama is listening on `:11434` at startup and spawns `ollama serve` in a separate window if not — Ollama survives supervisor restarts so you don't reload a 14B model every time you Ctrl+C.
 - **`dev_supervisor.py`** — Python supervisor that uses Windows `CREATE_NEW_PROCESS_GROUP` + `CTRL_BREAK_EVENT` so the child uvicorn process actually handles Ctrl+C (upstream's PowerShell loop was no-op on Windows).
 - **`run_server.py`** — single-entry dev launcher that mounts the built frontend and runs uvicorn with the backend path correctly resolved.
@@ -93,8 +104,27 @@ Copy `config.json.example` to `config.json` on first run. All new keys have defa
   "highlight_word": false, "highlight_color": "#FFD93D", "highlight_scale": 1.1,
   "max_chunk_duration": 2.5, "lead_in_grace": 1.0
 },
-"youtube": { "api_key": "" }   // optional — enables YouTube-benchmark style refs
+"youtube": { "api_key": "" },   // optional — enables YouTube-benchmark style refs
+"thumbnail": {                  // title-card branding
+  "profile_pic_path": "",       // set via Config → Video → Title Card uploader
+  "username": "",               // "@yourchannel" shown next to the avatar
+  "hide_stats": true            // default true: drops the fake ♡ / ⤴ bottom bar
+},
+"publishing": {
+  "youtube": {
+    "client_id": "",            // OAuth 2.0 Desktop app from Google Cloud
+    "client_secret": "",
+    "refresh_token": ""         // populated by the panel after Connect
+  }
+}
 ```
+
+**Posting to YouTube Shorts:**
+
+1. Google Cloud Console → APIs & Services → Credentials → **Create OAuth 2.0 Client ID** → application type **Desktop app** (same project where you enabled the YouTube Data API v3).
+2. Paste the `client_id` + `client_secret` into **Config → Publishing → YouTube Shorts**, click **Save credentials**, then **Connect YouTube** — a browser popup opens, you consent, it closes itself, and the panel shows "Connected as @yourchannel".
+3. During testing / before Google app verification: add your Gmail address under **Google Auth Platform → Audience → Test users**. Refresh tokens in test mode expire after 7 days.
+4. Upload: click the red **YouTube** button on any published video card, edit the title/description/tags (pre-filled from `social.json`), pick **Public / Unlisted / Private** or flip **Release later** and choose a time — scheduled releases fire entirely on YouTube's side, so your machine can be offline.
 
 **How to run (Windows):**
 
