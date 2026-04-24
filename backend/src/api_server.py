@@ -3524,10 +3524,19 @@ async def score_viral_batch(req: dict):
     from gemini_hooks import _call_ai  # type: ignore
 
     # Bumped when the result schema changes — old caches are ignored.
-    CACHE_VERSION = 2
+    CACHE_VERSION = 3
+
+    # Best-effort regex detector from narrator_gender.py. Used as a fallback
+    # filler for both the AI path (when the model didn't set the field) and
+    # the heuristic path (no AI at all). Cheap to call, never raises.
+    try:
+        from narrator_gender import detect_narrator_gender as _regex_gender
+    except Exception:
+        def _regex_gender(title: str, body: str = "") -> Optional[str]:  # type: ignore
+            return None
 
     def _heuristic(post: dict) -> dict:
-        """Fallback when the AI call fails. Produces the full v2 shape with
+        """Fallback when the AI call fails. Produces the full v3 shape with
         AI-only fields left null/empty so the UI still renders cleanly."""
         score = 0
         title = (post.get("title") or "").lower()
@@ -3548,6 +3557,7 @@ async def score_viral_batch(req: dict):
             "suggested_hook":   None,
             "pitfalls":         [],
             "content_warnings":[],
+            "narrator_gender":  _regex_gender(post.get("title", ""), post.get("selftext", "")),
             "reason":           "heuristic fallback (no AI)",
             "source":           "heuristic",
         }
@@ -3584,7 +3594,29 @@ async def score_viral_batch(req: dict):
             return []
         return [str(x)[:maxlen] for x in v[:n] if x]
 
-    def _normalize_result(parsed: dict) -> dict:
+    def _clip_gender(v) -> Optional[str]:
+        """Coerce a model or regex response into 'male' | 'female' | None."""
+        if v is None:
+            return None
+        s = _clip_str(v, 20).lower().strip()
+        if s in ("male", "m", "man", "boy", "guy", "husband", "father", "dad",
+                 "brother", "son", "he", "him"):
+            return "male"
+        if s in ("female", "f", "woman", "girl", "wife", "mother", "mom",
+                 "sister", "daughter", "she", "her"):
+            return "female"
+        return None
+
+    def _normalize_result(parsed: dict, fallback_post: dict) -> dict:
+        gender = _clip_gender(parsed.get("narrator_gender"))
+        if gender is None:
+            # Fall back to the deterministic regex if the model didn't emit a
+            # usable value — title/body tags like '(27F)' catch 60-70% of
+            # Reddit relationship posts for free.
+            gender = _regex_gender(
+                fallback_post.get("title", ""),
+                fallback_post.get("selftext", ""),
+            )
         return {
             "score":            _clip_int(parsed.get("score"), 0) or 0,
             "hook_strength":    _clip_int(parsed.get("hook_strength")),
@@ -3595,6 +3627,7 @@ async def score_viral_batch(req: dict):
             "suggested_hook":   _clip_str(parsed.get("suggested_hook"), 120) or None,
             "pitfalls":         _clip_list(parsed.get("pitfalls")),
             "content_warnings": _clip_list(parsed.get("content_warnings")),
+            "narrator_gender":  gender,
             "reason":           _clip_str(parsed.get("reason"), 160),
             "source":           provider,
         }
@@ -3677,6 +3710,7 @@ async def score_viral_batch(req: dict):
             '  "suggested_hook": "<≤90 chars spoken opening line>",\n'
             '  "pitfalls": ["<≤40 char>", ...0-3],\n'
             '  "content_warnings": ["<tag>", ...0-3],\n'
+            '  "narrator_gender": "<male | female | unknown — the gender of the first-person narrator, inferred from self-tags like (27F), relationships mentioned (my wife, my husband), or pronouns>",\n'
             '  "reason": "<≤140 char verdict>"\n'
             "}\n\n"
             + "\n\n".join(items)
@@ -3718,7 +3752,7 @@ async def score_viral_batch(req: dict):
                     if not r:
                         out[pid] = _heuristic(post)
                         continue
-                    result = _normalize_result(r)
+                    result = _normalize_result(r, post)
                     out[pid] = result
                     _persist_cache(pid, post, result)
             except Exception as e:

@@ -164,6 +164,7 @@ export interface AiScore {
   suggested_hook: string | null;       // opening line suggestion
   pitfalls: string[];                  // short risk tags
   content_warnings: string[];          // e.g. ["violence"]
+  narrator_gender: "male" | "female" | null;   // first-person narrator gender
   reason: string;                      // one-line verdict
   source: string;                      // "gemini" | "openrouter" | "ollama" | "nvidia_nim" | "heuristic"
 }

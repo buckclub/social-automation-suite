@@ -57,6 +57,9 @@ interface FilterPreset {
   aiEmotions: string;             // comma-separated allow-list ("" = any)
   aiModes: string;                // comma-separated recommended_mode allow-list
   aiAudience: string;             // case-insensitive substring match on target_audience
+  aiGenderMale: boolean;          // show posts scored as male-narrator
+  aiGenderFemale: boolean;        // show posts scored as female-narrator
+  aiGenderUnknown: boolean;       // show posts with no detected narrator gender
   hideContentWarnings: boolean;   // drop posts with any AI content_warnings
   requireAiScored: boolean;       // only show posts that have been AI-scored
 }
@@ -79,6 +82,9 @@ const EMPTY_PRESET: FilterPreset = {
   aiEmotions: "",
   aiModes: "",
   aiAudience: "",
+  aiGenderMale: true,
+  aiGenderFemale: true,
+  aiGenderUnknown: true,
   hideContentWarnings: false,
   requireAiScored: false,
 };
@@ -164,6 +170,19 @@ export default function PostsPage() {
           if (!aiRow?.target_audience || !aiRow.target_audience.toLowerCase().includes(needle)) return false;
         }
         if (f.hideContentWarnings && (aiRow?.content_warnings?.length ?? 0) > 0) return false;
+
+        // Narrator-gender filter — only meaningful once the post has been
+        // AI-scored (before that aiRow is undefined so we don't filter).
+        if (aiRow) {
+          const g = aiRow.narrator_gender;
+          const anyGenderOff =
+            !f.aiGenderMale || !f.aiGenderFemale || !f.aiGenderUnknown;
+          if (anyGenderOff) {
+            if (g === "male"   && !f.aiGenderMale)    return false;
+            if (g === "female" && !f.aiGenderFemale)  return false;
+            if (g === null     && !f.aiGenderUnknown) return false;
+          }
+        }
         const hay = (p.title + " " + (p.selftext || "")).toLowerCase();
         if (must.length && !must.every((t) => hay.includes(t))) return false;
         if (excl.length && excl.some((t) => hay.includes(t))) return false;
@@ -453,6 +472,39 @@ export default function PostsPage() {
                 placeholder="story, qa, hottake" className="h-7 text-[11px] bg-secondary border-border" />
             </div>
           </div>
+          <div className="space-y-1.5">
+            <p className="text-[10px] text-muted-foreground">Narrator gender (uncheck to hide)</p>
+            <div className="flex items-center gap-3 text-[11px]">
+              <label className="flex items-center gap-1.5 text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="h-3 w-3 accent-primary"
+                  checked={f.aiGenderMale}
+                  onChange={(e) => update("aiGenderMale", e.target.checked)}
+                />
+                <span>♂ Male</span>
+              </label>
+              <label className="flex items-center gap-1.5 text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="h-3 w-3 accent-primary"
+                  checked={f.aiGenderFemale}
+                  onChange={(e) => update("aiGenderFemale", e.target.checked)}
+                />
+                <span>♀ Female</span>
+              </label>
+              <label className="flex items-center gap-1.5 text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="h-3 w-3 accent-primary"
+                  checked={f.aiGenderUnknown}
+                  onChange={(e) => update("aiGenderUnknown", e.target.checked)}
+                />
+                <span>? Unknown</span>
+              </label>
+            </div>
+          </div>
+
           <div className="flex items-center gap-4 flex-wrap text-[11px]">
             <label className="flex items-center gap-2 text-muted-foreground">
               <Switch checked={f.requireAiScored} onCheckedChange={(v) => update("requireAiScored", v)} />
@@ -549,6 +601,14 @@ export default function PostsPage() {
                     {aiScores[post.id]?.emotion && (
                       <span className="flex items-center gap-0.5" title={`Primary emotion: ${aiScores[post.id].emotion}`}>
                         {emotionEmoji(aiScores[post.id].emotion)}
+                      </span>
+                    )}
+                    {aiScores[post.id]?.narrator_gender && (
+                      <span
+                        className={`text-[10px] ${aiScores[post.id].narrator_gender === "male" ? "text-blue-400" : "text-pink-400"}`}
+                        title={`Narrator: ${aiScores[post.id].narrator_gender}`}
+                      >
+                        {aiScores[post.id].narrator_gender === "male" ? "♂" : "♀"}
                       </span>
                     )}
                     {aiScores[post.id]?.content_warnings?.length ? (
@@ -704,6 +764,14 @@ function AiScoreChip({ score }: { score: AiScore }) {
             <div className="col-span-2">
               <p className="text-muted-foreground">Target audience</p>
               <p className="font-medium">{score.target_audience}</p>
+            </div>
+          )}
+          {score.narrator_gender && (
+            <div>
+              <p className="text-muted-foreground">Narrator</p>
+              <p className={`font-medium ${score.narrator_gender === "male" ? "text-blue-400" : "text-pink-400"}`}>
+                {score.narrator_gender === "male" ? "♂ Male" : "♀ Female"}
+              </p>
             </div>
           )}
         </div>
