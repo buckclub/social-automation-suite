@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { createElement, isValidElement, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -44,14 +44,18 @@ export function PageHeader({
     else navigate(-1);
   };
 
-  // Allow either a Lucide component (rendered with default sizing) or
-  // a fully-formed React node passed by the caller.
+  // Lucide icons in current versions are `forwardRef(...)` OBJECTS, not
+  // plain function components — so `typeof icon === "function"` fell
+  // through and tried to render the component value as a React child,
+  // triggering React error #31 ("Objects are not valid as a React
+  // child, found object with keys {$$typeof, render, displayName}").
+  // createElement handles both function-components AND forwardRef
+  // objects uniformly. Pre-rendered elements (e.g. <SomeIcon />) pass
+  // through unchanged.
   const renderIcon = () => {
-    if (typeof icon === "function") {
-      const I = icon as LucideIcon;
-      return <I className="h-5 w-5 text-primary" />;
-    }
-    return icon as ReactNode;
+    if (icon == null) return null;
+    if (isValidElement(icon)) return icon;
+    return createElement(icon as any, { className: "h-5 w-5 text-primary" });
   };
 
   return (
