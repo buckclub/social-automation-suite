@@ -107,6 +107,7 @@ interface ScoreShape {
   score: number | null;
   hook_strength: number | null;
   payoff_strength: number | null;
+  coherence?: number | null;
   emotion?: string | null;
   suggested_hook?: string | null;
   pitfalls?: string[];
@@ -126,9 +127,18 @@ function ScoreBadge({ score, minScore }: { score?: ScoreShape | null; minScore: 
   const tooltipParts = [
     score.hook_strength != null ? `hook ${score.hook_strength}` : null,
     score.payoff_strength != null ? `payoff ${score.payoff_strength}` : null,
+    score.coherence != null ? `coherence ${score.coherence}` : null,
     score.emotion ? `· ${score.emotion}` : null,
+    score.pitfalls && score.pitfalls.length
+      ? "\nIssues: " + score.pitfalls.join(", ")
+      : null,
     score.reason ? `\n${score.reason}` : null,
   ].filter(Boolean).join(" ");
+  // Coherence dragging the overall down is the highest-signal failure
+  // mode (plot holes are nearly always why a candidate looks great in
+  // the title but doesn't read). Flag it visually with a different
+  // color so the user can tell at a glance.
+  const coherenceTanked = score.coherence != null && score.coherence < 60;
   return (
     <span
       title={tooltipParts || `Virality ${v}/100`}
@@ -136,11 +146,13 @@ function ScoreBadge({ score, minScore }: { score?: ScoreShape | null; minScore: 
         "px-1.5 h-5 inline-flex items-center rounded text-[10px] font-mono font-semibold " +
         (cleared
           ? "bg-success/20 text-success border border-success/30"
-          : v >= 80
-            ? "bg-primary/20 text-primary border border-primary/30"
-            : v >= 60
-              ? "bg-secondary text-foreground border border-border"
-              : "bg-secondary text-muted-foreground border border-border")
+          : coherenceTanked
+            ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+            : v >= 80
+              ? "bg-primary/20 text-primary border border-primary/30"
+              : v >= 60
+                ? "bg-secondary text-foreground border border-border"
+                : "bg-secondary text-muted-foreground border border-border")
       }
     >
       {v}
@@ -184,15 +196,18 @@ function GenerationProgress({
       }
     }
     list.push("Proofreading and tightening prose…");
+    list.push("Auditing the timeline for plot holes…");
     list.push("Polishing the hook and closer…");
     if (minScore > 0) {
       list.push(`Scoring against rubric (target ≥ ${minScore})…`);
+      list.push("Checking story coherence…");
       list.push("Comparing candidates…");
       if (maxAttempts > 1) {
         list.push("Retrying any that fell short…");
       }
     } else {
       list.push("Scoring each candidate…");
+      list.push("Checking story coherence…");
     }
     list.push("Almost there — final pass…");
     return list;

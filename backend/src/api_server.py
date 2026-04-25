@@ -2616,15 +2616,34 @@ async def _score_variants_batch(
         "You are a TikTok/Shorts/Reels editor evaluating SHORT-FORM SCRIPTS "
         "for virality. These are AI-generated drafts. Be RUTHLESS — most "
         "AI-generated scripts read like AI-generated scripts and that's "
-        "exactly what you're filtering out. Score craft only.\n\n"
+        "exactly what you're filtering out. Score craft AND logic.\n\n"
         "ANCHOR YOUR SCALE:\n"
         "- 90+ : would actually go viral. Specific, surprising, unmissable closer.\n"
-        "- 75-89 : strong. Clear hook + earned payoff + sharp closer.\n"
+        "- 75-89 : strong. Clear hook + earned payoff + sharp closer + the events make sense.\n"
         "- 60-74 : workable but generic. Reads like 'an AI story about X.'\n"
-        "- 40-59 : has the shape but the prose is clumsy or the events are clichéd.\n"
+        "- 40-59 : has the shape but the prose is clumsy, the events are clichéd, or there are minor plot issues.\n"
         "- below 40 : meta-labels in the body, movie-villain antics, "
-        "  dialogue-only filler, generic 'epic revenge' titles.\n\n"
-        "AUTOMATIC SCORE CAPS (apply BEFORE picking a number):\n"
+        "  dialogue-only filler, plot holes, contradictions, or 'revenge' that isn't revenge.\n\n"
+        "COHERENCE AUDIT — read the script chronologically and check ALL:\n"
+        "1. Time markers are consistent (no 'last night' followed by\n"
+        "   'yesterday' referring to the same event).\n"
+        "2. Characters only reference what prior events made possible\n"
+        "   (no 'the look on his face' before they've met that person).\n"
+        "3. Character actions match their just-revealed state (no\n"
+        "   freshly-caught cheater calmly cooperating in the next paragraph).\n"
+        "4. The narrator only describes what they personally witnessed\n"
+        "   (no off-screen facial expressions).\n"
+        "5. If labeled 'revenge', the action must actually harm/embarrass\n"
+        "   the target — not just deliver them their own already-sent texts.\n"
+        "6. The cause-effect chain holds. Each action is plausibly motivated\n"
+        "   by what came before.\n\n"
+        "Score the dedicated `coherence` field 0-100 on this audit. Then\n"
+        "let coherence DRAG the overall score: a script with a great hook\n"
+        "but coherence ≤ 50 should not score above 55 overall.\n\n"
+        "AUTOMATIC SCORE CAPS (apply BEFORE picking a number — strictest cap wins):\n"
+        "- Any plot hole / timeline contradiction / impossible knowledge: cap at 50.\n"
+        "- Multiple plot holes, OR the central premise itself is illogical\n"
+        "  (e.g. 'revenge' that doesn't harm anyone): cap at 35.\n"
         "- Title is just the genre / topic ('Caught my GF cheating', "
         "  'Crazy story from work'): cap at 55.\n"
         "- Body contains literal labels like 'Stakes:', 'Hook:', "
@@ -2650,12 +2669,13 @@ async def _score_variants_batch(
         "object per variant, IN THE SAME ORDER AS INPUT, each with this "
         "exact shape:\n"
         "{\n"
-        '  "score": <0-100 overall — be ruthless>,\n'
+        '  "score": <0-100 overall — be ruthless. Coherence drags this down.>,\n'
         '  "hook_strength": <0-100 — first sentence grab>,\n'
         '  "payoff_strength": <0-100 — does the closer deliver?>,\n'
+        '  "coherence": <0-100 — does the story make logical sense? Run the audit. 100 = airtight, 50 = one plot hole, 0 = nonsensical>,\n'
         f'  "emotion": "<one of: {allowed_emotions}>",\n'
         '  "suggested_hook": "<≤90 char rewrite of the opening line if you can do better, else echo the existing hook>",\n'
-        '  "pitfalls": ["<≤40 char issue>", ...0-3],\n'
+        '  "pitfalls": ["<≤40 char issue — list any plot holes here FIRST, then craft issues>", ...0-3],\n'
         '  "reason": "<≤140 char verdict — what would lift the score>"\n'
         "}\n\n"
         + "\n\n".join(items_block) +
@@ -2676,10 +2696,30 @@ async def _score_variants_batch(
     out: list[dict] = []
     for i in range(len(variants)):
         r = results[i] if i < len(results) and isinstance(results[i], dict) else {}
+
+        score     = _clamp_int(r.get("score"))
+        coherence = _clamp_int(r.get("coherence"))
+
+        # Belt-and-suspenders enforcement of the coherence cap. The
+        # prompt asks the model to drag overall down when coherence is
+        # low, but models are flaky about following instructions like
+        # that — especially weaker local models. We hard-cap here so
+        # the rule is guaranteed regardless of what the model emitted.
+        # Mapping mirrors the prompt's "any plot hole → 50, multiple
+        # plot holes → 35" caps.
+        if score is not None and coherence is not None:
+            if coherence < 35:
+                score = min(score, 35)
+            elif coherence < 60:
+                score = min(score, 50)
+            elif coherence < 75:
+                score = min(score, 65)
+
         out.append({
-            "score":            _clamp_int(r.get("score")),
+            "score":            score,
             "hook_strength":    _clamp_int(r.get("hook_strength")),
             "payoff_strength":  _clamp_int(r.get("payoff_strength")),
+            "coherence":        coherence,
             "emotion":          (str(r.get("emotion") or "")[:30]).lower() or None,
             "suggested_hook":   str(r.get("suggested_hook") or "")[:120] or None,
             "pitfalls":         [str(x)[:40] for x in (r.get("pitfalls") or [])[:3] if x],

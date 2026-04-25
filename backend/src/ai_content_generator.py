@@ -284,11 +284,41 @@ SELF_CRITIQUE_TAIL = """\
 QUALITY GATE — apply this BEFORE you emit the JSON:
 
 Step 1. Draft the content normally.
-Step 2. Re-read your draft. Identify the THREE weakest beats — usually
-        a generic hook, a missing turn, or a moralizing closer.
-Step 3. Rewrite ONLY those weak beats. Keep the rest intact.
+
+Step 2. CHRONOLOGY + CAUSE-EFFECT AUDIT. Re-read the draft as if a
+        skeptical friend is poking holes. Walk through it event by
+        event and verify ALL of these:
+        a) Time markers are consistent. If sentence 1 says "last
+           night," sentence 8 cannot say "yesterday" referring to the
+           same event. Pick one timeline and stick to it.
+        b) Each character only knows / does what prior events made
+           possible. If the narrator hasn't met someone yet, they
+           cannot reference "the look on his face." If a character
+           was just dumped, they cannot calmly cooperate with the
+           dumper's plan in the very next paragraph.
+        c) When the topic is REVENGE: the revenge action must
+           actually inflict damage. Handing someone copies of texts
+           THEY ALREADY SENT is not revenge — they already saw those
+           texts. If you wrote a 'revenge' that doesn't actually
+           harm or embarrass the target, replace it.
+        d) Characters' emotional states change at human speed. A
+           person caught cheating breaks down OR gets defensive,
+           but they don't then volunteer to help the person who
+           caught them in their next move.
+        e) The narrator can only describe what they personally saw
+           or heard. They cannot report another character's facial
+           expression in a room they weren't in.
+
+        If you find ANY violation, fix it before continuing. Most
+        common fix: cut the inconsistent paragraph entirely and
+        rewrite a tighter version.
+
+Step 3. CRAFT AUDIT. Identify the THREE weakest beats from a craft
+        standpoint — usually a generic hook, a missing turn, or a
+        moralizing closer. Rewrite only those.
+
 Step 4. Output the FINAL revised version as JSON. Do not show me the
-        critique — only the final script.
+        audits — only the final script.
 """
 
 # ── System Prompts ───────────────────────────────────────────────────
