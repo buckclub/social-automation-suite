@@ -17,7 +17,7 @@ export interface CaptionsPreviewProps {
   positionOffset: number;
   wordsPerCaption: number;
   uppercase: boolean;
-  animation: "none" | "fade" | "pop" | "fade_pop";
+  animation: "none" | "fade" | "pop" | "fade_pop" | "karaoke_fill" | "boxed_word";
   animationDuration: number;
   popOvershoot: number;
   popStartScale: number;
@@ -279,22 +279,34 @@ export function CaptionsPreview(props: CaptionsPreviewProps) {
               >
                 {words.map((w, i) => {
                   const isActive = i === activeWordIndex;
-                  const style: React.CSSProperties = isActive
-                    ? {
-                        color: props.highlightColor || props.color,
-                        textShadow: props.highlightStrokeColor
-                          ? strokeShadow.replace(new RegExp(props.strokeColor, "g"), props.highlightStrokeColor)
-                          : strokeShadow,
-                        display: "inline-block",
-                        transform: `scale(${props.highlightScale ?? 1})`,
-                        transformOrigin: "center bottom",
-                        transition: "transform 80ms ease-out, color 80ms",
-                      }
-                    : { display: "inline-block", transition: "transform 80ms ease-out" };
+                  // Karaoke-fill colours every word at-or-before the active one.
+                  const isColored = isActive ||
+                    (props.animation === "karaoke_fill" && activeWordIndex >= 0 && i <= activeWordIndex);
+                  const baseColor = isColored ? (props.highlightColor || props.color) : props.color;
+                  const style: React.CSSProperties = {
+                    color: baseColor,
+                    textShadow: isActive && props.highlightStrokeColor
+                      ? strokeShadow.replace(new RegExp(props.strokeColor, "g"), props.highlightStrokeColor)
+                      : strokeShadow,
+                    display: "inline-block",
+                    transform: isActive ? `scale(${props.highlightScale ?? 1})` : undefined,
+                    transformOrigin: "center bottom",
+                    transition: "transform 80ms ease-out, color 80ms, background-color 80ms",
+                    // Boxed-word: pill behind every word, active gets highlight color.
+                    ...(props.animation === "boxed_word" ? {
+                      backgroundColor: isColored
+                        ? (props.highlightColor || props.color)
+                        : "rgba(0,0,0,0.7)",
+                      color: isColored ? "#000" : props.color,
+                      padding: `${Math.max(2, scaledFont * 0.08)}px ${Math.max(4, scaledFont * 0.18)}px`,
+                      borderRadius: Math.max(4, scaledFont * 0.18),
+                      margin: `0 ${Math.max(1, scaledFont * 0.04)}px`,
+                    } : {}),
+                  };
                   return (
                     <span key={i}>
                       <span style={style}>{w}</span>
-                      {i < words.length - 1 ? " " : ""}
+                      {i < words.length - 1 && props.animation !== "boxed_word" ? " " : ""}
                     </span>
                   );
                 })}

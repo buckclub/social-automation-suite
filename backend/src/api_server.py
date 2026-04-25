@@ -5718,6 +5718,150 @@ def _fetch_yt_stats(video_ids: list[str], api_key: str) -> dict[str, dict]:
     return out
 
 
+@app.post("/api/analytics/recommendations")
+async def performance_recommendations():
+    """
+    LLM-powered diagnosis of what's working / what isn't across the
+    user's tracked YouTube uploads. Compares top vs bottom performers
+    and returns actionable, specific recommendations.
+
+    Reuses the cached performance data so it doesn't re-spend YT quota.
+    """
+    cfg = _load_config()
+    g = cfg.get("gemini") or {}
+    if not g.get("enabled"):
+        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
+
+    # Pull the cached performance snapshot (or fetch fresh if cold).
+    perf = _perf_analytics_cache.get("data")
+    if not perf:
+        # Trigger a fresh fetch via the existing endpoint helper.
+        perf_resp = await performance_analytics(force=False)
+        perf = perf_resp if isinstance(perf_resp, dict) else {}
+
+    videos = perf.get("videos") or []
+    if len(videos) < 3:
+        raise HTTPException(400, "Need at least 3 tracked videos to compare. Publish a few more and try again.")
+
+    # Group by brand so we can highlight cross-brand patterns when relevant.
+    by_brand: dict[str, list[dict]] = {}
+    for v in videos:
+        # Find which brand each video used by walking videos_db (the
+        # registry keeps brand_id alongside the post).
+        brand = "—"
+        try:
+            for r in videos_db:
+                for up in (r.get("uploads") or []):
+                    if up.get("video_id") == v.get("yt_video_id"):
+                        brand = r.get("brand_name") or "—"
+                        break
+        except Exception:
+            pass
+        by_brand.setdefault(brand, []).append(v)
+
+    sorted_videos = sorted(videos, key=lambda x: x.get("views", 0), reverse=True)
+    top = sorted_videos[:5]
+    bottom = sorted_videos[-5:]
+    median_views = sorted_videos[len(sorted_videos) // 2].get("views", 0)
+
+    # Brief block the LLM can reason over — title, views, likes, age,
+    # brand. We deliberately keep it tight so the prompt fits in
+    # cheap-tier context windows.
+    def _vrow(v):
+        return (
+            f"- \"{v.get('title','')[:120]}\" · "
+            f"{v.get('views', 0):,} views · "
+            f"{v.get('likes', 0):,} likes · "
+            f"{v.get('comments', 0):,} comments · "
+            f"published {v.get('published_at', '')[:10]}"
+        )
+
+    brand_lines = []
+    for brand, vs in by_brand.items():
+        if len(vs) < 2:
+            continue
+        avg = sum(x.get("views", 0) for x in vs) // max(1, len(vs))
+        brand_lines.append(f"  · {brand}: {len(vs)} videos, avg {avg:,} views")
+
+    block = (
+        f"Total tracked: {len(videos)} videos. "
+        f"Median views: {median_views:,}.\n\n"
+        f"TOP 5 performers:\n" + "\n".join(_vrow(v) for v in top) + "\n\n"
+        f"BOTTOM 5 performers:\n" + "\n".join(_vrow(v) for v in bottom)
+    )
+    if brand_lines:
+        block += "\n\nBy brand:\n" + "\n".join(brand_lines)
+
+    provider = g.get("provider", "gemini")
+    api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    system = (
+        "You are a data-driven short-form video coach. Compare the user's "
+        "TOP and BOTTOM performers and surface SPECIFIC, ACTIONABLE patterns. "
+        "Cite individual titles when relevant. Don't hedge — the user wants "
+        "the playbook, not vague advice. Return ONLY minified JSON, no markdown."
+    )
+    prompt = (
+        f"{block}\n\n"
+        "Return JSON of this exact shape:\n"
+        "{\n"
+        '  "headline":  "<one-sentence diagnosis of the data>",\n'
+        '  "wins": [\n'
+        '    {"insight": "<specific pattern shared by top performers>",\n'
+        '     "action":  "<concrete recommendation>",\n'
+        '     "evidence": "<reference 1-2 specific titles>"},\n'
+        "    ...3-5 entries\n"
+        "  ],\n"
+        '  "losses": [\n'
+        '    {"insight": "<specific pattern hurting bottom performers>",\n'
+        '     "action":  "<concrete recommendation>",\n'
+        '     "evidence": "<reference 1-2 specific titles>"},\n'
+        "    ...2-4 entries\n"
+        "  ],\n"
+        '  "next_5_pitches": [\n'
+        '    "<title for next video that should outperform — leans on win patterns>",\n'
+        '    ...exactly 5\n'
+        "  ]\n"
+        "}\n\n"
+        "Each insight + action pair MUST be specific — no generic advice."
+    )
+
+    from gemini_hooks import _call_ai
+    raw = await asyncio.to_thread(_call_ai, provider, api_key, prompt, system, model, ollama_url)
+    if not raw:
+        raise HTTPException(502, f"AI provider '{provider}' returned empty response")
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip("`").strip()
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        a = cleaned.find("{"); b = cleaned.rfind("}")
+        if a >= 0 and b > a:
+            try: parsed = json.loads(cleaned[a:b + 1])
+            except Exception:
+                raise HTTPException(502, f"AI returned non-JSON: {cleaned[:200]}")
+        else:
+            raise HTTPException(502, f"AI returned non-JSON: {cleaned[:200]}")
+    return {
+        "headline":      str(parsed.get("headline") or "")[:280],
+        "wins":          (parsed.get("wins") or [])[:6],
+        "losses":        (parsed.get("losses") or [])[:5],
+        "next_5_pitches": (parsed.get("next_5_pitches") or [])[:5],
+        "fetched_at":    datetime.now(timezone.utc).isoformat(),
+        "videos_analyzed": len(videos),
+    }
+
+
 @app.get("/api/analytics/performance")
 async def performance_analytics(force: bool = False):
     """

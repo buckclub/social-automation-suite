@@ -187,7 +187,7 @@ export default function ConfigPage() {
   const [capWordsPerCaption, setCapWordsPerCaption] = useState(3);
   const [capUppercase, setCapUppercase] = useState(true);
   const [capAttribution, setCapAttribution] = useState(false);
-  const [capAnimation, setCapAnimation] = useState<"none" | "fade" | "pop" | "fade_pop">("none");
+  const [capAnimation, setCapAnimation] = useState<"none" | "fade" | "pop" | "fade_pop" | "karaoke_fill" | "boxed_word">("none");
   const [capAnimationDuration, setCapAnimationDuration] = useState(0.15);
   const [capPopOvershoot, setCapPopOvershoot] = useState(1.12);
   const [capPopStartScale, setCapPopStartScale] = useState(0.7);
@@ -493,7 +493,7 @@ export default function ConfigPage() {
     setCapWordsPerCaption(cap.words_per_caption ?? 3);
     setCapUppercase(cap.uppercase ?? true);
     setCapAttribution(cap.attribution ?? false);
-    setCapAnimation((cap.animation as "none" | "fade" | "pop" | "fade_pop") ?? "none");
+    setCapAnimation((cap.animation as "none" | "fade" | "pop" | "fade_pop" | "karaoke_fill" | "boxed_word") ?? "none");
     setCapAnimationDuration(cap.animation_duration ?? 0.15);
     setCapPopOvershoot(cap.pop_overshoot ?? 1.12);
     setCapPopStartScale(cap.pop_start_scale ?? 0.7);
@@ -1972,17 +1972,21 @@ export default function ConfigPage() {
               <Separator />
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Animation</Label>
-                <Select value={capAnimation} onValueChange={(v) => setCapAnimation(v as "none" | "fade" | "pop" | "fade_pop")}>
+                <Select value={capAnimation} onValueChange={(v) => setCapAnimation(v as any)}>
                   <SelectTrigger className="h-8 text-xs bg-secondary border-border"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">None</SelectItem>
-                    <SelectItem value="fade">Fade in/out</SelectItem>
-                    <SelectItem value="pop">Pop (scale-in)</SelectItem>
-                    <SelectItem value="fade_pop">Fade + Pop</SelectItem>
+                    <SelectItem value="karaoke_fill">Karaoke fill — cumulative word colour sweep ✨</SelectItem>
+                    <SelectItem value="boxed_word">Boxed word — pill behind every word ✨</SelectItem>
+                    <SelectItem value="fade">Fade in/out (MoviePy only)</SelectItem>
+                    <SelectItem value="pop">Pop scale-in (MoviePy only)</SelectItem>
+                    <SelectItem value="fade_pop">Fade + Pop (MoviePy only)</SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="text-[10px] text-muted-foreground">
-                  Animations require <code>engine = moviepy</code>. FFmpeg engine ignores them.
+                <p className="text-[10px] text-muted-foreground leading-snug">
+                  ✨ <b>Karaoke fill</b> and <b>Boxed word</b> work on the FFmpeg engine. They
+                  require per-word highlight to be on (so the renderer knows the active word).
+                  <br />Fade / Pop animations require <code>engine = moviepy</code>.
                 </p>
               </div>
               {capAnimation !== "none" && (

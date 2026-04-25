@@ -1006,6 +1006,17 @@ export const api = {
     `${API_BASE}/api/brands/${encodeURIComponent(id)}/profile-pic${bust ? `?v=${encodeURIComponent(bust)}` : ""}`,
 
   // ── Performance Analytics ────────────────────────────────────
+  getPerformanceRecommendations: () =>
+    request<{
+      headline: string;
+      wins:   { insight: string; action: string; evidence: string }[];
+      losses: { insight: string; action: string; evidence: string }[];
+      next_5_pitches: string[];
+      fetched_at: string;
+      videos_analyzed: number;
+    }>("/api/analytics/recommendations", { method: "POST" }),
+
+  // (legacy entry left below)
   getPerformanceAnalytics: (force = false) =>
     request<{
       fetched_at: string;

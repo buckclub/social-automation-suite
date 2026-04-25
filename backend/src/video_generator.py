@@ -526,7 +526,17 @@ class VideoGenerator:
             'words_per_caption': int(cfg.get('words_per_caption', 0)),  # 0 = whole segment
             'uppercase':       bool(cfg.get('uppercase', False)),
             'attribution':     bool(cfg.get('attribution', True)),
-            # Animation: 'none' | 'fade' | 'pop' | 'fade_pop'. MoviePy engine only.
+            # Animation modes:
+            #   'none'              — static
+            #   'fade' / 'pop' / 'fade_pop'  — chunk-level entry animations (MoviePy engine only)
+            #   'karaoke_fill'      — every word UP TO the active one is in
+            #                          highlight color (cumulative), like a
+            #                          karaoke prompter sweeping left-to-right.
+            #                          Requires highlight_word + alignment.
+            #                          Works on the FFmpeg engine.
+            #   'boxed_word'        — every word gets a colored pill behind it;
+            #                          the active word's pill is the highlight
+            #                          color. Works on the FFmpeg engine.
             'animation':       (cfg.get('animation') or 'none').lower(),
             'animation_duration': float(cfg.get('animation_duration', 0.15)),
             'pop_overshoot':   float(cfg.get('pop_overshoot', 1.12)),
@@ -536,6 +546,12 @@ class VideoGenerator:
             'highlight_color': cfg.get('highlight_color', '#FFD93D'),   # yellow
             'highlight_scale': float(cfg.get('highlight_scale', 1.0)),  # 1.0 = no scale
             'highlight_stroke_color': cfg.get('highlight_stroke_color', cfg.get('stroke_color', 'black')),
+            # Boxed-word style — pill background per word.
+            'boxed_word_radius':   int(cfg.get('boxed_word_radius', 12)),
+            'boxed_word_padding_x': int(cfg.get('boxed_word_padding_x', 14)),
+            'boxed_word_padding_y': int(cfg.get('boxed_word_padding_y', 6)),
+            'boxed_word_inactive_color': cfg.get('boxed_word_inactive_color', '#000000'),
+            'boxed_word_inactive_opacity': int(cfg.get('boxed_word_inactive_opacity', 180)),
             # Safety rails against runaway captions when whisper has gaps in the audio.
             'max_chunk_duration': float(cfg.get('max_chunk_duration', 2.5)),  # seconds per chunk
             'lead_in_grace':      float(cfg.get('lead_in_grace', 1.0)),       # seconds of lead before first word
@@ -1212,8 +1228,18 @@ class VideoGenerator:
             line: list[dict] = []
             for i, word in enumerate(words):
                 is_active = (i == active_idx)
+                # `is_colored` decides text/box color. Karaoke-fill cumulatively
+                # colours every word at-or-before the active index, mimicking
+                # a karaoke prompter sweep. Other modes only colour the active
+                # word.
+                is_colored = is_active or (
+                    p.get('animation') == 'karaoke_fill' and active_idx >= 0 and i <= active_idx
+                )
                 f = font_hi if is_active else font_normal
-                line.append({"word": word, "active": is_active, "font": f, "w": int(f.getlength(word))})
+                line.append({
+                    "word": word, "active": is_active, "colored": is_colored,
+                    "font": f, "w": int(f.getlength(word)),
+                })
             lines: list[list[dict]] = [line] if line else [[]]
         else:
             # ── Wrap mode (legacy default) ────────────────────────────
@@ -1240,7 +1266,13 @@ class VideoGenerator:
                     lines.append([])
                     cur_w = 0
                     gap = 0
-                lines[-1].append({"word": word, "active": is_active, "font": f, "w": ww})
+                is_colored = is_active or (
+                    p.get('animation') == 'karaoke_fill' and active_idx >= 0 and i <= active_idx
+                )
+                lines[-1].append({
+                    "word": word, "active": is_active, "colored": is_colored,
+                    "font": f, "w": ww,
+                })
                 cur_w += gap + ww
 
         # Compute line heights from the actual fonts used on that line (each
@@ -1303,6 +1335,21 @@ class VideoGenerator:
                 radius=p['corner_radius'], fill=box_color,
             )
 
+        # ── Boxed-word style precomputes ─────────────────────────────
+        # When animation == 'boxed_word', every word gets a coloured pill
+        # behind it. Active word's pill is the highlight colour; others
+        # use the configured "inactive" colour at the configured opacity.
+        boxed = (p.get('animation') == 'boxed_word')
+        bw_radius = int(p.get('boxed_word_radius', 12))
+        bw_pad_x  = int(p.get('boxed_word_padding_x', 14))
+        bw_pad_y  = int(p.get('boxed_word_padding_y', 6))
+        if boxed:
+            bw_active_rgba   = _parse_color_rgba(hi_color, alpha=255)
+            bw_inactive_rgba = _parse_color_rgba(
+                p.get('boxed_word_inactive_color') or '#000000',
+                alpha=int(p.get('boxed_word_inactive_opacity', 180)),
+            )
+
         # Draw each line centered horizontally. Baseline-align mixed-size words
         # within a line so a shrunk word sits nicely next to full-size ones.
         cur_y = padding + stroke_w + sh_pad
@@ -1317,8 +1364,24 @@ class VideoGenerator:
                 # Anchor each word to the line's shared baseline.
                 tok_ascent = f.getmetrics()[0]
                 word_y = cur_y + (line_ascent - tok_ascent)
-                txt_color  = hi_color  if tok["active"] else color
+                # `colored` (karaoke-fill aware) drives text colour;
+                # `active` still gates font scaling + stroke colour so the
+                # geometry stays correct as the active word advances.
+                txt_color  = hi_color  if tok.get("colored") else color
                 stroke_col = hi_stroke if tok["active"] else stroke
+
+                # Boxed-word: rounded rect behind the word.
+                if boxed:
+                    rect_left   = cur_x - bw_pad_x
+                    rect_right  = cur_x + tok["w"] + bw_pad_x
+                    rect_top    = word_y - bw_pad_y
+                    rect_bottom = word_y + tok_ascent + f.getmetrics()[1] + bw_pad_y
+                    fill_rgba = bw_active_rgba if tok.get("colored") else bw_inactive_rgba
+                    draw.rounded_rectangle(
+                        [(rect_left, rect_top), (rect_right, rect_bottom)],
+                        radius=bw_radius, fill=fill_rgba,
+                    )
+
                 # Mirror onto the shadow layer in pure shadow color, matching
                 # position + font + stroke so the silhouette blurs identically.
                 if shadow_draw is not None:
@@ -1352,8 +1415,7 @@ class VideoGenerator:
                     radius=p['corner_radius'], fill=box_color,
                 )
             final = Image.alpha_composite(final, shadow_layer)
-            # Now stamp the actual text (colors + stroke) on top. Re-run the
-            # same draw loop onto `final`.
+            # Now stamp boxed-pills + actual text (colors + stroke) on top.
             final_draw = ImageDraw.Draw(final)
             cur_y = padding + stroke_w + sh_pad
             for line, lw, lh in zip(lines, line_widths, line_heights):
@@ -1365,8 +1427,18 @@ class VideoGenerator:
                     f = tok["font"]
                     tok_ascent = f.getmetrics()[0]
                     word_y = cur_y + (line_ascent - tok_ascent)
-                    txt_color  = hi_color  if tok["active"] else color
+                    txt_color  = hi_color  if tok.get("colored") else color
                     stroke_col = hi_stroke if tok["active"] else stroke
+                    if boxed:
+                        rect_left   = cur_x - bw_pad_x
+                        rect_right  = cur_x + tok["w"] + bw_pad_x
+                        rect_top    = word_y - bw_pad_y
+                        rect_bottom = word_y + tok_ascent + f.getmetrics()[1] + bw_pad_y
+                        fill_rgba = bw_active_rgba if tok.get("colored") else bw_inactive_rgba
+                        final_draw.rounded_rectangle(
+                            [(rect_left, rect_top), (rect_right, rect_bottom)],
+                            radius=bw_radius, fill=fill_rgba,
+                        )
                     final_draw.text(
                         (cur_x, word_y), tok["word"],
                         font=f, fill=txt_color,
@@ -2178,8 +2250,12 @@ class VideoGenerator:
 
         temp_files = [] # Track for cleanup
 
-        if self.captions['animation'] != 'none':
-            print(f"⚠️  Caption animation '{self.captions['animation']}' is ignored by the FFmpeg engine. "
+        # `karaoke_fill` and `boxed_word` are render-time stylings done in
+        # PIL — they work in the FFmpeg engine. The legacy chunk-entry
+        # animations (fade / pop / fade_pop) still need the MoviePy engine.
+        _anim = self.captions.get('animation') or 'none'
+        if _anim not in ('none', 'karaoke_fill', 'boxed_word'):
+            print(f"⚠️  Caption animation '{_anim}' is ignored by the FFmpeg engine. "
                   f"Set video.engine = 'moviepy' in config.json to enable animations.")
 
         # Pre-render the title card if any segment is tagged as 'title'.

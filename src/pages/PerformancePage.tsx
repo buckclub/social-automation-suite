@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   TrendingUp, Loader2, ArrowLeft, RefreshCw, Eye, ThumbsUp,
-  MessageCircle, ExternalLink, Trophy, Youtube,
+  MessageCircle, ExternalLink, Trophy, Youtube, Sparkles, Lightbulb, AlertTriangle, Copy, Check,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -53,6 +53,23 @@ export default function PerformancePage() {
     }
   };
   useEffect(() => { load(); }, []);
+
+  // Smart recommendations — opt-in via a "Diagnose" button (LLM call costs tokens).
+  const [recs, setRecs] = useState<Awaited<ReturnType<typeof api.getPerformanceRecommendations>> | null>(null);
+  const [recsLoading, setRecsLoading] = useState(false);
+  const [recsError, setRecsError] = useState<string | null>(null);
+  const [copiedPitch, setCopiedPitch] = useState<number | null>(null);
+  const fetchRecs = async () => {
+    setRecsLoading(true); setRecsError(null);
+    try {
+      const r = await api.getPerformanceRecommendations();
+      setRecs(r);
+    } catch (e: any) {
+      setRecsError(e.message || "Failed");
+    } finally {
+      setRecsLoading(false);
+    }
+  };
 
   // Sparkline path for the 30-day daily-views chart.
   const sparkPath = useMemo(() => {
@@ -195,6 +212,98 @@ export default function PerformancePage() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Smart diagnoses — opt-in LLM call over the data above. */}
+          <Card className={cn(
+            "border-border bg-card transition-colors",
+            recs && "border-primary/30 bg-primary/5",
+          )}>
+            <CardContent className="p-3 space-y-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary shrink-0" />
+                <div className="flex-1">
+                  <p className="text-xs font-semibold">Smart diagnosis</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    LLM compares your top vs bottom performers and surfaces specific patterns + 5 next-video pitches.
+                  </p>
+                </div>
+                <Button size="sm" onClick={fetchRecs} disabled={recsLoading || data.videos.length < 3} className="gap-1">
+                  {recsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  {recs ? "Re-diagnose" : "Diagnose"}
+                </Button>
+              </div>
+              {recsError && (
+                <div className="text-[11px] text-destructive flex items-center gap-1.5">
+                  <AlertTriangle className="h-3 w-3" /> {recsError}
+                </div>
+              )}
+              {recs && (
+                <div className="space-y-3 pt-2 border-t border-border/60">
+                  <p className="text-xs font-medium leading-snug">{recs.headline}</p>
+
+                  {recs.wins.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-[10px] uppercase tracking-wider text-success font-semibold flex items-center gap-1">
+                        <Lightbulb className="h-3 w-3" /> What's working — keep doing this
+                      </p>
+                      {recs.wins.map((w, i) => (
+                        <div key={i} className="rounded border border-success/20 bg-success/5 p-2">
+                          <p className="text-[11px] font-medium leading-snug">{w.insight}</p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5 leading-snug">→ <span className="text-foreground">{w.action}</span></p>
+                          {w.evidence && <p className="text-[9px] text-muted-foreground italic mt-0.5">{w.evidence}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {recs.losses.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-[10px] uppercase tracking-wider text-amber-400 font-semibold flex items-center gap-1">
+                        <AlertTriangle className="h-3 w-3" /> What's hurting — stop doing this
+                      </p>
+                      {recs.losses.map((l, i) => (
+                        <div key={i} className="rounded border border-amber-400/20 bg-amber-400/5 p-2">
+                          <p className="text-[11px] font-medium leading-snug">{l.insight}</p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5 leading-snug">→ <span className="text-foreground">{l.action}</span></p>
+                          {l.evidence && <p className="text-[9px] text-muted-foreground italic mt-0.5">{l.evidence}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {recs.next_5_pitches.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-[10px] uppercase tracking-wider text-primary font-semibold flex items-center gap-1">
+                        <Sparkles className="h-3 w-3" /> Pitches for your next 5 videos
+                      </p>
+                      <ol className="space-y-1">
+                        {recs.next_5_pitches.map((p, i) => (
+                          <li key={i} className="flex items-start gap-2 text-[11px] rounded border border-border/60 bg-secondary/40 p-2">
+                            <span className="font-mono text-[9px] text-muted-foreground mt-0.5 shrink-0">{i + 1}.</span>
+                            <span className="flex-1 leading-snug">{p}</span>
+                            <button
+                              onClick={async () => {
+                                await navigator.clipboard?.writeText(p);
+                                setCopiedPitch(i);
+                                setTimeout(() => setCopiedPitch(null), 1200);
+                              }}
+                              className="text-muted-foreground hover:text-foreground shrink-0"
+                              title="Copy pitch"
+                            >
+                              {copiedPitch === i ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                      <p className="text-[9px] text-muted-foreground italic">
+                        Paste any pitch into Generate-with-AI's Custom Title field to render it.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Per-video table */}
           <Card className="border-border bg-card">
