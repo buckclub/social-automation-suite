@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/dialog";
 import { useVideos, useUsedPosts, useDeleteVideo, useResumeVideo } from "@/hooks/use-api";
 import { api } from "@/lib/api";
-import { formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow } from "@/lib/format-time";
 import { useToast } from "@/hooks/use-toast";
 import type { VideoRecord } from "@/lib/api";
 

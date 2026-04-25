@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { useVideos } from "@/hooks/use-api";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
-import { formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow } from "@/lib/format-time";
 
 /**
  * Shows all videos that have TTS audio preserved but no rendered video

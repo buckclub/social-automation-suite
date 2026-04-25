@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { api, type ClipProjectSummary } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
-import { formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow } from "@/lib/format-time";
 
 function fmtDuration(s: number): string {
   if (!s) return "?";

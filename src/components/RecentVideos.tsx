@@ -10,7 +10,7 @@ import {
 import { useVideos, useResumeVideo } from "@/hooks/use-api";
 import { useToast } from "@/hooks/use-toast";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow } from "@/lib/format-time";
 import type { VideoRecord } from "@/lib/api";
 
 const API_BASE =

@@ -11,7 +11,7 @@ import { api, type QueueItem } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useAppEvent, isLiveConnected } from "@/lib/eventBus";
 import { useUndoableDelete } from "@/hooks/use-undoable-delete";
-import { formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow } from "@/lib/format-time";
 
 /**
  * Dashboard panel that shows the current run queue.
