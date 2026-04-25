@@ -18,77 +18,75 @@ export default defineConfig(() => ({
     },
   },
   build: {
-    // Split heavy third-party deps into their own chunks. Three reasons:
+    // Split SAFE heavy third-party deps into their own chunks for
+    // caching benefit. The previous config tried to split React off
+    // from Radix and produced a runtime crash:
     //
-    // 1. **Caching:** these libraries change rarely. A typo in our app
-    //    code shouldn't bust the framer-motion / radix / react chunks.
-    //    Returning visitors get the cached vendor blobs and only
-    //    re-download our small app code.
-    // 2. **Parallel download:** browsers fetch chunks in parallel, so
-    //    splitting reduces blocking time even if total bytes are the
-    //    same.
-    // 3. **Easier perf debugging:** chunk-size warnings now point at
-    //    a specific dep instead of one giant 740KB blob.
+    //   TypeError: can't access property "forwardRef" of undefined
+    //   (vendor-radix evaluating before vendor-react had finished
+    //   initializing)
     //
-    // Per-chunk targets (post-split):
-    //   - vendor-react       : react + react-dom + react-router-dom (~150 KB)
-    //   - vendor-radix       : @radix-ui/* primitives (~120 KB)
-    //   - vendor-motion      : framer-motion (~60 KB)
-    //   - vendor-icons       : lucide-react (tree-shakes by-name imports)
-    //   - main app chunk     : everything else (~300-400 KB)
+    // Lesson: don't split tightly-coupled libraries that touch React
+    // at module-eval time. Radix calls React.forwardRef at the top
+    // level of every primitive, so it must live in the same chunk
+    // as React (or a chunk that's guaranteed to evaluate after).
+    // Rather than fight Rollup's chunk-graph ordering, we keep the
+    // React + Radix + react-* world in one big "vendor-ui" chunk and
+    // only split off libs that have no React module-eval dependency.
+    //
+    // Post-split chunks:
+    //   - vendor-ui    : react/dom/router + @radix-ui + everything
+    //                    that uses React.forwardRef at top-level.
+    //                    Also catches use-sync-external-store, jsx-
+    //                    runtime, etc.
+    //   - vendor-motion: framer-motion (lazy uses of React, no eval-
+    //                    time forwardRef calls).
+    //   - vendor-icons : lucide-react (functional components, no
+    //                    eval-time React access).
+    //   - vendor-charts: recharts + d3-* (only used if a route
+    //                    actually imports a chart).
+    //   - vendor       : everything else under node_modules.
+    //   - index        : our app code.
     rollupOptions: {
       output: {
         manualChunks(id: string) {
           if (!id.includes("node_modules")) return undefined;
 
-          // Core React / router — always on the critical path; one
-          // chunk so it caches as a unit.
-          if (
-            id.includes("/react/") ||
-            id.includes("/react-dom/") ||
-            id.includes("/react-router-dom/") ||
-            id.includes("/scheduler/")
-          ) {
-            return "vendor-react";
-          }
+          // Lucide icons — pure-function components, safe to split.
+          if (id.includes("lucide-react")) return "vendor-icons";
 
-          // All Radix primitives — many separate packages, but they
-          // ship together as the dialog/select/etc UI layer.
-          if (id.includes("@radix-ui/")) {
-            return "vendor-radix";
-          }
-
-          // Framer-motion is heavy and used widely across pages —
-          // its own chunk so it caches separately. (Eventually
-          // worth replacing with smaller animation primitives.)
-          if (id.includes("framer-motion")) {
-            return "vendor-motion";
-          }
-
-          // Lucide icons — name-imports tree-shake well, but
-          // putting it in a vendor chunk avoids re-emitting whatever
-          // icons each lazy route happens to use.
-          if (id.includes("lucide-react")) {
-            return "vendor-icons";
-          }
-
-          // Recharts — heavy but only used in chart components. If a
-          // page lazy-imports a chart, the chart chunk pulls recharts
-          // with it. Without this rule, recharts could leak into the
-          // main bundle if any reachable file touches it transitively.
-          if (id.includes("recharts") || id.includes("d3-")) {
+          // Recharts only loads when a page that uses charts mounts.
+          // Splitting keeps it out of every other initial paint.
+          if (id.includes("recharts") || id.includes("/d3-")) {
             return "vendor-charts";
           }
 
-          // Everything else under node_modules → a generic vendor
-          // bucket so the main app chunk stays just our code.
+          // Framer-motion uses React but only inside its component
+          // bodies (no top-level forwardRef calls), so a later-than-
+          // React chunk is fine. Heavy enough to be worth its own
+          // chunk for caching.
+          if (id.includes("framer-motion")) return "vendor-motion";
+
+          // The React + Radix + react-router world. Anything that
+          // calls React.forwardRef at top-level — including Radix
+          // primitives, react-router, react-hook-form, react-query,
+          // etc — has to share a chunk with React itself. Bundling
+          // all of them into one cacheable blob is the safest play.
+          if (
+            id.includes("react") ||           // covers react, react-dom, react-router*, react-*
+            id.includes("/scheduler/") ||
+            id.includes("/use-sync-external-store/") ||
+            id.includes("@radix-ui/") ||
+            id.includes("@tanstack/")
+          ) {
+            return "vendor-ui";
+          }
+
+          // Everything else under node_modules → generic vendor bucket.
           return "vendor";
         },
       },
     },
-    // Bump the chunk-size warning slightly — the vendor split below
-    // produces a few legitimately-large chunks (radix is ~120 KB)
-    // that aren't worth more aggressive splitting.
     chunkSizeWarningLimit: 600,
   },
 }));
