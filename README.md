@@ -21,6 +21,9 @@ End-to-end short-form content automation. What started as a Reddit-to-Reels pipe
 - **News Roundup** — pull RSS / Atom feeds (curated picks for tech / news / sports / entertainment / Reddit + custom URL), copy any headline + summary as a one-click prompt for Generate-with-AI.
 - **Hashtag Lab** — paste any caption, get 12-20 ranked tag suggestions cross-referenced against top-performing videos in your niche (when a YouTube API key is set). Pick + copy a curated set in one click.
 - **Social Copy** — per-video YouTube title/description + unified Reels/TikTok caption with a background batch queue; click "Social copy" on N videos and come back later.
+- **First-run wizard** — fresh installs auto-redirect to `/setup`. Four-step flow picks an AI provider + key, TTS provider + key, optional starter brand, optional YouTube key. Each provider key gets a "Test" button that pings the provider's models endpoint before saving so a typo'd key fails at setup time instead of 30 seconds into the first generation.
+- **Virality scoring + retry loop** — Generate-with-AI candidates come back with a 0–100 virality score (sub-scores for hook strength, payoff, structure, and coherence) graded against a structured rubric. The picker sorts and color-codes badges; an optional "Minimum virality" slider tells the backend to regenerate up to N attempts until at least one candidate clears the bar. Plot-hole and meta-label detection automatically caps the score (a story that contains literal `Stakes:` labels can't sneak past 35).
+- **Workspace backup** — Config → Output → Workspace backup. One-click zip of every config block, brand profile, queue state, music metadata, and per-post social copy. Audio / video / backgrounds are excluded (large + regenerable). Restore on a new machine via the same panel — atomic swap with a timestamped backup of the prior workspace under `.cache/imports/<ts>/`.
 
 All rendering is local (FFmpeg). Narration uses your choice of ElevenLabs / Streamlabs Polly / LazyPy TikTok / VibeVoice / Qwen3 TTS. Content generation uses your configured LLM (Gemini / OpenRouter / Ollama / Nvidia NIM).
 
@@ -124,7 +127,48 @@ This project is a fork of [FaheemAlvii/reddit-to-reels](https://github.com/Fahee
 - **Masked API-key inputs (`<SecretInput>`)** — every API key / webhook URL field (ElevenLabs, Gemini, OpenRouter, NVIDIA NIM, YouTube, Discord) uses CSS text-security + explicit `data-1p-ignore` / `data-lpignore` / `data-bwignore` / `data-form-type="other"` attributes. Chrome / Firefox / 1Password / LastPass / Bitwarden no longer try to save or autofill them as passwords. Each field has a show/hide eye toggle.
 - **Origin-aware API base URL** — frontend uses `window.location.origin` so `localhost:8000`, `127.0.0.1:8000`, and LAN IPs all work without cross-origin CORS preflights. Override with `VITE_API_URL` for split-port dev setups.
 
-### Upstream bug fixes shipped
+### Recent additions (post-Dialogue)
+
+A 30-commit polish pass on top of the feature set above. Grouped by what changed for the user vs. what changed under the hood.
+
+**Generate-with-AI quality**
+
+- **Three-act story structure baked into the prompts** — the AI writer now explicitly hits *setup → inciting incident → escalation → CLIMAX → resolution*, with a self-critique pass that audits the timeline + structure + craft before returning JSON. Banned anti-patterns include literal meta-labels in the body (`Stakes:`, `The closer hit me…`), AITA/TIFU title prefixes, hack-tier filler (`viral`, `epic`, `insane`), unearned emotional shifts, and movie-villain revenge plots.
+- **Variant scorer with explicit caps** — every candidate gets a `score` block: overall 0-100, hook strength, payoff strength, **structure** (penalises stacked half-reveals), **coherence** (catches plot holes / impossible knowledge / unearned shifts). Belt-and-suspenders Python clamp drives `score = min(score, 35/50/65)` based on the lower of structure/coherence so weak local-model self-grading can't smuggle slop past the gate.
+- **Per-feature AI model overrides** — `config.gemini.feature_models.<feature>` (story_generation / scoring / social_copy / hashtag_analysis / comment_reply / niche_finder / dialogue) lets you pay flagship rates only on the calls that benefit. Surfaced as a section in Config → AI Hooks; legacy `gemini.scoring_model` field still honored.
+- **Custom niches** — drop additional content niches into `config.ai_content_generation.custom_niches` (same shape as the built-ins: `name` / `subs` / `themes` per id). They appear in the niche grid with a 🏷️ tag glyph next to the built-in entries.
+- **Animated loading sequence** — Generate-with-AI shows step-cycling progress (drafting candidate 1/N, proofreading, structure audit, scoring, comparing, retrying) instead of a static spinner; clamps at the last step rather than looping so a stuck request looks honestly stuck.
+- **Title card vs TTS title** — Reddit posts with abbreviations like "Boyfriend (32M)" now render the original "(32M)" on the visual title card while the narration still says "thirty-two, male" (the prefilter already expanded it for natural speech).
+- **Narrator gender selector actually works** — the per-run "Male / Female / Auto" pick now resolves to a built-in default voice for the active provider when the user hasn't configured a per-gender preset (Adam/Bella for ElevenLabs, Matthew/Joanna for Polly). Used to silently fall through to the channel default voice.
+
+**Quality of life**
+
+- **Live updates everywhere** — a single `/api/events` SSE bus pushes state changes (run-queue, social-queue, calendar slot transitions, comment drafts, pipeline step events). Calendar / queue / comment-replier pages auto-update without polling. The 30-60s interval fallback only fires when the SSE stream is disconnected, so a healthy connection costs zero extra HTTP chatter.
+- **Auto-enqueue when busy** — clicking render on a Reddit post (or pasting a URL) while another render is in flight now silently enqueues instead of erroring with HTTP 409. The queue worker drains them serially. Toast says "Queued — pipeline busy" with the post title.
+- **Render-failure diagnostics** — when the pipeline fails, the error gets classified into one of 11 categories (`ffmpeg_oom`, `ffmpeg_codec_missing`, `font_missing`, `disk_full`, `network_timeout`, `api_quota`, `api_auth`, …) with a user-facing title + hint + `recoverable` flag. Surfaced via SSE so the queue card shows "Network timed out — usually transient" instead of `RuntimeError: 503`.
+- **Pipeline step skipping** — Config → Output → "Pipeline Steps" section. Switches to skip thumbnail generation (saves 5-15 s/render) and Discord notify globally per render. Backed by `config.pipeline.disabled_steps` array; the pipeline checks each gate and emits a `Skipped (disabled in config)` step status.
+- **Undo toasts** — destructive actions (delete calendar slot, clear run-queue history, clear social-copy queue history) defer the actual API call by 5 seconds and offer an inline Undo. Optimistic hide + restore on undo; failed commits roll back automatically.
+- **Polling fallback gated on SSE** — was running 60s polls in parallel with live events; now the interval only fires when `isLiveConnected()` returns false. Healthy stream = zero polling chatter.
+- **No more loading-flash on SSE refreshes** — Calendar + Comment Replier pages used to flash a spinner on every push event; now the spinner only appears on the initial mount.
+
+**Backend / architecture**
+
+- **JsonLedger** — one helper class replaces seven hand-rolled `_load(p)` / `_save(p, d)` pairs across `social_queue`, `run_queue`, `content_calendar`, `comment_replier`, `cost_tracker`, `render_history`, `ai_score_cache`. Atomic writes (tmpfile + os.replace), per-path threading lock, **mtime-invalidated parsed-dict cache** so hot reads (queue snapshots, AI-score lookups) don't re-parse JSON every call.
+- **Routes split** — `api_server.py` shrunk by extracting `routes/dialogue.py`, `routes/niche.py`, `routes/hashtags.py`, `routes/calendar.py`, `routes/social.py`, `routes/analytics.py`. Lazy imports inside handlers so routers don't depend on api_server at module load.
+- **Pydantic on hot routes** — `/api/ai/generate-variants`, `/api/pipeline/run-ai`, `/api/pipeline/run-custom-script` validate request bodies via typed Pydantic models in `api_models.py`. Type/range errors return 422 at the framework boundary instead of silent coercion.
+- **Brand profiles auto-include new config blocks** — was a hand-curated allow-list of keys (easy to forget). Now an `EXCLUDE_FROM_BRAND` deny-list lists keys that are app-wide (provider creds, output paths, scraper settings); everything else auto-snapshots per-brand. New features default to per-brand without touching `brand_profiles.py`.
+- **Per-config atomicity** — `_save_config` is now atomic (tmp + os.replace). Was a direct overwrite; a concurrent reader could see a truncated file mid-write.
+- **Pipeline state typed** — `pipeline_state` global gets a `TypedDict` annotation documenting the seven fields it carries (steps, is_running, current_post, started_at, completed_at, error, diagnostic). Typing-only, no runtime change.
+- **`scripts/smoke.py`** — 42 fast structural checks: every backend module imports clean, every router (the regression class we hit when first extracting routes/*) loads, every JsonLedger does a roundtrip in a tempdir, every render-diagnostics rule still classifies its example case, the FastAPI app boots and serves health/config/calendar/social/events endpoints under TestClient. Catches import-graph regressions before push.
+
+**Frontend perf**
+
+- **Bundle splitting** — main `index` chunk dropped from 740 KB → 165 KB. Vendor deps (`react` + `radix` + `tanstack` together as `vendor-ui`, `lucide-react`, `framer-motion`, `recharts`) split into separate cached chunks via Vite `manualChunks`. A code change in your app only invalidates the 165 KB index chunk; vendor stays cached across deploys. Total payload roughly the same — but parallelised + cacheable instead of one giant blocking blob.
+- **Replaced `date-fns` with a 30-line custom formatter** — saved ~70 KB of bundle for one function (`formatDistanceToNow`).
+- **`brandsById` Map memo** on Calendar + CommentReplier — was `brands.find()` inside a `.map()` per row, O(N×M) on every paint.
+- **Lazy-loaded routes** — every page is a separate chunk loaded on demand (5–50 KB each).
+
+
 
 - **`PROJECT_ROOT` off-by-one** — every module in `backend/src/` computed this one `dirname` short of the repo root, which made the stock server silently read a stale `backend/config.json`. Fixed across all 13 modules.
 - **Caption overflow on wide fonts** — upstream used a `fontsize * 0.5` estimate for wrap width; display fonts like Gotham Ultra overflowed the frame. Rewrote with `font.getlength()` pixel-accurate wrapping and stroke-aware canvas sizing.
@@ -181,6 +225,42 @@ Copy `config.json.example` to `config.json` on first run. All new keys have defa
     "client_id": "",            // OAuth 2.0 Desktop app from Google Cloud
     "client_secret": "",
     "refresh_token": ""         // populated by the panel after Connect
+  }
+},
+
+// Skip optional render steps to save wall time + tokens. Affects
+// every render globally. UI: Config → Output → Pipeline Steps.
+"pipeline": {
+  "disabled_steps": []          // ["thumbnail", "notify"] to skip both
+},
+
+// Per-feature AI model overrides. Empty string = use the global
+// gemini.model. Override only the calls you want on a cheaper /
+// different model (e.g. cheap scoring, flagship story generation).
+// UI: Config → AI Hooks → "Per-feature model overrides".
+"gemini": {
+  // …existing fields…
+  "feature_models": {
+    "story_generation": "",     // GenerateWithAIDialog
+    "scoring":          "",     // virality scorer (variant + Reddit-post)
+    "social_copy":      "",
+    "hashtag_analysis": "",
+    "comment_reply":    "",
+    "niche_finder":     "",
+    "dialogue":         ""
+  }
+},
+
+// Add user-defined niches that show up in GenerateWithAIDialog
+// alongside the built-ins. Same shape as the built-in NICHES dict
+// in ai_content_generator.py.
+"ai_content_generation": {
+  "custom_niches": {
+    "true_crime": {
+      "name":   "True Crime",
+      "subs":   "r/UnresolvedMysteries, r/TrueCrime",
+      "themes": "cold cases, suspect motives, missing persons"
+    }
   }
 }
 ```
