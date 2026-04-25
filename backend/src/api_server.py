@@ -25,6 +25,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+
+# Pydantic request models (validated at the FastAPI boundary). Imported
+# at module-level because FastAPI needs the type for body parsing at
+# decorator-application time, not lazily inside the handler.
+from api_models import (
+    GenerateVariantsRequest,
+    RunAIRequest,
+    RunCustomScriptRequest,
+)
 from contextlib import asynccontextmanager
 
 # Import existing backend modules
@@ -2614,7 +2623,7 @@ async def clear_ai_draft():
 
 
 @app.post("/api/ai/generate-variants")
-async def generate_ai_variants(req: dict = {}):
+async def generate_ai_variants(req: GenerateVariantsRequest):
     """
     Generate N candidate content variants in parallel without touching pipeline state.
     The frontend shows these in a picker; the chosen one is then handed to
@@ -2627,42 +2636,33 @@ async def generate_ai_variants(req: dict = {}):
     `max_attempts` times, returning early as soon as ANY variant clears
     the bar. The full attempt history is returned so the UI can show
     progress.
+
+    Request body validated by GenerateVariantsRequest (api_models.py).
+    Type/range errors return 422 from FastAPI before this body runs.
     """
     config = _load_config()
     gemini_cfg = config.get("gemini", {})
     if not gemini_cfg.get("enabled", False):
         raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
 
-    content_style      = req.get("content_style", "story")
-    niche              = req.get("niche", "relationship_drama")
-    custom_topic       = req.get("custom_topic")
-    interactive_format = req.get("interactive_format", "put_a_finger_down")
-
+    # Layer over per-config defaults (filter / audience / tone) when
+    # the user didn't explicitly send them. The Pydantic model gives
+    # us safe defaults — but the user's saved per-channel defaults
+    # take precedence over those for a 'first-load' generate click.
     acg_cfg = config.get("ai_content_generation", {}) or {}
-    content_filter = (req.get("content_filter") or acg_cfg.get("content_filter_default") or "normal").strip().lower()
-    if content_filter not in ("safe", "normal", "edgy"):
-        content_filter = "normal"
-    target_audience = (req.get("target_audience") or acg_cfg.get("target_audience_default") or "").strip() or None
-    tone = (req.get("tone") or acg_cfg.get("tone_default") or "dramatic").strip().lower()
-    if tone not in ("dramatic", "funny", "heartfelt", "shocking", "cringe"):
-        tone = "dramatic"
+    content_style      = req.content_style
+    niche              = req.niche
+    custom_topic       = req.custom_topic
+    interactive_format = req.interactive_format
+    content_filter     = req.content_filter or acg_cfg.get("content_filter_default") or "normal"
+    target_audience    = req.target_audience or acg_cfg.get("target_audience_default") or None
+    tone               = req.tone or acg_cfg.get("tone_default") or "dramatic"
+    count              = req.count
 
-    try:
-        count = max(1, min(5, int(req.get("count", 3))))
-    except (TypeError, ValueError):
-        count = 3
-
-    # Layer 3 — virality target. min_score=0 means "no gate, just score
-    # and return". 50-95 is the user-facing slider range.
-    try:
-        min_score = max(0, min(100, int(req.get("min_score", 0))))
-    except (TypeError, ValueError):
-        min_score = 0
-    try:
-        max_attempts = max(1, min(8, int(req.get("max_attempts", 3 if min_score else 1))))
-    except (TypeError, ValueError):
-        max_attempts = 3 if min_score else 1
-    # If no gate is set, do exactly one pass — no retry semantics needed.
+    # Virality gate. min_score=0 means "no gate, just score and return".
+    # max_attempts default depends on whether the gate is on.
+    min_score = req.min_score
+    max_attempts = req.max_attempts if req.max_attempts is not None else (3 if min_score else 1)
     if min_score <= 0:
         max_attempts = 1
 
@@ -3108,45 +3108,47 @@ def _write_ai_post_to_disk(
 
 
 @app.post("/api/pipeline/run-ai")
-async def run_pipeline_ai(req: dict = {}):
-    """Run the pipeline using AI-generated content (story, Q&A, interactive, hot take)."""
+async def run_pipeline_ai(req: RunAIRequest):
+    """Run the pipeline using AI-generated content (story, Q&A, interactive, hot take).
+
+    Request body validated by RunAIRequest (api_models.py).
+    """
     if pipeline_state["is_running"]:
         raise HTTPException(409, "Pipeline is already running")
 
-    content_style = req.get("content_style", "story")
-    niche = req.get("niche", "relationship_drama")
-    custom_topic = req.get("custom_topic")
-    interactive_format = req.get("interactive_format", "put_a_finger_down")
-    video_mode = req.get("video_mode", "short_reel")
-    tts_enabled = req.get("tts_enabled", True)
-    # Per-run transient overrides from the AI dialog (never touch config.json).
-    voice_override     = (req.get("voice_override") or "").strip() or None
-    narrator_gender    = (req.get("narrator_gender") or "auto").strip().lower() or "auto"
-    background_override = req.get("background_selector")
-    if background_override is None:
-        background_override = None  # keep None so the pipeline falls back to config
-    else:
+    content_style       = req.content_style
+    niche               = req.niche
+    custom_topic        = req.custom_topic
+    interactive_format  = req.interactive_format
+    video_mode          = req.video_mode
+    tts_enabled         = req.tts_enabled
+    voice_override      = (req.voice_override or "").strip() or None
+    narrator_gender     = req.narrator_gender
+    # Background override: None = "use config default", "" = "random
+    # across all folders", any other string = explicit folder/file.
+    # Strip but preserve the empty-string sentinel.
+    background_override = req.background_selector
+    if background_override is not None:
         background_override = str(background_override).strip()
-    custom_title       = (req.get("custom_title") or "").strip() or None
+    custom_title        = (req.custom_title or "").strip() or None
 
     config = _load_config()
     gemini_cfg = config.get("gemini", {})
     if not gemini_cfg.get("enabled", False):
         raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
 
-    # Content-filter + target-audience + tone: per-run, fall back to config defaults.
+    # Per-run filter/audience/tone fall back to config defaults when
+    # the user didn't explicitly send them. Pydantic gives us safe
+    # default values, but the user's saved channel defaults take
+    # precedence over those built-in defaults.
     acg_cfg = config.get("ai_content_generation", {}) or {}
-    content_filter = (req.get("content_filter") or acg_cfg.get("content_filter_default") or "normal").strip().lower()
-    if content_filter not in ("safe", "normal", "edgy"):
-        content_filter = "normal"
-    target_audience = (req.get("target_audience") or acg_cfg.get("target_audience_default") or "").strip() or None
-    tone = (req.get("tone") or acg_cfg.get("tone_default") or "dramatic").strip().lower()
-    if tone not in ("dramatic", "funny", "heartfelt", "shocking", "cringe"):
-        tone = "dramatic"
+    content_filter  = req.content_filter or acg_cfg.get("content_filter_default") or "normal"
+    target_audience = req.target_audience or acg_cfg.get("target_audience_default") or None
+    tone            = req.tone or acg_cfg.get("tone_default") or "dramatic"
 
     # Optional: caller already generated the content via /api/ai/generate-variants
     # and picked one — skip the generation step and use this payload directly.
-    preselected_content = req.get("preselected_content")
+    preselected_content = req.preselected_content
 
     # Start pipeline steps and mark AI generation as running
     for step in pipeline_state["steps"]:
@@ -3562,47 +3564,37 @@ async def fetch_news_feed(req: dict):
 
 
 @app.post("/api/pipeline/run-custom-script")
-async def run_pipeline_custom_script(req: dict = {}):
+async def run_pipeline_custom_script(req: RunCustomScriptRequest):
     """
     Render a user-pasted script — no AI generation, no Reddit fetching.
     The script is materialised as a synthetic post via the same helper
     the AI flow uses, then queued through the run-queue. UI lives at
     /custom-script.
 
-    Body:
-      title:               required
-      body:                required (the script text — TTS will read this verbatim)
-      content_style:       "story" (default) — kept here for forward-compat
-      video_mode:          "short_reel" (default) | "reel" | "long_reel"
-                           Legacy "full_video" still accepted (treated as long_reel).
-      tts_enabled:         bool (default true)
-      narrator_gender:     "auto" | "male" | "female"
-      voice_override:      voice_id or null
-      background_selector: folder | file | empty for random | null for config default
-      enqueue:             when true, push onto the run queue instead of firing
-                           immediately. Useful for paste-many-scripts workflows.
+    Request body validated by RunCustomScriptRequest (api_models.py).
+    title and body are required (≥1 char); video_mode / content_style /
+    narrator_gender are constrained string literals.
     """
-    title = (req.get("title") or "").strip()
-    body  = (req.get("body") or "").strip()
+    title = req.title.strip()
+    body  = req.body.strip()
     if not title or not body:
+        # Pydantic min_length=1 already catches empty strings, but
+        # whitespace-only inputs slip through — defend explicitly.
         raise HTTPException(400, "title and body are required")
 
-    content_style = (req.get("content_style") or "story").strip()
-    if content_style not in ("story", "qa", "interactive", "hot_take"):
-        content_style = "story"
-
-    video_mode = (req.get("video_mode") or "short_reel").strip()
+    content_style = req.content_style
+    video_mode = req.video_mode
     # Legacy "full_video" → "long_reel" (we removed full-length horizontal
     # output; existing configs / saved presets / queued items still
     # reference the old name and would otherwise fall through silently).
     if video_mode == "full_video":
         video_mode = "long_reel"
-    tts_enabled = bool(req.get("tts_enabled", True))
-    narrator_gender = (req.get("narrator_gender") or "auto").strip().lower() or "auto"
-    voice_override = (req.get("voice_override") or "").strip() or None
-    bg = req.get("background_selector")
+    tts_enabled = req.tts_enabled
+    narrator_gender = req.narrator_gender
+    voice_override = (req.voice_override or "").strip() or None
+    bg = req.background_selector
     background_override = None if bg is None else str(bg).strip()
-    enqueue_only = bool(req.get("enqueue", False))
+    enqueue_only = req.enqueue
 
     config = _load_config()
 
