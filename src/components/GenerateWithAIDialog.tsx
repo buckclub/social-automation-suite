@@ -6,6 +6,11 @@ import {
   Users,
   Bookmark, BookmarkPlus, Trash2, Check,
   Tag,
+  // Section-header icon for the Content Filter group. Note: this is
+  // ALSO used by the imported CONTENT_FILTERS option icons, but those
+  // come pre-bound from @/components/run-settings — `Shield` here is
+  // only for the standalone header glyph below.
+  Shield,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
