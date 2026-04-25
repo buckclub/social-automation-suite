@@ -44,6 +44,13 @@ export function QueuePanel() {
   }, [refresh]);
   useAppEvent(["run_queue.update", "render.complete"], refresh);
 
+  // IMPORTANT: every hook call must happen unconditionally before any
+  // possible early-return below. The early-returns are render gates
+  // (no data yet, or queue empty) that hide the panel; placing hooks
+  // after them violates the rules of hooks (React error #310 on the
+  // first render that has data when the previous render had none).
+  const undoDelete = useUndoableDelete();
+
   if (!data) return null;
 
   const items = data.items || [];
@@ -86,7 +93,6 @@ export function QueuePanel() {
     }
   };
 
-  const undoDelete = useUndoableDelete();
   const clearHistory = () => {
     if (!history.length) return;
     // Snapshot the to-be-cleared rows so we can show them again on
