@@ -635,6 +635,11 @@ class AIContentGenerator:
         self.provider = gemini_cfg.get("provider", "gemini")
         self.model = gemini_cfg.get("model", "gemini-2.0-flash")
         self.ollama_url = gemini_cfg.get("ollama_url", DEFAULT_OLLAMA_URL)
+        # Snapshot the merged niches dict at construction so per-request
+        # overrides don't have to plumb through every method. User-
+        # defined niches from config.ai_content_generation.custom_niches
+        # are merged in here.
+        self._niches = merged_niches(config)
 
         # Pick API key based on provider
         if self.provider == "ollama":
@@ -738,7 +743,7 @@ class AIContentGenerator:
                        target_audience: Optional[str] = None,
                        tone: Optional[str] = None) -> Optional[dict]:
         """Generate a story-mode post. Returns {title, body} or None."""
-        niche_info = NICHES.get(niche, NICHES["relationship_drama"])
+        niche_info = self._niches.get(niche) or self._niches.get("relationship_drama") or NICHES["relationship_drama"]
         system = STORY_SYSTEM_PROMPT.format(
             niche_name=niche_info["name"],
             niche_themes=niche_info["themes"],
@@ -762,7 +767,7 @@ class AIContentGenerator:
                     target_audience: Optional[str] = None,
                     tone: Optional[str] = None) -> Optional[dict]:
         """Generate a Q&A post. Returns {title, question, comments[]} or None."""
-        niche_info = NICHES.get(niche, NICHES["relationship_drama"])
+        niche_info = self._niches.get(niche) or self._niches.get("relationship_drama") or NICHES["relationship_drama"]
         system = QA_SYSTEM_PROMPT.format(
             niche_name=niche_info["name"],
             niche_themes=niche_info["themes"],
@@ -789,7 +794,7 @@ class AIContentGenerator:
                              target_audience: Optional[str] = None,
                              tone: Optional[str] = None) -> Optional[dict]:
         """Generate interactive engagement content. Returns {title, segments[{text, pause_seconds}]} or None."""
-        niche_info = NICHES.get(niche, NICHES["childhood_nostalgia"])
+        niche_info = self._niches.get(niche) or self._niches.get("childhood_nostalgia") or NICHES["childhood_nostalgia"]
         fmt = next((f for f in INTERACTIVE_FORMATS if f["id"] == format_type), INTERACTIVE_FORMATS[0])
 
         system = INTERACTIVE_SYSTEM_PROMPT.format(
@@ -819,7 +824,7 @@ class AIContentGenerator:
                           target_audience: Optional[str] = None,
                           tone: Optional[str] = None) -> Optional[dict]:
         """Generate a hot take / opinion post. Returns {title, body} or None."""
-        niche_info = NICHES.get(niche, NICHES["relationship_drama"])
+        niche_info = self._niches.get(niche) or self._niches.get("relationship_drama") or NICHES["relationship_drama"]
         system = HOT_TAKE_SYSTEM_PROMPT.format(
             niche_name=niche_info["name"],
             niche_themes=niche_info["themes"],
@@ -872,9 +877,45 @@ class AIContentGenerator:
 
 # ── Helpers for external use ─────────────────────────────────────────
 
-def get_available_niches() -> List[dict]:
-    """Return list of available niches for the UI."""
-    return [{"id": k, "name": v["name"], "themes": v["themes"]} for k, v in NICHES.items()]
+def merged_niches(config: Optional[dict] = None) -> Dict[str, Dict[str, str]]:
+    """
+    Built-in NICHES merged with `config.ai_content_generation.custom_niches`.
+    User-defined niches take precedence on key collision (so a user can
+    override the default 'relationship_drama' subs / themes if they want).
+
+    Custom-niche shape mirrors NICHES — dict keyed by id, each value
+    has `name`, `subs`, and `themes` strings. Anything malformed is
+    silently dropped to avoid breaking the UI on bad config.
+    """
+    out = dict(NICHES)
+    if not isinstance(config, dict):
+        return out
+    cn = ((config.get("ai_content_generation") or {}).get("custom_niches") or {})
+    if not isinstance(cn, dict):
+        return out
+    for k, v in cn.items():
+        if not isinstance(k, str) or not isinstance(v, dict):
+            continue
+        name   = str(v.get("name") or "").strip()
+        themes = str(v.get("themes") or "").strip()
+        if not name or not themes:
+            continue
+        out[k] = {
+            "name":   name,
+            "subs":   str(v.get("subs") or ""),
+            "themes": themes,
+        }
+    return out
+
+
+def get_available_niches(config: Optional[dict] = None) -> List[dict]:
+    """Return list of available niches (built-in + user-defined) for the UI."""
+    return [
+        {"id": k, "name": v["name"], "themes": v["themes"], "subs": v.get("subs", ""),
+         "custom": k not in NICHES}
+        for k, v in merged_niches(config).items()
+    ]
+
 
 def get_interactive_formats() -> List[dict]:
     """Return list of interactive format types for the UI."""

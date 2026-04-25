@@ -1033,6 +1033,22 @@ async def health():
     return {"status": "online", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+@app.get("/api/ai/niches")
+async def list_ai_niches():
+    """
+    Built-in NICHES merged with the user's custom_niches in
+    config.ai_content_generation.custom_niches. Drives the niche
+    picker in GenerateWithAIDialog so users can add their own without
+    a code change.
+
+    Each row: { id, name, themes, subs, custom: bool }
+    'custom: true' means it came from config (so the UI can show
+    a small "user" badge if it wants).
+    """
+    from ai_content_generator import get_available_niches
+    return {"niches": get_available_niches(_load_config())}
+
+
 # ── Branding / title-card assets ────────────────────────────────────
 from fastapi import UploadFile, File
 

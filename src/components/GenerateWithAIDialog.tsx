@@ -35,7 +35,12 @@ const CONTENT_STYLES = [
   { id: "hot_take", label: "Hot Take", icon: Flame, desc: "Controversial opinion that drives comments", color: "text-orange-400" },
 ];
 
-const NICHES = [
+// Built-in niches used as the default + emoji source. The full list
+// shown in the picker is built from this PLUS any custom_niches the
+// user added in config.ai_content_generation.custom_niches (loaded
+// at dialog open via the /api/ai/niches endpoint). Custom entries
+// don't ship with emojis — they get a default tag glyph.
+const BUILTIN_NICHES = [
   { id: "relationship_drama", name: "Relationship Drama", emoji: "💔" },
   { id: "childhood_nostalgia", name: "Childhood Nostalgia", emoji: "🧸" },
   { id: "workplace_horror", name: "Workplace Horror", emoji: "💼" },
@@ -336,6 +341,11 @@ export function GenerateWithAIDialog() {
   const { data: providersData } = useTtsProviders();
   const [bgFolders, setBgFolders] = useState<{ path: string; name: string; video_count: number }[]>([]);
 
+  // Niche list — built-ins always present, custom_niches from config
+  // appended below them. Fetch on open so a config edit between
+  // dialog opens is picked up without a full reload.
+  const [niches, setNiches] = useState<{ id: string; name: string; emoji: string }[]>(BUILTIN_NICHES);
+
   useEffect(() => {
     if (!open) return;
     api.listBackgroundFolders()
@@ -343,6 +353,24 @@ export function GenerateWithAIDialog() {
       .catch((e) => {
         console.warn("[GenerateWithAIDialog] listBackgroundFolders failed:", e);
         setBgFolders([]);
+      });
+    api.listAINiches()
+      .then((r) => {
+        // Built-ins keep their emojis; custom rows get a default
+        // tag glyph. Backend rows mark `custom: true` so we know
+        // which ones to badge / append.
+        const builtinIds = new Set(BUILTIN_NICHES.map((n) => n.id));
+        const merged: { id: string; name: string; emoji: string }[] = [
+          ...BUILTIN_NICHES,
+          ...((r?.niches || [])
+            .filter((n) => n.custom && !builtinIds.has(n.id))
+            .map((n) => ({ id: n.id, name: n.name, emoji: "🏷️" }))),
+        ];
+        setNiches(merged);
+      })
+      .catch(() => {
+        // Backend unreachable — fall back to built-ins only.
+        setNiches(BUILTIN_NICHES);
       });
   }, [open]);
 
@@ -1146,7 +1174,7 @@ export function GenerateWithAIDialog() {
         <div className="space-y-4">
           <Label className="text-xs text-muted-foreground uppercase tracking-wider">Choose Niche</Label>
           <div className="grid grid-cols-2 gap-1.5">
-            {NICHES.map((n) => (
+            {niches.map((n) => (
               <button
                 key={n.id}
                 onClick={() => setNiche(n.id)}
@@ -1431,7 +1459,7 @@ export function GenerateWithAIDialog() {
     // ── Step 4: Review & generate ──────────────────────────────
     if (step === 4) {
       const styleInfo  = CONTENT_STYLES.find((s) => s.id === contentStyle);
-      const nicheInfo  = NICHES.find((n) => n.id === niche);
+      const nicheInfo  = niches.find((n) => n.id === niche);
       const formatInfo = INTERACTIVE_FORMATS.find((f) => f.id === interactiveFormat);
       const voiceLabel =
         voiceOverride === "__config__"

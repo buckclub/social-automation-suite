@@ -905,6 +905,14 @@ export const api = {
   clearAIDraft: () =>
     request<{ cleared: boolean }>("/api/ai/drafts", { method: "DELETE" }),
 
+  // List the available content niches — built-in plus any custom ones
+  // the user added in config.ai_content_generation.custom_niches.
+  // Drives the niche picker in GenerateWithAIDialog.
+  listAINiches: () =>
+    request<{
+      niches: { id: string; name: string; themes: string; subs: string; custom: boolean }[];
+    }>("/api/ai/niches"),
+
   // First-run wizard support — ping a provider to validate credentials
   // before persisting them. The endpoint always returns 200 with
   // {ok, detail}; HTTP errors / timeouts are folded into ok=false.

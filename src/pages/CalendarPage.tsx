@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAppEvent } from "@/lib/eventBus";
+import { useAppEvent, isLiveConnected } from "@/lib/eventBus";
 import { useNavigate } from "react-router-dom";
 import {
   Calendar as CalendarIcon, Loader2, Plus, Trash2, Play,
@@ -77,8 +77,13 @@ export default function CalendarPage() {
   }, [toast]);
   useEffect(() => {
     refresh();
-    // SSE pushes drive most updates; the interval is a 60s fallback.
-    const t = setInterval(refresh, 60_000);
+    // SSE pushes drive most updates. The interval only fires when SSE
+    // is disconnected — gating on isLiveConnected() means a healthy
+    // connection costs zero polling chatter, while a dropped stream
+    // still gets a refresh every 60s as a safety net.
+    const t = setInterval(() => {
+      if (!isLiveConnected()) refresh();
+    }, 60_000);
     return () => clearInterval(t);
   }, [refresh]);
   useAppEvent("calendar.update", refresh);

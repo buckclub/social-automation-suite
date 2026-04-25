@@ -7,7 +7,7 @@ import { api, type SocialQueueItem } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { useAppEvent } from "@/lib/eventBus";
+import { useAppEvent, isLiveConnected } from "@/lib/eventBus";
 
 /**
  * Floating status chip for the Social Copy batch queue. Auto-hides when
@@ -32,9 +32,11 @@ export function SocialCopyQueueChip() {
   }, []);
   useEffect(() => {
     refresh();
-    // SSE pushes from social_queue.update drive the chip; this 30s
-    // interval is just a fallback if the stream drops.
-    const t = setInterval(refresh, 30_000);
+    // SSE pushes drive the chip; the interval only fires when SSE is
+    // disconnected. Healthy stream = zero polling.
+    const t = setInterval(() => {
+      if (!isLiveConnected()) refresh();
+    }, 30_000);
     return () => clearInterval(t);
   }, [refresh]);
   useAppEvent("social_queue.update", refresh);
