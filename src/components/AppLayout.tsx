@@ -3,6 +3,7 @@ import {
   Video, LayoutDashboard, Newspaper, Settings2, Film, Command,
   Images, Scissors, PenLine, Plus, ChevronDown,
   FileText, Layers, Hash, Globe, Quote, Music, TrendingUp, Compass, User as UserIcon,
+  Calendar as CalendarIcon,
 } from "lucide-react";
 import { useHealth } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
@@ -26,6 +27,7 @@ import {
 const topLevelItems = [
   { to: "/",            label: "Dashboard",     icon: LayoutDashboard },
   { to: "/videos",      label: "Videos",        icon: Film },
+  { to: "/calendar",    label: "Calendar",      icon: CalendarIcon },
   { to: "/performance", label: "Performance",   icon: TrendingUp },
   { to: "/backgrounds", label: "Backgrounds",   icon: Images },
   { to: "/music",       label: "Music",         icon: Music },

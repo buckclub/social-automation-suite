@@ -184,6 +184,21 @@ export interface BrandProfile extends BrandSummary {
   config_overrides: Record<string, any>;
 }
 
+// Content calendar — scheduled Generate-with-AI runs.
+export interface CalendarSlot {
+  id: string;
+  scheduled_at: string;
+  kind: "ai";
+  brand_id: string | null;
+  title: string;
+  params: Record<string, unknown>;
+  status: "planned" | "due" | "generating" | "queued" | "rendered" | "failed" | "cancelled";
+  created_at: string;
+  fired_at: string | null;
+  post_id: string | null;
+  error: string | null;
+}
+
 // Background queue for batch social-copy generation.
 export interface SocialQueueItem {
   queue_id: string;
@@ -903,6 +918,29 @@ export const api = {
       { method: "POST", body: JSON.stringify(params) },
     ),
   carouselRenderUrl: () => `${API_BASE}/api/carousels/render`,
+
+  // ── Content Calendar ─────────────────────────────────────────
+  listCalendarSlots: () =>
+    request<{ slots: CalendarSlot[] }>("/api/calendar"),
+  createCalendarSlot: (body: {
+    scheduled_at: string;
+    kind: "ai";
+    brand_id?: string | null;
+    title: string;
+    params: Record<string, unknown>;
+  }) =>
+    request<{ slot: CalendarSlot }>("/api/calendar", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  updateCalendarSlot: (id: string, patch: Partial<CalendarSlot>) =>
+    request<{ slot: CalendarSlot }>(`/api/calendar/${encodeURIComponent(id)}`, {
+      method: "PUT", body: JSON.stringify(patch),
+    }),
+  deleteCalendarSlot: (id: string) =>
+    request<{ deleted: boolean }>(`/api/calendar/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  fireCalendarSlotNow: (id: string) =>
+    request<{ queued_for_immediate_fire: boolean }>(
+      `/api/calendar/${encodeURIComponent(id)}/fire-now`, { method: "POST" }),
 
   // ── Avatar Reels (per-brand PNG-tuber) ───────────────────────
   listAvatars: (brandId: string) =>

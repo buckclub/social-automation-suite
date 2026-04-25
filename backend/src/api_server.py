@@ -700,6 +700,14 @@ async def lifespan(app: FastAPI):
             _log(f"Social copy queue: recovered {n} orphaned running item(s)")
     except Exception as e:
         _log(f"Social copy queue recovery failed: {e}")
+    # Same recovery for the content calendar.
+    try:
+        from content_calendar import init_on_startup as cal_init
+        n = cal_init(PROJECT_ROOT)
+        if n:
+            _log(f"Content calendar: recovered {n} orphaned in-flight slot(s)")
+    except Exception as e:
+        _log(f"Calendar recovery failed: {e}")
     # AI-score cache housekeeping: one-time migrate legacy per-post rows,
     # then prune anything not touched in the TTL window so stale models
     # don't linger forever.
@@ -718,11 +726,12 @@ async def lifespan(app: FastAPI):
     # Kick off the background workers.
     task = asyncio.create_task(_queue_worker())
     social_task = asyncio.create_task(_social_queue_worker())
+    calendar_task = asyncio.create_task(_calendar_worker())
     _log("Server started")
     try:
         yield
     finally:
-        for t in (task, social_task):
+        for t in (task, social_task, calendar_task):
             t.cancel()
             try:
                 await t
@@ -4984,6 +4993,182 @@ async def elevenlabs_voices():
 # tone, mix it under the narration during render. Storage layout mirrors
 # `backgrounds/`: flat files plus a metadata JSON for per-track moods.
 # ──────────────────────────────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────
+# Content Calendar — schedule Generate-with-AI runs for specific datetimes.
+# Each "slot" stores the same params shape /api/pipeline/run-ai takes;
+# the worker fires them at scheduled_at, generates a variant, picks the
+# top-fit, and enqueues the render.
+# ──────────────────────────────────────────────────────────────────────
+
+@app.get("/api/calendar")
+async def calendar_list():
+    from content_calendar import list_slots
+    return {"slots": list_slots(PROJECT_ROOT)}
+
+
+@app.post("/api/calendar")
+async def calendar_create(req: dict):
+    from content_calendar import create_slot
+    sched = (req.get("scheduled_at") or "").strip()
+    if not sched:
+        raise HTTPException(400, "scheduled_at (ISO datetime) is required")
+    title = (req.get("title") or "").strip() or "Scheduled run"
+    kind  = (req.get("kind") or "ai").strip()
+    if kind not in ("ai",):
+        # MVP: only the AI pipeline path is wired. custom/news can come later.
+        raise HTTPException(400, "kind must be 'ai' for now")
+    brand_id = req.get("brand_id") or None
+    params   = req.get("params") or {}
+    slot = create_slot(
+        PROJECT_ROOT,
+        scheduled_at=sched, kind=kind,
+        brand_id=brand_id, title=title, params=params,
+    )
+    return {"slot": slot}
+
+
+@app.put("/api/calendar/{slot_id}")
+async def calendar_update(slot_id: str, req: dict):
+    from content_calendar import update_slot
+    s = update_slot(PROJECT_ROOT, slot_id, req)
+    if not s:
+        raise HTTPException(404, "Slot not found")
+    return {"slot": s}
+
+
+@app.delete("/api/calendar/{slot_id}")
+async def calendar_delete(slot_id: str):
+    from content_calendar import delete_slot
+    if not delete_slot(PROJECT_ROOT, slot_id):
+        raise HTTPException(404, "Slot not found")
+    return {"deleted": True}
+
+
+@app.post("/api/calendar/{slot_id}/fire-now")
+async def calendar_fire_now(slot_id: str):
+    """Reschedule a slot to NOW so the worker picks it up next tick."""
+    from content_calendar import update_slot, get_slot
+    s = get_slot(PROJECT_ROOT, slot_id)
+    if not s:
+        raise HTTPException(404, "Slot not found")
+    update_slot(PROJECT_ROOT, slot_id, {
+        "scheduled_at": datetime.now(timezone.utc).isoformat(),
+        "status": "planned",
+        "error": None,
+    })
+    return {"queued_for_immediate_fire": True}
+
+
+async def _calendar_worker():
+    """
+    Fires due calendar slots. Each slot:
+      1. Mark `generating` → snapshot the brand's settings (auto-switch).
+      2. Run /api/ai/generate-variants internally to get a candidate.
+      3. Write synthetic post + enqueue on the run queue (kind: "post").
+      4. Mark `queued` with post_id.
+    Errors mark `failed` with the exception message.
+    """
+    from content_calendar import pop_due, mark_status
+    await asyncio.sleep(3)  # lifespan-yield grace
+    while True:
+        try:
+            slot = pop_due(PROJECT_ROOT)
+            if not slot:
+                await asyncio.sleep(30)
+                continue
+
+            sid = slot["id"]
+            params = slot.get("params") or {}
+            brand_id = slot.get("brand_id")
+            _log(f"Calendar: firing slot {sid} (brand={brand_id}, title={slot.get('title','')[:60]})")
+            mark_status(PROJECT_ROOT, sid, "generating")
+
+            # Optionally switch the active brand for this run. We snapshot
+            # the previously-active brand's overrides first via the same
+            # helper /api/brands/active uses.
+            try:
+                if brand_id:
+                    from brand_profiles import (
+                        get_profile, update_profile, get_active_id,
+                        snapshot_overrides_from_config, apply_overrides_to_config,
+                    )
+                    cfg = _load_config()
+                    prev = get_active_id(cfg)
+                    if prev and prev != brand_id:
+                        update_profile(PROJECT_ROOT, prev,
+                                       config_overrides=snapshot_overrides_from_config(cfg))
+                    new_brand = get_profile(PROJECT_ROOT, brand_id)
+                    if new_brand:
+                        apply_overrides_to_config(cfg, new_brand.get("config_overrides") or {})
+                        cfg["active_brand_id"] = brand_id
+                        _save_config(cfg)
+            except Exception as e:
+                _log(f"Calendar: brand switch failed for {sid}: {e}")
+
+            # Generate one candidate via the AI flow, then enqueue it.
+            try:
+                cfg = _load_config()
+                g = cfg.get("gemini") or {}
+                provider = g.get("provider", "gemini")
+                ai_key = (
+                    g.get("api_key") if provider == "gemini" else
+                    g.get("openrouter_api_key") if provider == "openrouter" else
+                    g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+                )
+                model = g.get("model") or "gemini-2.0-flash"
+                ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+                from ai_content_generator import AIContentGenerator
+                generator = AIContentGenerator(cfg)
+                content_data = await asyncio.to_thread(
+                    generator.generate,
+                    params.get("content_style", "story"),
+                    params.get("niche", "relationship_drama"),
+                    params.get("custom_topic"),
+                    params.get("interactive_format", "put_a_finger_down"),
+                    (params.get("content_filter") or "normal"),
+                    params.get("target_audience"),
+                    (params.get("tone") or "dramatic"),
+                )
+                if not content_data:
+                    mark_status(PROJECT_ROOT, sid, "failed", error="AI returned no content")
+                    continue
+
+                post_id, _, subreddit, _ = _write_ai_post_to_disk(
+                    content_data=content_data,
+                    content_style=params.get("content_style", "story"),
+                    niche=params.get("niche", "relationship_drama"),
+                    content_filter=(params.get("content_filter") or "normal"),
+                    target_audience=params.get("target_audience"),
+                    tone=(params.get("tone") or "dramatic"),
+                    custom_title=params.get("custom_title"),
+                )
+
+                ng = (params.get("narrator_gender") or "auto").lower()
+                from run_queue import enqueue
+                enqueue(PROJECT_ROOT, post_id=post_id,
+                        title=slot.get("title") or content_data.get("title", ""),
+                        subreddit=subreddit,
+                        params={
+                            "kind": "post",
+                            "narrator_gender": ng if ng != "auto" else None,
+                            "voice_override": (params.get("voice_override") or "").strip() or None,
+                            "background_override": params.get("background_selector"),
+                            "video_mode": params.get("video_mode"),
+                            "tts_enabled": params.get("tts_enabled", True),
+                        })
+                mark_status(PROJECT_ROOT, sid, "queued", post_id=post_id)
+                _log(f"Calendar: slot {sid} → queued post {post_id}")
+            except Exception as e:
+                _log(f"Calendar: slot {sid} failed: {e}")
+                mark_status(PROJECT_ROOT, sid, "failed", error=str(e))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _log(f"Calendar worker tick failed: {e}")
+            await asyncio.sleep(15)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Channel-niche finder — turns "what should my next channel be?" into
