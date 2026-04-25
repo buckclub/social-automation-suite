@@ -887,6 +887,18 @@ export const api = {
     ),
   carouselRenderUrl: () => `${API_BASE}/api/carousels/render`,
 
+  // ── Quote Cards (single-image quote post) ────────────────────
+  renderQuoteCard: (params: { quote: string; attribution?: string; style: Record<string, unknown> }) =>
+    request<{ data_uri: string }>(
+      "/api/quote-cards/render",
+      { method: "POST", body: JSON.stringify(params) },
+    ),
+  extractQuotes: (params: { post_id: string; max_quotes?: number }) =>
+    request<{ quotes: { text: string; why: string }[]; source_title: string }>(
+      "/api/quote-cards/extract",
+      { method: "POST", body: JSON.stringify(params) },
+    ),
+
   // ── Hashtag Lab ──────────────────────────────────────────────
   analyzeHashtags: (params: { caption: string; niche?: string; platform?: "tiktok" | "instagram" | "youtube" | "all" }) =>
     request<{

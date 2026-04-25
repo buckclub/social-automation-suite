@@ -52,6 +52,54 @@
     --glow-primary: 16 85% 55%;
     --glow-accent: 270 60% 55%;
   }
+
+  /* Light theme override — applied via the `light` class on <html>.
+     Default (no class) stays dark for backward compat. */
+  .light {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 8%;
+
+    --card: 0 0% 99%;
+    --card-foreground: 240 10% 8%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 8%;
+
+    --primary: 16 85% 50%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 240 6% 94%;
+    --secondary-foreground: 240 10% 20%;
+
+    --muted: 240 6% 94%;
+    --muted-foreground: 240 6% 40%;
+
+    --accent: 270 60% 50%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 45%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 240 6% 88%;
+    --input: 240 6% 88%;
+    --ring: 16 85% 50%;
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 10% 20%;
+    --sidebar-primary: 16 85% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 6% 92%;
+    --sidebar-accent-foreground: 240 10% 8%;
+    --sidebar-border: 240 6% 88%;
+    --sidebar-ring: 16 85% 50%;
+
+    --success: 142 70% 38%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 45%;
+    --warning-foreground: 0 0% 0%;
+    --glow-primary: 16 85% 50%;
+    --glow-accent: 270 60% 50%;
+  }
 }
 
 @layer base {

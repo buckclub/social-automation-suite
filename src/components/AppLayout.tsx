@@ -2,7 +2,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Video, LayoutDashboard, Newspaper, Settings2, Film, Command,
   Images, Scissors, PenLine, Plus, ChevronDown,
-  FileText, Layers, Hash, Globe,
+  FileText, Layers, Hash, Globe, Quote,
 } from "lucide-react";
 import { useHealth } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,7 @@ import { KeyboardShortcuts } from "@/components/KeyboardShortcuts";
 import { StatusBar } from "@/components/StatusBar";
 import { SocialCopyQueueChip } from "@/components/SocialCopyQueueChip";
 import { GenerateWithAIDialog } from "@/components/GenerateWithAIDialog";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator,
@@ -32,6 +33,7 @@ const createGroupItems = [
   { to: "/text-posts",    label: "Text Posts",     icon: PenLine,   desc: "Tweets / comments / community posts" },
   { to: "/custom-script", label: "Custom Script",  icon: FileText,  desc: "Paste your own narration → render" },
   { to: "/carousels",     label: "Carousel Posts", icon: Layers,    desc: "Multi-slide IG / TikTok carousels" },
+  { to: "/quote-cards",   label: "Quote Cards",    icon: Quote,     desc: "Single-image quote post (extract from video)" },
   { to: "/news",          label: "News Roundup",   icon: Globe,     desc: "RSS feeds → AI riff prompts" },
   { to: "/hashtag-lab",   label: "Hashtag Lab",    icon: Hash,      desc: "Rank tags for a caption" },
 ];
@@ -136,6 +138,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
                 user never has to navigate to the dashboard just to kick
                 off a generation run. */}
             <GenerateWithAIDialog />
+            <ThemeToggle />
             <button
               onClick={toggleCommand}
               title="Command palette (⌘K / Ctrl+K)"

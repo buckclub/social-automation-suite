@@ -2753,6 +2753,142 @@ async def carousel_preview_slide(req: dict):
     return {"data_uri": f"data:image/png;base64,{b64}"}
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Quote Cards — single-image quote posts. Same renderer as carousels;
+# we just emit ONE slide and skip the pagination indicator.
+#
+# Two flows: paste a quote directly, or pick a quotable line from any
+# existing rendered video's transcript / source text.
+# ──────────────────────────────────────────────────────────────────────
+
+@app.post("/api/quote-cards/render")
+async def quote_card_render(req: dict):
+    """
+    Body: { quote: str, attribution?: str, style: {...} (carousel style block) }
+    Returns: { data_uri: str }  — base64 PNG, the same shape carousel
+    preview returns. UI shows it inline + offers a download button.
+    """
+    from carousel_renderer import render_slide_to_png
+    quote = (req.get("quote") or "").strip()
+    if not quote:
+        raise HTTPException(400, "quote is required")
+    attribution = (req.get("attribution") or "").strip()
+    style = dict(req.get("style") or {})
+    # Quote cards are single-image — pagination indicator makes no sense.
+    style["show_pagination"] = False
+    slide = {"title": quote, "body": attribution}
+    try:
+        png_bytes = await asyncio.to_thread(render_slide_to_png, slide, style, idx=1, total=1)
+    except Exception as e:
+        raise HTTPException(500, f"Render failed: {e}")
+    import base64
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    return {"data_uri": f"data:image/png;base64,{b64}"}
+
+
+@app.post("/api/quote-cards/extract")
+async def quote_card_extract(req: dict):
+    """
+    Pull the most quotable lines out of an existing rendered post's
+    narration. Body: { post_id: str, max_quotes?: int (default 5) }
+    Returns: { quotes: [{ text, why }, ...], source_title: str }
+
+    Uses the configured LLM. Reads the script text from posts/<id>/
+    (story_mode.txt → qa_mode.txt → summary.selftext fallback).
+    """
+    post_id = (req.get("post_id") or "").strip()
+    if not post_id:
+        raise HTTPException(400, "post_id required")
+    try:
+        max_quotes = max(1, min(10, int(req.get("max_quotes") or 5)))
+    except (TypeError, ValueError):
+        max_quotes = 5
+
+    post_dir = os.path.join(PROJECT_ROOT, "posts", post_id)
+    title = ""
+    text = ""
+    summary_path = os.path.join(post_dir, "summary.json")
+    if os.path.isfile(summary_path):
+        try:
+            with open(summary_path, "r", encoding="utf-8") as f:
+                s = json.load(f)
+            title = s.get("title", "")
+            text = s.get("selftext", "") or ""
+        except Exception:
+            pass
+    for cand in ("story_mode.txt", "qa_mode.txt"):
+        p = os.path.join(post_dir, cand)
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    text = f.read()
+                break
+            except Exception:
+                pass
+    if not text:
+        raise HTTPException(404, f"No script text found for post {post_id}")
+
+    config = _load_config()
+    g = config.get("gemini") or {}
+    if not g.get("enabled"):
+        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
+    provider = g.get("provider", "gemini")
+    api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    system = (
+        "You are pulling the MOST quotable lines out of a piece of writing. "
+        "A quotable line is one that stands alone as a single image post on "
+        "Instagram or X — punchy, emotionally resonant, or surprising. ≤180 "
+        "characters each. Return ONLY minified JSON, no markdown."
+    )
+    prompt = (
+        f"Title: {title}\n\nText:\n\"\"\"\n{text[:4000]}\n\"\"\"\n\n"
+        f"Pick the {max_quotes} most quotable lines. They can be paraphrased "
+        f"slightly for punch but must preserve the original meaning.\n\n"
+        "Return JSON of this exact shape:\n"
+        "{\n"
+        '  "quotes": [\n'
+        '    {"text": "<≤180 char quote>", "why": "<≤80 char one-liner explaining the punch>"},\n'
+        "    ...\n"
+        "  ]\n"
+        "}\n"
+    )
+
+    from gemini_hooks import _call_ai  # type: ignore
+    raw = _call_ai(provider, api_key, prompt, system, model, ollama_url)
+    if not raw:
+        raise HTTPException(502, f"AI provider '{provider}' returned empty response")
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip("`").strip()
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        s = cleaned.find("{"); e = cleaned.rfind("}")
+        if s >= 0 and e > s:
+            try: parsed = json.loads(cleaned[s:e + 1])
+            except Exception:
+                raise HTTPException(502, f"AI returned non-JSON: {cleaned[:200]}")
+        else:
+            raise HTTPException(502, f"AI returned non-JSON: {cleaned[:200]}")
+    quotes = []
+    for q in (parsed.get("quotes") or []):
+        t = (q.get("text") or "").strip()
+        if not t:
+            continue
+        quotes.append({"text": t[:200], "why": (q.get("why") or "").strip()[:120]})
+    return {"quotes": quotes, "source_title": title}
+
+
 @app.post("/api/carousels/render")
 async def carousel_render_zip(req: dict):
     """

@@ -23,6 +23,7 @@ import CustomScriptPage from "./pages/CustomScriptPage";
 import NewsRoundupPage from "./pages/NewsRoundupPage";
 import HashtagLabPage from "./pages/HashtagLabPage";
 import CarouselPage from "./pages/CarouselPage";
+import QuoteCardPage from "./pages/QuoteCardPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -46,6 +47,7 @@ const App = () => (
             <Route path="/news" element={<NewsRoundupPage />} />
             <Route path="/hashtag-lab" element={<HashtagLabPage />} />
             <Route path="/carousels" element={<CarouselPage />} />
+            <Route path="/quote-cards" element={<QuoteCardPage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

@@ -19,6 +19,16 @@
   </head>
 
   <body>
+    <!-- Apply saved theme BEFORE React mounts to avoid a flash of the
+         wrong palette on first paint. Mirrors the ThemeToggle hook. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("ui-theme");
+          if (t === "light") document.documentElement.classList.add("light");
+        } catch (_) {}
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
