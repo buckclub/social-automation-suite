@@ -23,12 +23,10 @@ Keyed by UTC date — simple and consistent with how the rest of the app
 timestamps.
 """
 from __future__ import annotations
-import json
 import os
 from datetime import datetime, timezone, timedelta
-from threading import Lock
 
-_lock = Lock()
+from json_ledger import get_ledger
 
 KEEP_DAYS = 90   # prune anything older so the file stays small
 
@@ -39,31 +37,12 @@ def _path(project_root: str) -> str:
     return os.path.join(d, "render_history.json")
 
 
+def _ledger(project_root: str):
+    return get_ledger(_path(project_root), default={"days": {}})
+
+
 def _today_key() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
-def _load(path: str) -> dict:
-    if not os.path.isfile(path):
-        return {"days": {}}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if "days" not in data:
-            data["days"] = {}
-        return data
-    except Exception:
-        return {"days": {}}
-
-
-def _save(path: str, data: dict) -> None:
-    try:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, path)
-    except Exception:
-        pass
 
 
 def _prune(days: dict, keep: int = KEEP_DAYS) -> None:
@@ -75,11 +54,9 @@ def _prune(days: dict, keep: int = KEEP_DAYS) -> None:
 
 def record(project_root: str, *, success: bool, render_time_s: float = 0.0, resume: bool = False) -> None:
     """Add one render attempt to today's counter."""
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
-        today = _today_key()
-        day = data["days"].setdefault(today, {
+    with _ledger(project_root).mutate() as data:
+        days = data.setdefault("days", {})
+        day = days.setdefault(_today_key(), {
             "renders": 0, "successes": 0, "failures": 0,
             "total_time_s": 0.0, "resumes": 0,
         })
@@ -92,8 +69,7 @@ def record(project_root: str, *, success: bool, render_time_s: float = 0.0, resu
             day["total_time_s"] = float(day.get("total_time_s", 0.0)) + float(render_time_s)
         if resume:
             day["resumes"] = int(day.get("resumes", 0)) + 1
-        _prune(data["days"])
-        _save(path, data)
+        _prune(days)
 
 
 def snapshot(project_root: str, *, days: int = 30) -> dict:
@@ -101,8 +77,8 @@ def snapshot(project_root: str, *, days: int = 30) -> dict:
     Return the last `days` of history in ascending date order, plus
     aggregates used by the Dashboard stats row.
     """
-    path = _path(project_root)
-    data = _load(path)
+    with _ledger(project_root).read() as data:
+        days_map = data.get("days", {}) or {}
 
     # Build a complete day-by-day series even for days with zero activity
     # so the chart has a continuous x-axis.
@@ -111,7 +87,7 @@ def snapshot(project_root: str, *, days: int = 30) -> dict:
     for i in range(days - 1, -1, -1):
         d = today_utc - timedelta(days=i)
         k = d.strftime("%Y-%m-%d")
-        day = data["days"].get(k, {})
+        day = days_map.get(k, {})
         series.append({
             "date":         k,
             "renders":      int(day.get("renders", 0)),

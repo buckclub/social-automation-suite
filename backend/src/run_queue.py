@@ -30,17 +30,18 @@ Ledger at `.cache/run_queue.json`:
 Only QUEUED items are meaningful after a server restart — the rest are
 recycled. Keep up to `history_cap` historical entries (done/failed/
 cancelled) so the user can see what ran overnight.
+
+Storage: JsonLedger (json_ledger.py) — atomic writes + path-keyed lock.
 """
 from __future__ import annotations
-import json
+
 import os
-import time
 import uuid
 from datetime import datetime, timezone
-from threading import Lock
 from typing import Optional
 
-_lock = Lock()
+from json_ledger import get_ledger
+
 DEFAULT_HISTORY_CAP = 100
 
 
@@ -50,35 +51,15 @@ def _path(project_root: str) -> str:
     return os.path.join(d, "run_queue.json")
 
 
+def _ledger(project_root: str):
+    return get_ledger(
+        _path(project_root),
+        default={"paused": False, "items": [], "history_cap": DEFAULT_HISTORY_CAP},
+    )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _load(path: str) -> dict:
-    if not os.path.isfile(path):
-        return {"paused": False, "items": [], "history_cap": DEFAULT_HISTORY_CAP}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if "items" not in data:
-            data["items"] = []
-        if "paused" not in data:
-            data["paused"] = False
-        if "history_cap" not in data:
-            data["history_cap"] = DEFAULT_HISTORY_CAP
-        return data
-    except Exception:
-        return {"paused": False, "items": [], "history_cap": DEFAULT_HISTORY_CAP}
-
-
-def _save(path: str, data: dict) -> None:
-    try:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, path)
-    except Exception:
-        pass
 
 
 def _prune_history(items: list, cap: int) -> list:
@@ -92,34 +73,31 @@ def _prune_history(items: list, cap: int) -> list:
 def init_on_startup(project_root: str) -> None:
     """
     Recovery pass: any item marked 'running' at load time is stale — the
-    server restarted mid-run. Demote to 'failed' with a clear message so
-    the user knows what happened.
+    server restarted mid-run. Demote to 'failed' with a clear message.
     """
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
-        changed = False
+    with _ledger(project_root).mutate() as data:
+        data.setdefault("items", [])
         for item in data["items"]:
             if item.get("status") == "running":
                 item["status"] = "failed"
                 item["error"] = "Server restarted while running"
                 item["finished_at"] = _now()
-                changed = True
-        if changed:
-            _save(path, data)
 
 
 def snapshot(project_root: str) -> dict:
-    path = _path(project_root)
-    return _load(path)
+    with _ledger(project_root).read() as data:
+        # Backfill defaults for the UI.
+        data.setdefault("items", [])
+        data.setdefault("paused", False)
+        data.setdefault("history_cap", DEFAULT_HISTORY_CAP)
+        return data
 
 
 def enqueue(project_root: str, post_id: str, title: str = "",
             subreddit: str = "", params: Optional[dict] = None) -> dict:
     """Push a new queued item. Returns the created entry."""
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
+    with _ledger(project_root).mutate() as data:
+        data.setdefault("items", [])
         # Prevent duplicate entries for the same post unless the prior one
         # already finished — otherwise the queue could get spammy.
         for i in data["items"]:
@@ -138,31 +116,24 @@ def enqueue(project_root: str, post_id: str, title: str = "",
             "params":      dict(params or {}),
         }
         data["items"].append(item)
-        data["items"] = _prune_history(data["items"], data["history_cap"])
-        _save(path, data)
+        data["items"] = _prune_history(data["items"],
+                                       data.get("history_cap", DEFAULT_HISTORY_CAP))
         return item
 
 
 def remove(project_root: str, queue_id: str) -> bool:
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
-        before = len(data["items"])
-        data["items"] = [i for i in data["items"] if i.get("queue_id") != queue_id]
-        if len(data["items"]) == before:
-            return False
-        _save(path, data)
-        return True
+    with _ledger(project_root).mutate() as data:
+        before = len(data.get("items", []))
+        data["items"] = [i for i in data.get("items", []) if i.get("queue_id") != queue_id]
+        return len(data["items"]) != before
 
 
 def reorder(project_root: str, queue_id: str, direction: int) -> bool:
     """Move a queued item up (-1) or down (+1) one slot among queued items."""
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
-        # Only reorder among queued items (running / done stay fixed).
-        queued_idx = [idx for idx, i in enumerate(data["items"]) if i.get("status") == "queued"]
-        match = [idx for idx in queued_idx if data["items"][idx].get("queue_id") == queue_id]
+    with _ledger(project_root).mutate() as data:
+        items = data.get("items", [])
+        queued_idx = [idx for idx, i in enumerate(items) if i.get("status") == "queued"]
+        match = [idx for idx in queued_idx if items[idx].get("queue_id") == queue_id]
         if not match:
             return False
         me = match[0]
@@ -171,84 +142,71 @@ def reorder(project_root: str, queue_id: str, direction: int) -> bool:
         if new_pos < 0 or new_pos >= len(queued_idx):
             return False
         target = queued_idx[new_pos]
-        data["items"][me], data["items"][target] = data["items"][target], data["items"][me]
-        _save(path, data)
+        items[me], items[target] = items[target], items[me]
         return True
 
 
 def mark_running(project_root: str, queue_id: str) -> Optional[dict]:
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
-        for item in data["items"]:
+    with _ledger(project_root).mutate() as data:
+        for item in data.get("items", []):
             if item.get("queue_id") == queue_id:
                 item["status"]     = "running"
                 item["started_at"] = _now()
-                _save(path, data)
                 return item
         return None
 
 
 def mark_finished(project_root: str, queue_id: str, *,
                   success: bool, error: Optional[str] = None) -> None:
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
-        for item in data["items"]:
+    with _ledger(project_root).mutate() as data:
+        for item in data.get("items", []):
             if item.get("queue_id") == queue_id:
                 item["status"]      = "done" if success else "failed"
                 item["finished_at"] = _now()
                 if error:
                     item["error"] = error[:400]
                 break
-        data["items"] = _prune_history(data["items"], data["history_cap"])
-        _save(path, data)
+        data["items"] = _prune_history(data.get("items", []),
+                                       data.get("history_cap", DEFAULT_HISTORY_CAP))
 
 
 def set_paused(project_root: str, paused: bool) -> None:
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
+    with _ledger(project_root).mutate() as data:
         data["paused"] = bool(paused)
-        _save(path, data)
 
 
 def next_queued(project_root: str) -> Optional[dict]:
     """Return the first queued item without mutating, or None."""
-    path = _path(project_root)
-    data = _load(path)
-    if data.get("paused"):
+    with _ledger(project_root).read() as data:
+        if data.get("paused"):
+            return None
+        for item in data.get("items", []):
+            if item.get("status") == "queued":
+                return item
         return None
-    for item in data["items"]:
-        if item.get("status") == "queued":
-            return item
-    return None
 
 
 def clear_history(project_root: str) -> int:
     """Drop everything except queued + running. Returns count dropped."""
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
-        before = len(data["items"])
-        data["items"] = [i for i in data["items"] if i.get("status") in ("queued", "running")]
-        _save(path, data)
+    with _ledger(project_root).mutate() as data:
+        before = len(data.get("items", []))
+        data["items"] = [
+            i for i in data.get("items", [])
+            if i.get("status") in ("queued", "running")
+        ]
         return before - len(data["items"])
 
 
 def retry(project_root: str, queue_id: str) -> Optional[dict]:
     """Flip a failed/cancelled item back to 'queued' at the tail of the queue."""
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
-        for item in data["items"]:
+    with _ledger(project_root).mutate() as data:
+        for item in data.get("items", []):
             if item.get("queue_id") == queue_id:
                 if item.get("status") in ("queued", "running", "done"):
-                    return None  # only retry-able from terminal failed/cancelled
+                    return None
                 item["status"]      = "queued"
                 item["error"]       = None
                 item["started_at"]  = None
                 item["finished_at"] = None
-                _save(path, data)
                 return item
         return None

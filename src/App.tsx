@@ -11,8 +11,9 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { HashRouter, Routes, Route } from "react-router-dom";
+import { HashRouter, Routes, Route, useLocation } from "react-router-dom";
 import { AppLayout } from "@/components/AppLayout";
+import { FirstRunGate } from "@/components/FirstRunGate";
 
 // ── Eagerly loaded ────────────────────────────────────────────────
 // The Dashboard is the first paint for everyone — keep it in the
@@ -43,6 +44,7 @@ const AvatarReelsPage    = lazy(() => import("./pages/AvatarReelsPage"));
 const CalendarPage       = lazy(() => import("./pages/CalendarPage"));
 const CommentReplierPage = lazy(() => import("./pages/CommentReplierPage"));
 const DialoguePage       = lazy(() => import("./pages/DialoguePage"));
+const FirstRunPage       = lazy(() => import("./pages/FirstRunPage"));
 
 const queryClient = new QueryClient();
 
@@ -56,40 +58,56 @@ function PageFallback() {
   );
 }
 
+// Inner shell — sits inside HashRouter so it can read useLocation, and
+// inside FirstRunGate so the gate's redirect runs before any chunk
+// loads. The /setup route renders fullscreen (no sidebar) — every
+// other route is wrapped in AppLayout.
+function AppRoutes() {
+  const loc = useLocation();
+  const isSetup = loc.pathname === "/setup";
+
+  const routes = (
+    <Suspense fallback={<PageFallback />}>
+      <Routes>
+        <Route path="/setup" element={<FirstRunPage />} />
+        <Route path="/" element={<Index />} />
+        <Route path="/posts" element={<PostsPage />} />
+        <Route path="/videos" element={<VideosPage />} />
+        <Route path="/backgrounds" element={<BackgroundsPage />} />
+        <Route path="/clips" element={<ClipsPage />} />
+        <Route path="/clips/:id" element={<ClipProjectPage />} />
+        <Route path="/text-posts" element={<TextPostsPage />} />
+        <Route path="/custom-script" element={<CustomScriptPage />} />
+        <Route path="/news" element={<NewsRoundupPage />} />
+        <Route path="/hashtag-lab" element={<HashtagLabPage />} />
+        <Route path="/carousels" element={<CarouselPage />} />
+        <Route path="/quote-cards" element={<QuoteCardPage />} />
+        <Route path="/music" element={<MusicLibraryPage />} />
+        <Route path="/performance" element={<PerformancePage />} />
+        <Route path="/brands" element={<BrandsPage />} />
+        <Route path="/niche-finder" element={<NicheFinderPage />} />
+        <Route path="/avatar-reels" element={<AvatarReelsPage />} />
+        <Route path="/calendar" element={<CalendarPage />} />
+        <Route path="/comments" element={<CommentReplierPage />} />
+        <Route path="/dialogue" element={<DialoguePage />} />
+        <Route path="/config" element={<ConfigPage />} />
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </Suspense>
+  );
+
+  return isSetup ? routes : <AppLayout>{routes}</AppLayout>;
+}
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
       <Sonner />
       <HashRouter>
-        <AppLayout>
-          <Suspense fallback={<PageFallback />}>
-            <Routes>
-              <Route path="/" element={<Index />} />
-              <Route path="/posts" element={<PostsPage />} />
-              <Route path="/videos" element={<VideosPage />} />
-              <Route path="/backgrounds" element={<BackgroundsPage />} />
-              <Route path="/clips" element={<ClipsPage />} />
-              <Route path="/clips/:id" element={<ClipProjectPage />} />
-              <Route path="/text-posts" element={<TextPostsPage />} />
-              <Route path="/custom-script" element={<CustomScriptPage />} />
-              <Route path="/news" element={<NewsRoundupPage />} />
-              <Route path="/hashtag-lab" element={<HashtagLabPage />} />
-              <Route path="/carousels" element={<CarouselPage />} />
-              <Route path="/quote-cards" element={<QuoteCardPage />} />
-              <Route path="/music" element={<MusicLibraryPage />} />
-              <Route path="/performance" element={<PerformancePage />} />
-              <Route path="/brands" element={<BrandsPage />} />
-              <Route path="/niche-finder" element={<NicheFinderPage />} />
-              <Route path="/avatar-reels" element={<AvatarReelsPage />} />
-              <Route path="/calendar" element={<CalendarPage />} />
-              <Route path="/comments" element={<CommentReplierPage />} />
-              <Route path="/dialogue" element={<DialoguePage />} />
-              <Route path="/config" element={<ConfigPage />} />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </Suspense>
-        </AppLayout>
+        <FirstRunGate>
+          <AppRoutes />
+        </FirstRunGate>
       </HashRouter>
     </TooltipProvider>
   </QueryClientProvider>

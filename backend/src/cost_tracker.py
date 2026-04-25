@@ -23,13 +23,12 @@ Ledger at `.cache/cost_ledger.json`:
   }
 """
 from __future__ import annotations
-import json
 import os
 from datetime import datetime, timezone, timedelta
-from threading import Lock
 from typing import Optional
 
-_lock = Lock()
+from json_ledger import get_ledger
+
 KEEP_DAYS = 90
 
 
@@ -39,31 +38,12 @@ def _path(project_root: str) -> str:
     return os.path.join(d, "cost_ledger.json")
 
 
+def _ledger(project_root: str):
+    return get_ledger(_path(project_root), default={"days": {}})
+
+
 def _today_key() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
-def _load(path: str) -> dict:
-    if not os.path.isfile(path):
-        return {"days": {}}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if "days" not in data:
-            data["days"] = {}
-        return data
-    except Exception:
-        return {"days": {}}
-
-
-def _save(path: str, data: dict) -> None:
-    try:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, path)
-    except Exception:
-        pass
 
 
 def _prune(days: dict, keep: int = KEEP_DAYS) -> None:
@@ -77,28 +57,24 @@ def record_tts(project_root: str, provider: str, chars: int) -> None:
     """Log a TTS synthesis call. `chars` is input text length."""
     if chars <= 0:
         return
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
-        day = data["days"].setdefault(_today_key(), {})
+    with _ledger(project_root).mutate() as data:
+        days = data.setdefault("days", {})
+        day = days.setdefault(_today_key(), {})
         prov = day.setdefault(provider.lower(), {"chars": 0})
         prov["chars"] = int(prov.get("chars", 0)) + int(chars)
-        _prune(data["days"])
-        _save(path, data)
+        _prune(days)
 
 
 def record_ai(project_root: str, provider: str, *, in_chars: int = 0, out_chars: int = 0) -> None:
     """Log one AI (LLM) call. in/out character counts are approximate."""
-    with _lock:
-        path = _path(project_root)
-        data = _load(path)
-        day = data["days"].setdefault(_today_key(), {})
+    with _ledger(project_root).mutate() as data:
+        days = data.setdefault("days", {})
+        day = days.setdefault(_today_key(), {})
         prov = day.setdefault(provider.lower(), {"in_chars": 0, "out_chars": 0, "calls": 0})
         prov["in_chars"]  = int(prov.get("in_chars", 0))  + max(0, int(in_chars))
         prov["out_chars"] = int(prov.get("out_chars", 0)) + max(0, int(out_chars))
         prov["calls"]     = int(prov.get("calls", 0)) + 1
-        _prune(data["days"])
-        _save(path, data)
+        _prune(days)
 
 
 def _month_slice(days: dict) -> dict:
@@ -126,12 +102,12 @@ def snapshot(project_root: str) -> dict:
     Return per-day and per-month aggregates, plus a derived 'approx_tokens'
     for AI providers using the rough ratio of 4 chars ≈ 1 token.
     """
-    path = _path(project_root)
-    data = _load(path)
+    with _ledger(project_root).read() as data:
+        days = data.get("days", {}) or {}
     today_key = _today_key()
-    today = data["days"].get(today_key, {})
+    today = days.get(today_key, {})
 
-    month = _month_slice(data["days"])
+    month = _month_slice(days)
     for prov, usage in month.items():
         if "in_chars" in usage or "out_chars" in usage:
             usage["approx_tokens_in"]  = int(usage.get("in_chars", 0) / 4)
@@ -142,7 +118,7 @@ def snapshot(project_root: str) -> dict:
     for i in range(29, -1, -1):
         d = today_utc - timedelta(days=i)
         k = d.strftime("%Y-%m-%d")
-        day = data["days"].get(k, {})
+        day = days.get(k, {})
         # For the chart we just need a per-day scalar — use total chars
         # across providers as a rough "how noisy was today" gauge.
         total_chars = 0

@@ -24,17 +24,18 @@ Finished items stay in history (default cap 200) so the user can see
 what ran overnight. Only the currently-queued items matter after a
 server restart — the existing run_queue.init_on_startup pattern is
 mirrored here to demote any orphaned `running` row back to `queued`.
+
+Storage: JsonLedger (json_ledger.py) — atomic writes + path-keyed lock.
 """
 from __future__ import annotations
 
-import json
 import os
 import uuid
 from datetime import datetime, timezone
-from threading import Lock
 from typing import Optional
 
-_lock = Lock()
+from json_ledger import get_ledger
+
 DEFAULT_HISTORY_CAP = 200
 
 
@@ -44,33 +45,15 @@ def _path(project_root: str) -> str:
     return os.path.join(d, "social_queue.json")
 
 
+def _ledger(project_root: str):
+    return get_ledger(
+        _path(project_root),
+        default={"items": [], "history_cap": DEFAULT_HISTORY_CAP},
+    )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _load(path: str) -> dict:
-    if not os.path.isfile(path):
-        return {"items": [], "history_cap": DEFAULT_HISTORY_CAP}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        data.setdefault("items", [])
-        data.setdefault("history_cap", DEFAULT_HISTORY_CAP)
-        return data
-    except Exception:
-        return {"items": [], "history_cap": DEFAULT_HISTORY_CAP}
-
-
-def _save(path: str, data: dict) -> None:
-    try:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, path)
-    except Exception:
-        # Not fatal — the queue lives mostly in memory during a worker
-        # tick; the next successful save will catch up.
-        pass
 
 
 def _prune(items: list[dict], cap: int) -> list[dict]:
@@ -81,7 +64,6 @@ def _prune(items: list[dict], cap: int) -> list[dict]:
             active.append(it)
         else:
             finished.append(it)
-    # Newest-first by finished_at (fall back to added_at).
     finished.sort(
         key=lambda it: it.get("finished_at") or it.get("added_at") or "",
         reverse=True,
@@ -97,19 +79,18 @@ def enqueue_many(project_root: str, items: list[dict]) -> list[dict]:
     same post_id are skipped so a double-click doesn't duplicate work.
 
     `items` shape: [{"post_id": str, "title": str}]
-    Returns the list of queue rows that were actually added (possibly
-    fewer than requested when dedup-skipped).
+    Returns the list of queue rows that were actually added.
     """
     if not items:
         return []
-    p = _path(project_root)
-    with _lock:
-        data = _load(p)
+    added: list[dict] = []
+    with _ledger(project_root).mutate() as data:
+        data.setdefault("items", [])
+        data.setdefault("history_cap", DEFAULT_HISTORY_CAP)
         active_ids = {
             it["post_id"] for it in data["items"]
             if it.get("status") in ("queued", "running")
         }
-        added = []
         for src in items:
             pid = str(src.get("post_id") or "").strip()
             if not pid or pid in active_ids:
@@ -128,31 +109,28 @@ def enqueue_many(project_root: str, items: list[dict]) -> list[dict]:
             active_ids.add(pid)
             added.append(row)
         data["items"] = _prune(data["items"], data["history_cap"])
-        _save(p, data)
     return added
 
 
 def snapshot(project_root: str) -> dict:
     """Return the current queue state for the UI. Thread-safe read."""
-    with _lock:
-        return _load(_path(project_root))
+    with _ledger(project_root).read() as data:
+        data.setdefault("items", [])
+        data.setdefault("history_cap", DEFAULT_HISTORY_CAP)
+        return data
 
 
 def pop_next(project_root: str) -> Optional[dict]:
     """
     Pick the oldest queued item, mark it running, and return it. Returns
-    None when there's nothing to run. Callers should invoke this from the
-    worker loop then report back via `finish()`.
+    None when there's nothing to run.
     """
-    p = _path(project_root)
-    with _lock:
-        data = _load(p)
-        for it in data["items"]:
+    with _ledger(project_root).mutate() as data:
+        for it in data.get("items", []):
             if it.get("status") == "queued":
                 it["status"] = "running"
                 it["started_at"] = _now()
                 it["error"] = None
-                _save(p, data)
                 return dict(it)
         return None
 
@@ -160,59 +138,49 @@ def pop_next(project_root: str) -> Optional[dict]:
 def finish(project_root: str, queue_id: str,
            *, ok: bool, error: Optional[str] = None) -> None:
     """Mark a previously-popped row as done or failed."""
-    p = _path(project_root)
-    with _lock:
-        data = _load(p)
-        for it in data["items"]:
+    with _ledger(project_root).mutate() as data:
+        for it in data.get("items", []):
             if it.get("queue_id") == queue_id:
                 it["status"] = "done" if ok else "failed"
                 it["finished_at"] = _now()
                 it["error"] = None if ok else (error or "unknown error")
                 break
-        data["items"] = _prune(data["items"], data["history_cap"])
-        _save(p, data)
+        data["items"] = _prune(data.get("items", []),
+                               data.get("history_cap", DEFAULT_HISTORY_CAP))
 
 
 def cancel(project_root: str, queue_id: str) -> bool:
     """
     Cancel a queued or finished entry. Running items can't be cancelled
-    mid-LLM-call (no safe way to interrupt the requests library), so
-    this just marks them cancelled AFTER they finish by flipping the
-    status — the worker notices on its next cycle and skips the
-    completion update. For simplicity we just refuse to cancel running.
+    mid-LLM-call (no safe way to interrupt the requests library), so we
+    just refuse to cancel running.
     """
-    p = _path(project_root)
-    with _lock:
-        data = _load(p)
-        for it in data["items"]:
+    with _ledger(project_root).mutate() as data:
+        for it in data.get("items", []):
             if it.get("queue_id") == queue_id:
                 if it.get("status") == "running":
                     return False
                 if it.get("status") == "queued":
                     it["status"] = "cancelled"
                     it["finished_at"] = _now()
-                # done/failed/cancelled: just drop from the list
-                data["items"] = [x for x in data["items"] if x is not it] if it.get("status") != "cancelled" else data["items"]
-                data["items"] = _prune(data["items"], data["history_cap"])
-                _save(p, data)
+                else:
+                    # done/failed/already-cancelled: drop the row
+                    data["items"] = [x for x in data["items"] if x is not it]
+                data["items"] = _prune(data.get("items", []),
+                                       data.get("history_cap", DEFAULT_HISTORY_CAP))
                 return True
     return False
 
 
 def clear_history(project_root: str) -> int:
     """Remove all finished (done / failed / cancelled) rows."""
-    p = _path(project_root)
-    removed = 0
-    with _lock:
-        data = _load(p)
-        before = len(data["items"])
+    with _ledger(project_root).mutate() as data:
+        before = len(data.get("items", []))
         data["items"] = [
-            it for it in data["items"]
+            it for it in data.get("items", [])
             if it.get("status") in ("queued", "running")
         ]
-        removed = before - len(data["items"])
-        _save(p, data)
-    return removed
+        return before - len(data["items"])
 
 
 def init_on_startup(project_root: str) -> int:
@@ -220,15 +188,11 @@ def init_on_startup(project_root: str) -> int:
     Demote any 'running' rows back to 'queued' — those got orphaned by a
     crashed / restarted server. Returns the number of rows recovered.
     """
-    p = _path(project_root)
     recovered = 0
-    with _lock:
-        data = _load(p)
-        for it in data["items"]:
+    with _ledger(project_root).mutate() as data:
+        for it in data.get("items", []):
             if it.get("status") == "running":
                 it["status"] = "queued"
                 it["started_at"] = None
                 recovered += 1
-        if recovered:
-            _save(p, data)
     return recovered

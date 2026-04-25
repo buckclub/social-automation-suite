@@ -14,18 +14,16 @@ Slot states:
   failed     → an error happened along the way (error message captured)
   cancelled  → user clicked cancel before it fired
 
-Storage: `.cache/content_calendar.json`
+Storage: `.cache/content_calendar.json` via JsonLedger.
 """
 from __future__ import annotations
 
-import json
 import os
 import uuid
 from datetime import datetime, timezone
-from threading import Lock
 from typing import Optional
 
-_lock = Lock()
+from json_ledger import get_ledger
 
 
 def _path(project_root: str) -> str:
@@ -34,34 +32,17 @@ def _path(project_root: str) -> str:
     return os.path.join(d, "content_calendar.json")
 
 
+def _ledger(project_root: str):
+    return get_ledger(_path(project_root), default={"slots": []})
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _load(path: str) -> dict:
-    if not os.path.isfile(path):
-        return {"slots": []}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        d.setdefault("slots", [])
-        return d
-    except Exception:
-        return {"slots": []}
-
-
-def _save(path: str, data: dict) -> None:
-    try:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, path)
-    except Exception:
-        pass
-
-
 def list_slots(project_root: str) -> list[dict]:
-    return _load(_path(project_root)).get("slots") or []
+    with _ledger(project_root).read() as d:
+        return d.get("slots") or []
 
 
 def get_slot(project_root: str, slot_id: str) -> Optional[dict]:
@@ -78,57 +59,43 @@ def create_slot(project_root: str,
                 params: dict) -> dict:
     """
     `kind` is one of "ai" | "custom" | "news_link". For now only "ai" is
-    fully wired in the worker — `params` should look like the body of
-    /api/pipeline/run-ai (content_style, niche, target_audience, tone,
-    content_filter, video_mode, voice_override, narrator_gender,
-    background_selector, custom_topic, custom_title).
+    fully wired in the worker.
     """
-    p = _path(project_root)
-    with _lock:
-        d = _load(p)
-        slot = {
-            "id":           f"slot_{uuid.uuid4().hex[:10]}",
-            "scheduled_at": scheduled_at,
-            "kind":         kind,
-            "brand_id":     brand_id,
-            "title":        (title or "")[:200],
-            "params":       dict(params or {}),
-            "status":       "planned",
-            "created_at":   _now(),
-            "fired_at":     None,
-            "post_id":      None,
-            "error":        None,
-        }
-        d["slots"].append(slot)
-        _save(p, d)
+    slot = {
+        "id":           f"slot_{uuid.uuid4().hex[:10]}",
+        "scheduled_at": scheduled_at,
+        "kind":         kind,
+        "brand_id":     brand_id,
+        "title":        (title or "")[:200],
+        "params":       dict(params or {}),
+        "status":       "planned",
+        "created_at":   _now(),
+        "fired_at":     None,
+        "post_id":      None,
+        "error":        None,
+    }
+    with _ledger(project_root).mutate() as d:
+        d.setdefault("slots", []).append(slot)
     return slot
 
 
 def update_slot(project_root: str, slot_id: str, patch: dict) -> Optional[dict]:
-    p = _path(project_root)
-    with _lock:
-        d = _load(p)
-        for s in d["slots"]:
+    with _ledger(project_root).mutate() as d:
+        for s in d.get("slots", []):
             if s.get("id") == slot_id:
-                for k in ("scheduled_at", "title", "params", "brand_id", "kind", "status",
-                          "fired_at", "post_id", "error"):
+                for k in ("scheduled_at", "title", "params", "brand_id", "kind",
+                          "status", "fired_at", "post_id", "error"):
                     if k in patch:
                         s[k] = patch[k]
-                _save(p, d)
                 return s
         return None
 
 
 def delete_slot(project_root: str, slot_id: str) -> bool:
-    p = _path(project_root)
-    with _lock:
-        d = _load(p)
-        before = len(d["slots"])
-        d["slots"] = [s for s in d["slots"] if s.get("id") != slot_id]
-        if len(d["slots"]) == before:
-            return False
-        _save(p, d)
-    return True
+    with _ledger(project_root).mutate() as d:
+        before = len(d.get("slots", []))
+        d["slots"] = [s for s in d.get("slots", []) if s.get("id") != slot_id]
+        return len(d["slots"]) != before
 
 
 def pop_due(project_root: str) -> Optional[dict]:
@@ -136,12 +103,10 @@ def pop_due(project_root: str) -> Optional[dict]:
     Pick the oldest planned slot whose scheduled_at <= now, mark it as
     'due', return it. Returns None if nothing's ready.
     """
-    p = _path(project_root)
     now = datetime.now(timezone.utc)
-    with _lock:
-        d = _load(p)
+    with _ledger(project_root).mutate() as d:
         ready = []
-        for s in d["slots"]:
+        for s in d.get("slots", []):
             if s.get("status") != "planned":
                 continue
             ts = s.get("scheduled_at") or ""
@@ -159,36 +124,28 @@ def pop_due(project_root: str) -> Optional[dict]:
         slot = ready[0][1]
         slot["status"] = "due"
         slot["fired_at"] = _now()
-        _save(p, d)
         return dict(slot)
 
 
 def mark_status(project_root: str, slot_id: str, status: str,
                 *, error: Optional[str] = None,
                 post_id: Optional[str] = None) -> None:
-    p = _path(project_root)
-    with _lock:
-        d = _load(p)
-        for s in d["slots"]:
+    with _ledger(project_root).mutate() as d:
+        for s in d.get("slots", []):
             if s.get("id") == slot_id:
                 s["status"] = status
                 if error is not None: s["error"] = error
                 if post_id is not None: s["post_id"] = post_id
-                _save(p, d)
                 return
 
 
 def init_on_startup(project_root: str) -> int:
     """Demote any in-flight states back to 'planned' after a crash."""
-    p = _path(project_root)
     n = 0
-    with _lock:
-        d = _load(p)
-        for s in d["slots"]:
+    with _ledger(project_root).mutate() as d:
+        for s in d.get("slots", []):
             if s.get("status") in ("due", "generating"):
                 s["status"] = "planned"
                 s["fired_at"] = None
                 n += 1
-        if n:
-            _save(p, d)
     return n

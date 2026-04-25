@@ -39,10 +39,10 @@ import hashlib
 import json
 import os
 from datetime import datetime, timezone, timedelta
-from threading import Lock
 from typing import Optional
 
-_lock = Lock()
+from json_ledger import get_ledger
+
 SCHEMA_VERSION = 3
 DEFAULT_TTL_DAYS = 7
 
@@ -53,6 +53,13 @@ def _cache_path(project_root: str) -> str:
     d = os.path.join(project_root, ".cache")
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, "ai_scores.json")
+
+
+def _ledger(project_root: str):
+    return get_ledger(
+        _cache_path(project_root),
+        default={"v": SCHEMA_VERSION, "entries": {}},
+    )
 
 
 def _now_iso() -> str:
@@ -67,31 +74,13 @@ def _content_hash(title: str, selftext: str) -> str:
     return hashlib.sha1(norm.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
-# ── Load / save ─────────────────────────────────────────────────────
-
-def _load(project_root: str) -> dict:
-    path = _cache_path(project_root)
-    if not os.path.isfile(path):
-        return {"v": SCHEMA_VERSION, "entries": {}}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return {"v": SCHEMA_VERSION, "entries": {}}
+def _ensure_schema(data: dict) -> dict:
+    """Reset the cache if the schema has bumped. Always returns a usable dict."""
     if data.get("v") != SCHEMA_VERSION or "entries" not in data:
-        return {"v": SCHEMA_VERSION, "entries": {}}
+        data.clear()
+        data["v"] = SCHEMA_VERSION
+        data["entries"] = {}
     return data
-
-
-def _save(project_root: str, data: dict) -> None:
-    path = _cache_path(project_root)
-    try:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, path)
-    except Exception:
-        pass
 
 
 # ── Public API ──────────────────────────────────────────────────────
@@ -106,8 +95,8 @@ def get(project_root: str, post_id: str, *,
     if not post_id:
         return None
     h_now = _content_hash(current_title, current_body)
-    with _lock:
-        data = _load(project_root)
+    with _ledger(project_root).mutate() as data:
+        _ensure_schema(data)
         entry = data["entries"].get(post_id)
         if not entry:
             return None
@@ -116,7 +105,6 @@ def get(project_root: str, post_id: str, *,
         if entry.get("content_hash") != h_now:
             return None
         entry["last_used_at"] = _now_iso()
-        _save(project_root, data)
         return entry.get("result")
 
 
@@ -125,8 +113,8 @@ def put(project_root: str, post_id: str, *,
     """Insert-or-replace a score for this post."""
     if not post_id:
         return
-    with _lock:
-        data = _load(project_root)
+    with _ledger(project_root).mutate() as data:
+        _ensure_schema(data)
         data["entries"][post_id] = {
             "result":        result,
             "model":         model,
@@ -135,28 +123,24 @@ def put(project_root: str, post_id: str, *,
             "created_at":    _now_iso(),
             "last_used_at":  _now_iso(),
         }
-        _save(project_root, data)
 
 
 def touch(project_root: str, post_ids: list[str]) -> int:
     """
     Bump last_used_at on every given post_id that exists in the cache.
-    Call this from /api/posts/discover so re-surfaced posts stay warm.
     Returns count of entries actually touched.
     """
     if not post_ids:
         return 0
     now = _now_iso()
     touched = 0
-    with _lock:
-        data = _load(project_root)
+    with _ledger(project_root).mutate() as data:
+        _ensure_schema(data)
         for pid in post_ids:
             e = data["entries"].get(pid)
             if e:
                 e["last_used_at"] = now
                 touched += 1
-        if touched:
-            _save(project_root, data)
     return touched
 
 
@@ -166,45 +150,43 @@ def prune(project_root: str, *, ttl_days: int = DEFAULT_TTL_DAYS) -> int:
         return 0  # disabled
     cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
     removed = 0
-    with _lock:
-        data = _load(project_root)
+    with _ledger(project_root).mutate() as data:
+        _ensure_schema(data)
         to_drop = []
         for pid, e in data["entries"].items():
             try:
                 last = datetime.fromisoformat(e.get("last_used_at") or e.get("created_at") or "")
             except Exception:
-                to_drop.append(pid)  # malformed — drop
+                to_drop.append(pid)
                 continue
             if last < cutoff:
                 to_drop.append(pid)
         for pid in to_drop:
             data["entries"].pop(pid, None)
             removed += 1
-        if removed:
-            _save(project_root, data)
     return removed
 
 
 def size(project_root: str) -> int:
     """How many entries are currently cached. Cheap, for diagnostics."""
-    with _lock:
-        return len(_load(project_root)["entries"])
+    with _ledger(project_root).read() as data:
+        _ensure_schema(data)
+        return len(data["entries"])
 
 
 def clear(project_root: str) -> int:
     """Wipe everything. Returns count cleared."""
-    with _lock:
-        data = _load(project_root)
+    with _ledger(project_root).mutate() as data:
+        _ensure_schema(data)
         n = len(data["entries"])
         data["entries"] = {}
-        _save(project_root, data)
         return n
 
 
 def snapshot(project_root: str) -> dict:
     """Full snapshot for the cache-admin endpoint."""
-    with _lock:
-        data = _load(project_root)
+    with _ledger(project_root).read() as data:
+        _ensure_schema(data)
         return {
             "size":     len(data["entries"]),
             "entries":  data["entries"],
@@ -225,8 +207,8 @@ def migrate_from_legacy_per_post(project_root: str) -> int:
     if not os.path.isdir(posts_root):
         return 0
     migrated = 0
-    with _lock:
-        data = _load(project_root)
+    with _ledger(project_root).mutate() as data:
+        _ensure_schema(data)
         entries = data["entries"]
         for pid in os.listdir(posts_root):
             if pid in entries:
@@ -239,8 +221,6 @@ def migrate_from_legacy_per_post(project_root: str) -> int:
                     legacy_row = json.load(f)
             except Exception:
                 continue
-            # Legacy schema: {v, model, title, result}. We don't have the
-            # body at migration time so compute content_hash on title only.
             title = legacy_row.get("title") or ""
             model = legacy_row.get("model") or ""
             result = legacy_row.get("result")
@@ -255,6 +235,4 @@ def migrate_from_legacy_per_post(project_root: str) -> int:
                 "last_used_at":  _now_iso(),
             }
             migrated += 1
-        if migrated:
-            _save(project_root, data)
     return migrated

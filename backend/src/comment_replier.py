@@ -37,13 +37,13 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from threading import Lock
 from typing import Optional
 
 import requests
 
+from json_ledger import get_ledger
 
-_lock = Lock()
+
 COMMENT_THREADS_URL = "https://www.googleapis.com/youtube/v3/commentThreads"
 
 
@@ -53,30 +53,12 @@ def _path(project_root: str) -> str:
     return os.path.join(d, "comment_drafts.json")
 
 
+def _ledger(project_root: str):
+    return get_ledger(_path(project_root), default={"drafts": []})
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _load(p: str) -> dict:
-    if not os.path.isfile(p):
-        return {"drafts": []}
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        d.setdefault("drafts", [])
-        return d
-    except Exception:
-        return {"drafts": []}
-
-
-def _save(p: str, d: dict) -> None:
-    try:
-        tmp = p + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(d, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, p)
-    except Exception:
-        pass
 
 
 # ── YT comment fetcher (read — uses API key) ─────────────────────────
@@ -172,7 +154,8 @@ def draft_reply(*,
 # ── Drafts ledger ────────────────────────────────────────────────────
 
 def list_drafts(project_root: str) -> list[dict]:
-    return _load(_path(project_root)).get("drafts") or []
+    with _ledger(project_root).read() as d:
+        return d.get("drafts") or []
 
 
 def add_drafts(project_root: str, rows: list[dict]) -> int:
@@ -180,10 +163,9 @@ def add_drafts(project_root: str, rows: list[dict]) -> int:
     Append new drafts. Skips any whose comment_id already exists in
     the ledger so re-syncing the same video doesn't duplicate.
     """
-    p = _path(project_root)
     added = 0
-    with _lock:
-        d = _load(p)
+    with _ledger(project_root).mutate() as d:
+        d.setdefault("drafts", [])
         existing = {r.get("comment_id") for r in d["drafts"] if r.get("comment_id")}
         for r in rows:
             cid = r.get("comment_id") or ""
@@ -209,34 +191,25 @@ def add_drafts(project_root: str, rows: list[dict]) -> int:
             d["drafts"].append(row)
             existing.add(cid)
             added += 1
-        _save(p, d)
     return added
 
 
 def update_draft(project_root: str, draft_id: str, patch: dict) -> Optional[dict]:
-    p = _path(project_root)
-    with _lock:
-        d = _load(p)
-        for r in d["drafts"]:
+    with _ledger(project_root).mutate() as d:
+        for r in d.get("drafts", []):
             if r.get("id") == draft_id:
                 for k in ("edited_reply", "status", "posted_at", "error"):
                     if k in patch:
                         r[k] = patch[k]
-                _save(p, d)
                 return r
     return None
 
 
 def delete_draft(project_root: str, draft_id: str) -> bool:
-    p = _path(project_root)
-    with _lock:
-        d = _load(p)
-        before = len(d["drafts"])
-        d["drafts"] = [r for r in d["drafts"] if r.get("id") != draft_id]
-        if len(d["drafts"]) == before:
-            return False
-        _save(p, d)
-    return True
+    with _ledger(project_root).mutate() as d:
+        before = len(d.get("drafts", []))
+        d["drafts"] = [r for r in d.get("drafts", []) if r.get("id") != draft_id]
+        return len(d["drafts"]) != before
 
 
 def get_draft(project_root: str, draft_id: str) -> Optional[dict]:
