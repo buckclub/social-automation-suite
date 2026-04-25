@@ -1,11 +1,11 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Sparkles, ArrowRight, ArrowLeft, Loader2, AlertTriangle, RefreshCw,
-  Film, Scissors, Mic, MicOff, BookOpen, MessageSquare,
+  Mic, MicOff, BookOpen, MessageSquare,
   Gamepad2, Flame, HandMetal, HelpCircle, Star, Brain, Images, User, Shuffle,
-  Shield, ShieldAlert, ShieldOff, Users,
-  Drama, Laugh, Heart, Zap, Frown,
+  Users,
   Bookmark, BookmarkPlus, Trash2, Check,
+  Tag,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -21,7 +21,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useBrand } from "@/contexts/BrandContext";
 import { api as _api } from "@/lib/api";
 import { Link } from "react-router-dom";
-import { Tag } from "lucide-react";
+// Shared run-settings constants — single source of truth across every
+// generate dialog. See src/components/run-settings/.
+import {
+  TONES, CONTENT_FILTERS, VIDEO_MODES,
+  type Tone, type ContentFilter,
+} from "@/components/run-settings";
 
 const CONTENT_STYLES = [
   { id: "story", label: "Story", icon: BookOpen, desc: "First-person Reddit confessional", color: "text-blue-400" },
@@ -50,51 +55,9 @@ const INTERACTIVE_FORMATS = [
   { id: "guess_the_answer", label: "Guess the Answer", icon: Brain },
 ];
 
-// Three vertical-only lengths. Removed the "Full Video" horizontal
-// option — this app is a short-form (TikTok / Reels / Shorts) tool,
-// horizontal long-form doesn't fit the value prop and was almost
-// never picked anyway. Length affects (a) target script word count
-// the writer aims for and (b) TTS pacing / pause behavior in the
-// pipeline.
-const VIDEO_MODES = [
-  { id: "short_reel", label: "Short Reel", icon: Scissors, desc: "< 60s · the punchy default" },
-  { id: "reel",       label: "Reel",       icon: Film,     desc: "60–90s · room for a real arc" },
-  { id: "long_reel",  label: "Long Reel",  icon: Film,     desc: "90s+ · multi-beat stories" },
-];
-
-const TONES = [
-  { id: "dramatic" as const,  label: "Dramatic",  icon: Drama, color: "text-red-400",     desc: "High stakes, mounting tension, gut-punch endings" },
-  { id: "funny" as const,     label: "Funny",     icon: Laugh, color: "text-yellow-400",  desc: "Absurdity and comedic timing — readers laugh out loud" },
-  { id: "heartfelt" as const, label: "Heartfelt", icon: Heart, color: "text-pink-400",    desc: "Genuine emotion and vulnerability — moves people, doesn't shock" },
-  { id: "shocking" as const,  label: "Shocking",  icon: Zap,   color: "text-purple-400",  desc: "Twists that make viewers say 'WHAT.' out loud" },
-  { id: "cringe" as const,    label: "Cringe",    icon: Frown, color: "text-orange-400",  desc: "Secondhand embarrassment — readers physically wince" },
-];
-type Tone = typeof TONES[number]["id"];
-
-const CONTENT_FILTERS = [
-  {
-    id: "safe" as const,
-    label: "Safe",
-    icon: Shield,
-    color: "text-emerald-400",
-    desc: "Zero brand risk — no profanity, no risky words, advertiser-friendly",
-  },
-  {
-    id: "normal" as const,
-    label: "Normal",
-    icon: ShieldAlert,
-    color: "text-amber-400",
-    desc: "Mild language only when the moment demands it; no slurs, no gratuitous content",
-  },
-  {
-    id: "edgy" as const,
-    label: "Edgy",
-    icon: ShieldOff,
-    color: "text-rose-400",
-    desc: "Reddit-authentic — full curse vocabulary, adult themes, no softening. No targeted slurs.",
-  },
-];
-type ContentFilter = typeof CONTENT_FILTERS[number]["id"];
+// VIDEO_MODES, TONES, CONTENT_FILTERS, ContentFilter, and Tone are
+// imported from @/components/run-settings — single source of truth so
+// every generate dialog stays in sync.
 
 interface Preset {
   id: string;

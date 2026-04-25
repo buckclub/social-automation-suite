@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { PenLine, ArrowRight, ArrowLeft, Play, Loader2, Film, Scissors, MessageSquare, BookOpen, Mic, MicOff, Plus, Trash2 } from "lucide-react";
+import { PenLine, ArrowRight, ArrowLeft, Play, Loader2, MessageSquare, BookOpen, Mic, MicOff, Plus, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,12 +10,8 @@ import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
-
-const VIDEO_MODES = [
-  { id: "short_reel", label: "Short Reel", icon: Scissors, desc: "< 60s · the punchy default" },
-  { id: "reel",       label: "Reel",       icon: Film,     desc: "60–90s · room for a real arc" },
-  { id: "long_reel",  label: "Long Reel",  icon: Film,     desc: "90s+ · multi-beat stories" },
-];
+// Shared run-settings — single source of truth across every dialog.
+import { VIDEO_MODES } from "@/components/run-settings";
 
 const FORMAT_MODES = [
   { id: "story", label: "Story Mode", icon: BookOpen, desc: "Narrated story format" },
