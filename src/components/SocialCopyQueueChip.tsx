@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles, Loader2, CheckCircle2, XCircle, Trash2, ChevronUp, ChevronDown,
@@ -7,6 +7,7 @@ import { api, type SocialQueueItem } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { useAppEvent } from "@/lib/eventBus";
 
 /**
  * Floating status chip for the Social Copy batch queue. Auto-hides when
@@ -23,17 +24,20 @@ export function SocialCopyQueueChip() {
   const [items, setItems] = useState<SocialQueueItem[]>([]);
   const [open, setOpen] = useState(false);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
       const r = await api.getSocialQueue();
       setItems(r.items || []);
     } catch { /* server down — silently hide */ }
-  };
+  }, []);
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 2_000);
+    // SSE pushes from social_queue.update drive the chip; this 30s
+    // interval is just a fallback if the stream drops.
+    const t = setInterval(refresh, 30_000);
     return () => clearInterval(t);
-  }, []);
+  }, [refresh]);
+  useAppEvent("social_queue.update", refresh);
 
   const queued  = items.filter((it) => it.status === "queued").length;
   const running = items.filter((it) => it.status === "running").length;

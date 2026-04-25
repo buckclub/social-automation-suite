@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAppEvent } from "@/lib/eventBus";
 import { useNavigate } from "react-router-dom";
 import {
   MessageCircle, Loader2, RefreshCw, Send, Trash2, Check, X,
@@ -40,7 +41,7 @@ export default function CommentReplierPage() {
   const [editText, setEditText] = useState("");
   const [postingId, setPostingId] = useState<string | null>(null);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const r = await api.listCommentDrafts();
@@ -50,8 +51,10 @@ export default function CommentReplierPage() {
     } finally {
       setLoading(false);
     }
-  };
-  useEffect(() => { refresh(); }, []);
+  }, [toast]);
+  useEffect(() => { refresh(); }, [refresh]);
+  // Live updates whenever the worker mutates drafts (sync, post, reject).
+  useAppEvent("comment_drafts.update", refresh);
 
   const sync = async () => {
     setSyncing(true);

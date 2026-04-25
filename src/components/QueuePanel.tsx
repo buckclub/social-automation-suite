@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ListOrdered, Play, Pause, Loader2, CheckCircle2, XCircle,
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api, type QueueItem } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { useAppEvent } from "@/lib/eventBus";
 import { formatDistanceToNow } from "date-fns";
 
 /**
@@ -28,14 +29,17 @@ export function QueuePanel() {
   const [data, setData] = useState<Awaited<ReturnType<typeof api.getQueue>> | null>(null);
   const [showHistory, setShowHistory] = useState(false);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try { setData(await api.getQueue()); } catch {}
-  };
+  }, []);
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 3_000);
+    // SSE pushes drive most updates now; the interval is a 30s
+    // fallback in case the stream drops behind a proxy.
+    const t = setInterval(refresh, 30_000);
     return () => clearInterval(t);
-  }, []);
+  }, [refresh]);
+  useAppEvent(["run_queue.update", "render.complete"], refresh);
 
   if (!data) return null;
 

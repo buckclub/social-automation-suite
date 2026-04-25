@@ -54,10 +54,13 @@ from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 
 
-# Module-level registry — one Lock per absolute path so two callers
-# constructing JsonLedger for the same file share the same lock.
+# Module-level registries — locks are per absolute path so two callers
+# constructing JsonLedger for the same file share the same lock. The
+# registry lock is RLock so nested helpers (e.g. get_ledger() →
+# JsonLedger.__init__ → _lock_for()) don't deadlock when they all need
+# to touch the registry.
 _LOCKS: dict[str, threading.Lock] = {}
-_REGISTRY_LOCK = threading.Lock()
+_REGISTRY_LOCK = threading.RLock()
 
 
 def _lock_for(path: str) -> threading.Lock:

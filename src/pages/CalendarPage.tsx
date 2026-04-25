@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAppEvent } from "@/lib/eventBus";
 import { useNavigate } from "react-router-dom";
 import {
   Calendar as CalendarIcon, Loader2, Plus, Trash2, Play,
@@ -57,7 +58,7 @@ export default function CalendarPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<CalendarSlot | null>(null);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const r = await api.listCalendarSlots();
@@ -67,13 +68,14 @@ export default function CalendarPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
   useEffect(() => {
     refresh();
-    // Poll every 15s while there's anything in flight.
-    const t = setInterval(refresh, 15_000);
+    // SSE pushes drive most updates; the interval is a 60s fallback.
+    const t = setInterval(refresh, 60_000);
     return () => clearInterval(t);
-  }, []);
+  }, [refresh]);
+  useAppEvent("calendar.update", refresh);
 
   // Group by day for the list view (next 14 days + history).
   const grouped = useMemo(() => {

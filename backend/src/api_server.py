@@ -643,6 +643,10 @@ async def _queue_worker():
             kind = (params.get("kind") or "post").lower()
             _log(f"Queue: starting {kind}:{pid} — {item.get('title','')[:60]} ({qid[:8]})")
             mark_running(PROJECT_ROOT, qid)
+            try:
+                from event_bus import emit_run_queue
+                emit_run_queue(queue_id=qid, post_id=pid, status="running")
+            except Exception: pass
 
             err_out: Optional[str] = None
             if kind == "clip":
@@ -674,6 +678,14 @@ async def _queue_worker():
 
             success = not err_out
             mark_finished(PROJECT_ROOT, qid, success=success, error=err_out if err_out else None)
+            try:
+                from event_bus import emit_run_queue, emit_render_complete
+                emit_run_queue(queue_id=qid, post_id=pid,
+                               status="done" if success else "failed",
+                               error=err_out if not success else None)
+                emit_render_complete(post_id=pid, success=success,
+                                     error=err_out if not success else None)
+            except Exception: pass
             _log(f"Queue: finished {kind}:{pid} ({'OK' if success else 'FAILED'})")
         except asyncio.CancelledError:
             raise
@@ -723,6 +735,14 @@ async def lifespan(app: FastAPI):
             _log(f"AI-score cache: pruned {pruned} stale entr{'y' if pruned == 1 else 'ies'} (>{ttl}d unused)")
     except Exception as e:
         _log(f"AI-score cache init failed: {e}")
+    # Wire the SSE event bus into the running asyncio loop. From here
+    # on, any worker calling event_bus.publish() can safely cross from
+    # a thread back to the loop to deliver to subscribers.
+    try:
+        from event_bus import bus as _ev_bus
+        _ev_bus.attach_loop(asyncio.get_running_loop())
+    except Exception as e:
+        _log(f"Event bus startup failed: {e}")
     # Kick off the background workers.
     task = asyncio.create_task(_queue_worker())
     social_task = asyncio.create_task(_social_queue_worker())
@@ -756,6 +776,33 @@ app.include_router(_niche_router)
 app.include_router(_hashtags_router)
 app.include_router(_calendar_router)
 app.include_router(_social_router)
+
+
+# ── Server-Sent Events ────────────────────────────────────────────────
+# Single endpoint streams every state-change event to subscribed
+# browsers. Replaces the half-dozen polling intervals in the frontend
+# (Videos, Calendar, Social Queue, Comment Replier, Status strip) with
+# a push model. Polling stays as a fallback at a much longer cadence
+# in case the SSE connection drops behind a proxy.
+@app.get("/api/events")
+async def events_stream():
+    from event_bus import bus as _ev_bus
+    return StreamingResponse(
+        _ev_bus.subscribe(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":         "no-cache",
+            "X-Accel-Buffering":     "no",   # disable nginx buffering
+            "Connection":            "keep-alive",
+        },
+    )
+
+
+@app.get("/api/events/stats")
+async def events_stats():
+    """Tiny diagnostic — # of subscribers + ring depth. For dev only."""
+    from event_bus import bus as _ev_bus
+    return _ev_bus.stats()
 
 
 # ── Endpoints ────────────────────────────────────────────────────────
@@ -4476,7 +4523,17 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
         _log(f"Pipeline completed in {elapsed:.1f}s")
 
     except Exception as e:
+        # Classify the failure so the UI can show a useful message
+        # (and so we know whether a retry is worth attempting later).
+        try:
+            from render_diagnostics import classify
+            diag = classify(str(e))
+        except Exception:
+            diag = {"category": "generic", "title": "Render failed",
+                    "hint": "Check the run log.", "recoverable": False,
+                    "raw_excerpt": str(e)[:600]}
         pipeline_state["error"] = str(e)
+        pipeline_state["diagnostic"] = diag
         try:
             from render_history import record as _rh_record
             _rh_record(PROJECT_ROOT, success=False, resume=False)
@@ -4485,9 +4542,15 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
         for step in pipeline_state["steps"]:
             if step["status"] == "running":
                 step["status"] = "error"
-                step["detail"] = str(e)[:100]
+                step["detail"] = (diag.get("title") or str(e))[:100]
         stats["total_runs"] += 1
-        _log(f"Pipeline error: {e}")
+        _log(f"Pipeline error [{diag.get('category','generic')}]: {e}")
+        try:
+            from event_bus import emit_render_complete
+            emit_render_complete(post_id=pipeline_state.get("current_post", {}).get("id", "") if pipeline_state.get("current_post") else "",
+                                 success=False, error=str(e), diagnostic=diag)
+        except Exception:
+            pass
         import traceback
         traceback.print_exc()
     finally:
@@ -4511,6 +4574,14 @@ def _set_step(step_id: str, status: str, detail: str = "", sub_steps: Optional[L
             if sub_steps is not None:
                 step["sub_steps"] = sub_steps
             break
+    # Push to any subscribed browsers so the pipeline stepper updates
+    # in real-time without a poll. Best-effort — silent failure won't
+    # affect the render.
+    try:
+        from event_bus import emit_pipeline_step
+        emit_pipeline_step(step=step_id, status=status, detail=detail or "")
+    except Exception:
+        pass
 
 
 def _generate_local_tts_narrative(tts_instance, post_id, title, body, author, comments, progress_callback, cancel_check):
@@ -4883,7 +4954,16 @@ async def _calendar_worker():
       4. Mark `queued` with post_id.
     Errors mark `failed` with the exception message.
     """
-    from content_calendar import pop_due, mark_status
+    from content_calendar import pop_due, mark_status as _cal_mark_status_inner
+
+    def mark_status(root, sid, status, **kw):
+        """mark_status + SSE publish in one call — keeps worker tidy."""
+        _cal_mark_status_inner(root, sid, status, **kw)
+        try:
+            from event_bus import emit_calendar
+            emit_calendar(slot_id=sid, status=status,
+                          error=kw.get("error"), post_id=kw.get("post_id"))
+        except Exception: pass
     await asyncio.sleep(3)  # lifespan-yield grace
     while True:
         try:
@@ -5817,7 +5897,16 @@ async def comments_sync(req: dict = {}):
             })
     added = await asyncio.to_thread(add_drafts, PROJECT_ROOT, new_rows)
     _log(f"Comment replier: synced {len(uploads)} video(s), added {added} new draft(s)")
+    try:
+        from event_bus import emit_comment_drafts; emit_comment_drafts()
+    except Exception: pass
     return {"added": added, "videos_scanned": len(uploads)}
+
+
+def _emit_drafts():
+    try:
+        from event_bus import emit_comment_drafts; emit_comment_drafts()
+    except Exception: pass
 
 
 @app.put("/api/comments/drafts/{draft_id}")
@@ -5828,6 +5917,7 @@ async def comments_update_draft(draft_id: str, req: dict):
     })
     if not r:
         raise HTTPException(404, "Draft not found")
+    _emit_drafts()
     return {"draft": r}
 
 
@@ -5838,6 +5928,7 @@ async def comments_delete_draft(draft_id: str):
     # via PUT; outright delete is ok too.
     if not delete_draft(PROJECT_ROOT, draft_id):
         raise HTTPException(404, "Draft not found")
+    _emit_drafts()
     return {"deleted": True}
 
 
@@ -5847,6 +5938,7 @@ async def comments_reject_draft(draft_id: str):
     r = update_draft(PROJECT_ROOT, draft_id, {"status": "rejected"})
     if not r:
         raise HTTPException(404, "Draft not found")
+    _emit_drafts()
     return {"draft": r}
 
 
@@ -5920,6 +6012,7 @@ async def comments_post_draft(draft_id: str):
         raise HTTPException(post_r.status_code, msg)
 
     update_draft(PROJECT_ROOT, draft_id, {"status": "posted", "posted_at": datetime.now(timezone.utc).isoformat()})
+    _emit_drafts()
     # Quota ledger so the user sees the cost.
     try:
         from youtube_quota import record
@@ -6747,16 +6840,32 @@ async def _social_queue_worker():
             qid = row["queue_id"]; pid = row["post_id"]
             _log(f"Social copy queue → generating for {pid} ({row.get('title', '')[:60]})")
             try:
+                from event_bus import emit_social_queue
+                emit_social_queue(queue_id=qid, post_id=pid, status="running")
+            except Exception: pass
+            try:
                 await asyncio.to_thread(_do_generate_social_copy, pid)
                 finish(PROJECT_ROOT, qid, ok=True)
                 _log(f"Social copy queue ✓ {pid}")
+                try:
+                    from event_bus import emit_social_queue
+                    emit_social_queue(queue_id=qid, post_id=pid, status="done")
+                except Exception: pass
             except HTTPException as he:
                 msg = f"{he.status_code}: {he.detail}"
                 finish(PROJECT_ROOT, qid, ok=False, error=msg)
                 _log(f"Social copy queue ✗ {pid} — {msg}")
+                try:
+                    from event_bus import emit_social_queue
+                    emit_social_queue(queue_id=qid, post_id=pid, status="failed", error=msg)
+                except Exception: pass
             except Exception as e:
                 finish(PROJECT_ROOT, qid, ok=False, error=str(e))
                 _log(f"Social copy queue ✗ {pid} — {e}")
+                try:
+                    from event_bus import emit_social_queue
+                    emit_social_queue(queue_id=qid, post_id=pid, status="failed", error=str(e))
+                except Exception: pass
         except asyncio.CancelledError:
             raise
         except Exception as e:
