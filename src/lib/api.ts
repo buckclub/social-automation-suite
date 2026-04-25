@@ -887,6 +887,67 @@ export const api = {
     ),
   carouselRenderUrl: () => `${API_BASE}/api/carousels/render`,
 
+  // ── Background Music Library ─────────────────────────────────
+  listMusicTracks: () =>
+    request<{ tracks: { filename: string; name: string; moods: string[]; added_at: string; size_bytes: number }[] }>(
+      "/api/music",
+    ),
+  uploadMusicTrack: (file: File, name = "", moods: string[] = []) =>
+    new Promise<{ track: { filename: string; name: string; moods: string[]; size_bytes: number } }>((resolve, reject) => {
+      const form = new FormData();
+      form.append("file", file);
+      const xhr = new XMLHttpRequest();
+      const qs = new URLSearchParams({ name, moods: moods.join(",") });
+      xhr.open("POST", `${API_BASE}/api/music/upload?${qs}`);
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+          else reject(new Error(data.detail || data.error || xhr.statusText));
+        } catch (e) { reject(e); }
+      };
+      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.send(form);
+    }),
+  updateMusicTrack: (filename: string, body: { name?: string; moods?: string[] }) =>
+    request<{ track: { filename: string; name: string; moods: string[] } }>(
+      `/api/music/${encodeURIComponent(filename)}`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  deleteMusicTrack: (filename: string) =>
+    request<{ deleted: boolean }>(
+      `/api/music/${encodeURIComponent(filename)}`,
+      { method: "DELETE" },
+    ),
+  musicPreviewUrl: (filename: string) =>
+    `${API_BASE}/api/music/preview/${encodeURIComponent(filename)}`,
+
+  // ── ElevenLabs Voice Cloning (Instant Voice Cloning) ─────────
+  cloneElevenLabsVoice: (file: File, name = "", description = "") =>
+    new Promise<{ voice_id: string; name: string }>((resolve, reject) => {
+      const form = new FormData();
+      form.append("file", file);
+      if (name) form.append("name", name);
+      if (description) form.append("description", description);
+      const xhr = new XMLHttpRequest();
+      const qs = new URLSearchParams({ name, description });
+      xhr.open("POST", `${API_BASE}/api/tts/elevenlabs/clone-voice?${qs}`);
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+          else reject(new Error(data.detail || data.error || xhr.statusText));
+        } catch (e) { reject(e); }
+      };
+      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.send(form);
+    }),
+  deleteElevenLabsVoice: (voiceId: string) =>
+    request<{ deleted: boolean; voice_id: string }>(
+      `/api/tts/elevenlabs/voices/${encodeURIComponent(voiceId)}`,
+      { method: "DELETE" },
+    ),
+
   // ── Quote Cards (single-image quote post) ────────────────────
   renderQuoteCard: (params: { quote: string; attribution?: string; style: Record<string, unknown> }) =>
     request<{ data_uri: string }>(

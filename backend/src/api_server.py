@@ -3441,6 +3441,9 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
         # Resume path has no per-run override — follow whatever the config
         # currently says for the default background selector.
         video_gen.set_background_selector((config.get("video", {}) or {}).get("background_selector", ""))
+        _bgm_path, _bgm_db = _resolve_background_music(post_id, config)
+        video_gen.background_music_path = _bgm_path
+        video_gen.background_music_db = _bgm_db
         output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
         # Load post metadata for title card rendering during resume.
@@ -4243,6 +4246,9 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                 from video_generator import VideoGenerator
                 video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
                 video_gen.set_background_selector(background_override if background_override is not None else (config.get("video", {}) or {}).get("background_selector", ""))
+                _bgm_path, _bgm_db = _resolve_background_music(post_id, config)
+                video_gen.background_music_path = _bgm_path
+                video_gen.background_music_db = _bgm_db
                 output_base = os.path.join(PROJECT_ROOT, "posts", post_id)
 
                 if video_mode == "short_reel":
@@ -4940,6 +4946,240 @@ async def elevenlabs_voices():
         return {"voices": voices}
     except _requests.exceptions.RequestException as e:
         return {"voices": [], "error": f"request_failed: {e}"}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Background music library — auto-pick a track that matches the script's
+# tone, mix it under the narration during render. Storage layout mirrors
+# `backgrounds/`: flat files plus a metadata JSON for per-track moods.
+# ──────────────────────────────────────────────────────────────────────
+
+def _resolve_background_music(post_id: str, config: dict) -> tuple[Optional[str], float]:
+    """
+    Look up the background music track to use for a render. Returns
+    (absolute_path or None, volume_db). Reads `tts.background_music`:
+        {
+          "enabled": bool,
+          "volume_db": -18,
+          "manual_track": "<filename>" or "",   # if set, wins
+          "auto_pick_by_tone": true              # falls back if no manual_track
+        }
+    """
+    tts_cfg = config.get("tts") or {}
+    bm = tts_cfg.get("background_music") or {}
+    if not bm.get("enabled"):
+        return None, -18.0
+    try:
+        vol_db = float(bm.get("volume_db", -18))
+    except (TypeError, ValueError):
+        vol_db = -18.0
+
+    from music_library import music_dir, pick_track_for_tone
+    manual = (bm.get("manual_track") or "").strip()
+    if manual:
+        p = os.path.join(music_dir(PROJECT_ROOT), manual)
+        if os.path.isfile(p):
+            return p, vol_db
+
+    if bm.get("auto_pick_by_tone"):
+        # Pull the tone from posts/<id>/summary.json (AI-generated posts
+        # write it; legacy Reddit posts won't have it and pick_track_for_tone
+        # gracefully falls back to any-tagged → any-track).
+        tone = ""
+        try:
+            sp = os.path.join(PROJECT_ROOT, "posts", post_id, "summary.json")
+            with open(sp, "r", encoding="utf-8") as f:
+                tone = (json.load(f).get("tone") or "").lower()
+        except Exception:
+            pass
+        return pick_track_for_tone(PROJECT_ROOT, tone or None), vol_db
+
+    return None, vol_db
+
+
+@app.get("/api/music")
+async def music_list_tracks():
+    """Every track in the library with metadata (name + moods + size)."""
+    from music_library import list_tracks
+    return {"tracks": list_tracks(PROJECT_ROOT)}
+
+
+@app.post("/api/music/upload")
+async def music_upload(file: UploadFile = File(...), name: str = "", moods: str = ""):
+    """
+    Upload a track. `moods` is a comma-separated list (subset of the
+    five tone axes: dramatic / funny / heartfelt / shocking / cringe).
+    """
+    from music_library import add_track
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "empty upload")
+    moods_list = [m.strip().lower() for m in moods.split(",") if m.strip()]
+    try:
+        row = add_track(PROJECT_ROOT, file.filename or "track.mp3", content,
+                        name=name, moods=moods_list)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"track": row}
+
+
+@app.put("/api/music/{filename}")
+async def music_update(filename: str, req: dict):
+    """Edit name / moods. Body: { name?, moods?: [..] }."""
+    from music_library import update_meta
+    try:
+        row = update_meta(PROJECT_ROOT, filename,
+                          name=req.get("name"),
+                          moods=req.get("moods"))
+    except FileNotFoundError:
+        raise HTTPException(404, "track not found")
+    return {"track": row}
+
+
+@app.delete("/api/music/{filename}")
+async def music_delete(filename: str):
+    from music_library import delete_track
+    ok = delete_track(PROJECT_ROOT, filename)
+    if not ok:
+        raise HTTPException(404, "track not found")
+    return {"deleted": True}
+
+
+@app.get("/api/music/preview/{filename}")
+async def music_preview(filename: str):
+    """Stream the audio file for in-browser preview."""
+    from music_library import music_dir
+    p = os.path.join(music_dir(PROJECT_ROOT), filename)
+    if not os.path.isfile(p):
+        raise HTTPException(404, "track not found")
+    # Derive content-type from the extension; FastAPI's FileResponse
+    # picks audio/mpeg by default which works for browsers either way.
+    ext = os.path.splitext(filename)[1].lower()
+    media = {
+        ".mp3":  "audio/mpeg",
+        ".wav":  "audio/wav",
+        ".m4a":  "audio/mp4",
+        ".aac":  "audio/aac",
+        ".flac": "audio/flac",
+        ".ogg":  "audio/ogg",
+    }.get(ext, "application/octet-stream")
+    return FileResponse(p, media_type=media)
+
+
+@app.post("/api/tts/elevenlabs/clone-voice")
+async def elevenlabs_clone_voice(
+    name: str = "",
+    description: str = "",
+    file: UploadFile = File(...),
+):
+    """
+    Instant Voice Cloning — uploads one audio sample to ElevenLabs and
+    creates a new custom voice in the user's account. The returned
+    voice_id is immediately usable in /v2/voices and across the suite's
+    voice pickers.
+
+    Form fields:
+      file:        WAV/MP3/M4A/FLAC sample, ≥30s of clean speech recommended
+      name:        Display name (defaults to filename stem)
+      description: Optional one-liner used in the voice library
+
+    Notes:
+      - Uses the configured tts.elevenlabs.api_key.
+      - ElevenLabs accepts up to 25 sample files; we send one. The user
+        can add more in their ElevenLabs dashboard if they want better
+        likeness.
+      - Quota: each clone counts against the user's "voice slots" quota,
+        not character budget. Free tier = 0 slots, Starter = 10, etc.
+    """
+    import requests as _requests
+    if not file:
+        raise HTTPException(400, "audio file required")
+    cfg = _load_config()
+    tts_cfg = cfg.get("tts", {}) or {}
+    el_cfg = tts_cfg.get("elevenlabs", {}) if isinstance(tts_cfg.get("elevenlabs"), dict) else {}
+    api_key = tts_cfg.get("elevenlabs_api_key") or el_cfg.get("api_key") or ""
+    if not api_key:
+        raise HTTPException(400, "ElevenLabs API key not configured")
+
+    # Default name from filename if the form didn't include one.
+    safe_name = (name or "").strip()
+    if not safe_name:
+        base = (file.filename or "voice").rsplit(".", 1)[0]
+        safe_name = re.sub(r"[^\w\-\. ]+", "_", base).strip(" _.") or "Custom Voice"
+    safe_name = safe_name[:60]
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(400, "uploaded file is empty")
+
+    # ElevenLabs voice-add endpoint takes multipart with the SAME field
+    # name `files` repeated for every sample (we send one).
+    try:
+        resp = await asyncio.to_thread(
+            _requests.post,
+            "https://api.elevenlabs.io/v1/voices/add",
+            headers={"xi-api-key": api_key, "Accept": "application/json"},
+            data={
+                "name": safe_name,
+                "description": (description or "").strip()[:200],
+            },
+            files={
+                "files": (file.filename or "sample.wav", audio_bytes, file.content_type or "audio/wav"),
+            },
+            timeout=60,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"ElevenLabs request failed: {e}")
+
+    if resp.status_code == 401:
+        raise HTTPException(401, "ElevenLabs API key was rejected (401)")
+    if resp.status_code == 402:
+        raise HTTPException(402, "Voice cloning requires a paid ElevenLabs tier — your account has no voice slots available.")
+    if resp.status_code >= 400:
+        # Bubble the provider's error message up to the toast.
+        try:
+            detail = resp.json().get("detail") or resp.text
+        except Exception:
+            detail = resp.text
+        raise HTTPException(resp.status_code, f"ElevenLabs error: {str(detail)[:300]}")
+
+    try:
+        data = resp.json()
+    except Exception:
+        raise HTTPException(502, f"ElevenLabs returned non-JSON: {resp.text[:200]}")
+    voice_id = data.get("voice_id") or ""
+    if not voice_id:
+        raise HTTPException(502, f"ElevenLabs response missing voice_id: {data}")
+    _log(f"ElevenLabs cloned voice: '{safe_name}' → {voice_id}")
+    return {"voice_id": voice_id, "name": safe_name}
+
+
+@app.delete("/api/tts/elevenlabs/voices/{voice_id}")
+async def elevenlabs_delete_voice(voice_id: str):
+    """Delete a voice from the user's ElevenLabs account."""
+    import requests as _requests
+    if not voice_id:
+        raise HTTPException(400, "voice_id required")
+    cfg = _load_config()
+    tts_cfg = cfg.get("tts", {}) or {}
+    el_cfg = tts_cfg.get("elevenlabs", {}) if isinstance(tts_cfg.get("elevenlabs"), dict) else {}
+    api_key = tts_cfg.get("elevenlabs_api_key") or el_cfg.get("api_key") or ""
+    if not api_key:
+        raise HTTPException(400, "ElevenLabs API key not configured")
+    try:
+        resp = await asyncio.to_thread(
+            _requests.delete,
+            f"https://api.elevenlabs.io/v1/voices/{voice_id}",
+            headers={"xi-api-key": api_key},
+            timeout=15,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"ElevenLabs request failed: {e}")
+    if resp.status_code == 401:
+        raise HTTPException(401, "ElevenLabs API key was rejected")
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, f"ElevenLabs error: {resp.text[:200]}")
+    return {"deleted": True, "voice_id": voice_id}
 
 
 @app.get("/api/posts/{post_id}/social")

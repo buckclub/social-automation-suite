@@ -2147,6 +2147,50 @@ class VideoGenerator:
             ])
             subprocess.run(concat_cmd, check=True)
 
+            # Optional: mix in background music.
+            # `self.background_music_path` and `self.background_music_db` are
+            # set by the API layer before the render fires (via config). If
+            # the path resolves to a real file and music is enabled, run a
+            # second FFmpeg pass to mix the music underneath the voice at
+            # the requested attenuation. The voice track stays at unity
+            # gain — only the music is reduced — so narration intelligibility
+            # is preserved across all volume settings.
+            music_path = getattr(self, "background_music_path", None)
+            music_db = float(getattr(self, "background_music_db", -18) or -18)
+            if music_path and os.path.isfile(music_path):
+                try:
+                    mixed_path = os.path.join(output_dir, "ffmpeg_audio_mixed.m4a")
+                    # 10**(db/20) gives a linear gain from a dB attenuation.
+                    music_gain = 10 ** (music_db / 20.0)
+                    # Loop the music in case it's shorter than the narration.
+                    # `aloop` requires `size=` in samples; setting a huge
+                    # ceiling (~2e9) effectively means "loop forever".
+                    mix_filter = (
+                        f"[1:a]aloop=loop=-1:size=2147483647,"
+                        f"volume={music_gain:.4f}[bg];"
+                        f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=0[out]"
+                    )
+                    mix_cmd = [
+                        ffmpeg_exe, "-y", "-hide_banner", "-loglevel", "error",
+                        "-i", temp_audio_path,
+                        "-i", music_path,
+                        "-filter_complex", mix_filter,
+                        "-map", "[out]",
+                        "-c:a", "aac", "-b:a", "192k",
+                        mixed_path,
+                    ]
+                    subprocess.run(mix_cmd, check=True)
+                    # Replace the canonical audio path so downstream
+                    # caption-timing + video-mux paths use the mixed file
+                    # without any other code changes.
+                    try: os.remove(temp_audio_path)
+                    except OSError: pass
+                    temp_audio_path = mixed_path
+                    print(f"   🎵 mixed background music ({os.path.basename(music_path)}, {music_db:.0f} dB)")
+                except Exception as e:
+                    # Music is best-effort — never let it kill a render.
+                    print(f"   ⚠️  music mix failed, continuing without it: {e}")
+
             # Measure the actual duration of the joined audio (ffprobe-style)
             # so our caption timing is sample-accurate, not mp3-header-accurate.
             probe = subprocess.run(

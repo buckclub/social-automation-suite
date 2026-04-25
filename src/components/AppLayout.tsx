@@ -2,7 +2,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Video, LayoutDashboard, Newspaper, Settings2, Film, Command,
   Images, Scissors, PenLine, Plus, ChevronDown,
-  FileText, Layers, Hash, Globe, Quote,
+  FileText, Layers, Hash, Globe, Quote, Music,
 } from "lucide-react";
 import { useHealth } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
@@ -25,6 +25,7 @@ const topLevelItems = [
   { to: "/",            label: "Dashboard",     icon: LayoutDashboard },
   { to: "/videos",      label: "Videos",        icon: Film },
   { to: "/backgrounds", label: "Backgrounds",   icon: Images },
+  { to: "/music",       label: "Music",         icon: Music },
   { to: "/config",      label: "Configuration", icon: Settings2 },
 ];
 const createGroupItems = [

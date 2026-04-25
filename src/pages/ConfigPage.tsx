@@ -25,6 +25,7 @@ import { SecretInput } from "@/components/ui/secret-input";
 import { YouTubePublishingPanel } from "@/components/YouTubePublishingPanel";
 import { TitleCardSettings } from "@/components/TitleCardSettings";
 import { ELEVENLABS_LIBRARY } from "@/components/ElevenLabsLibraryPresets";
+import { ElevenLabsVoiceCloneCard } from "@/components/ElevenLabsVoiceCloneCard";
 
 function TestAiButton({ provider, model, apiKey, ollamaUrl }: { provider: string; model: string; apiKey: string; ollamaUrl?: string }) {
   const [testing, setTesting] = useState(false);
@@ -137,6 +138,12 @@ export default function ConfigPage() {
   // Voice presets: per-provider male / female defaults used when
   // the pipeline picks a gendered narrator.
   const [votePresets, setVotePresets] = useState<Record<string, { male: string; female: string }>>({});
+
+  // Background music — surfaces in TTS tab below the voices.
+  const [bgmEnabled, setBgmEnabled] = useState(false);
+  const [bgmVolumeDb, setBgmVolumeDb] = useState(-18);
+  const [bgmAutoPickByTone, setBgmAutoPickByTone] = useState(true);
+  const [bgmManualTrack, setBgmManualTrack] = useState("");
 
   // ElevenLabs-specific
   const [elevenApiKey, setElevenApiKey] = useState("");
@@ -442,6 +449,12 @@ export default function ConfigPage() {
     setElevenStyle(typeof el.style === "number" ? el.style : 0.0);
     setElevenSpeakerBoost(el.use_speaker_boost !== undefined ? Boolean(el.use_speaker_boost) : true);
 
+    const bgm = ((t as any).background_music as Record<string, unknown>) ?? {};
+    setBgmEnabled(Boolean(bgm.enabled));
+    setBgmVolumeDb(typeof bgm.volume_db === "number" ? bgm.volume_db : -18);
+    setBgmAutoPickByTone(bgm.auto_pick_by_tone !== undefined ? Boolean(bgm.auto_pick_by_tone) : true);
+    setBgmManualTrack(typeof bgm.manual_track === "string" ? bgm.manual_track : "");
+
     const v = c.video ?? {} as FullConfig["video"];
     setVideoMode(v.mode ?? "short_reel");
     setHwAccel(v.hw_accel ?? "none");
@@ -557,6 +570,7 @@ export default function ConfigPage() {
     ttsEnabled, ttsProvider, ttsModelSize, ttsMainVoice, ttsMultiVoice,
     ttsCommentVoices, ttsFormat, ttsSpeed, ttsPreNormalize, elevenApiKey,
     elevenModel, votePresets,
+    bgmEnabled, bgmVolumeDb, bgmAutoPickByTone, bgmManualTrack,
     postsDir, usedPostsFile,
     discordEnabled, webhookUrl, uploadMedia,
     geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
@@ -584,7 +598,9 @@ export default function ConfigPage() {
       allowNsfw, requireSelftext, fmtMode, fmtMaxComments, fmtMinScore,
       ttsEnabled, ttsProvider, ttsModelSize, ttsMainVoice, ttsMultiVoice,
       ttsCommentVoices, ttsFormat, ttsSpeed, ttsPreNormalize, elevenApiKey,
-      elevenModel, votePresets, postsDir, usedPostsFile,
+      elevenModel, votePresets,
+      bgmEnabled, bgmVolumeDb, bgmAutoPickByTone, bgmManualTrack,
+      postsDir, usedPostsFile,
       discordEnabled, webhookUrl, uploadMedia,
       geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
       geminiModel, geminiHook, geminiThumbnail, geminiModels, openrouterModels,
@@ -688,6 +704,12 @@ export default function ConfigPage() {
             similarity_boost: elevenSimilarity,
             style: elevenStyle,
             use_speaker_boost: elevenSpeakerBoost,
+          },
+          background_music: {
+            enabled: bgmEnabled,
+            volume_db: bgmVolumeDb,
+            auto_pick_by_tone: bgmAutoPickByTone,
+            manual_track: bgmManualTrack || "",
           },
         },
         video: {
@@ -1361,8 +1383,68 @@ export default function ConfigPage() {
                   <p className="text-[10px] text-muted-foreground">
                     Lower stability = more emotion/variance. Higher similarity = closer to the voice preset.
                   </p>
+
+                  {/* Instant Voice Cloning — record / drop a sample, get a new voice_id back */}
+                  <ElevenLabsVoiceCloneCard
+                    onCloned={() => elevenVoicesQuery.refetch()}
+                  />
                 </div>
               )}
+
+              <Separator />
+
+              {/* Background Music — picks a track from the music library
+                  and mixes it under the narration during render. */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      Background Music
+                    </label>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      Mixes a track from your <a href="#/music" className="text-primary hover:underline">music library</a> under the narration.
+                    </p>
+                  </div>
+                  <Switch checked={bgmEnabled} onCheckedChange={setBgmEnabled} />
+                </div>
+                {bgmEnabled && (
+                  <div className="space-y-2 pl-3 border-l-2 border-primary/20">
+                    <div className="space-y-1">
+                      <Label className="text-[11px] text-muted-foreground">
+                        Volume ({bgmVolumeDb} dB) — voice stays at unity, music attenuates
+                      </Label>
+                      <Slider
+                        value={[bgmVolumeDb]}
+                        onValueChange={([v]) => setBgmVolumeDb(v)}
+                        min={-30} max={-3} step={1}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <Label className="text-[11px] text-muted-foreground">Auto-pick by story tone</Label>
+                        <p className="text-[10px] text-muted-foreground leading-snug">
+                          When on, each render picks a random library track tagged with the story's tone (dramatic / funny / heartfelt / shocking / cringe).
+                        </p>
+                      </div>
+                      <Switch checked={bgmAutoPickByTone} onCheckedChange={setBgmAutoPickByTone} />
+                    </div>
+                    {!bgmAutoPickByTone && (
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-muted-foreground">Manual track filename</Label>
+                        <Input
+                          value={bgmManualTrack}
+                          onChange={(e) => setBgmManualTrack(e.target.value)}
+                          placeholder="e.g. dramatic_loop.mp3 — exact filename from /music"
+                          className="h-8 text-xs bg-secondary border-border font-mono"
+                        />
+                        <p className="text-[10px] text-muted-foreground">
+                          Empty = no music. Manage tracks on the <a href="#/music" className="text-primary hover:underline">Music Library page</a>.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
 
               <Separator />
 
