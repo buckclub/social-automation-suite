@@ -326,6 +326,15 @@ export default function ConfigPage() {
   const [webhookUrl, setWebhookUrl] = useState("");
   const [uploadMedia, setUploadMedia] = useState(true);
 
+  // Pipeline step skipping. Only the truly-optional steps are
+  // exposed: thumbnail (PIL composition + optional captioning AI
+  // call) and notify (Discord webhook). The earlier steps are core.
+  // We keep these as inverted switches ("skip thumbnail" = ON when
+  // step is in disabled_steps) so the OFF state of the toggle is
+  // the safe default.
+  const [skipThumbnail, setSkipThumbnail] = useState(false);
+  const [skipNotify, setSkipNotify] = useState(false);
+
   // AI Hooks
   const [geminiEnabled, setGeminiEnabled] = useState(false);
   const [geminiProvider, setGeminiProvider] = useState("gemini");
@@ -531,6 +540,11 @@ export default function ConfigPage() {
     setWebhookUrl(d.webhook_url ?? "");
     setUploadMedia(d.upload_media ?? true);
 
+    const pipe = (c as any).pipeline ?? {};
+    const disabled: string[] = Array.isArray(pipe.disabled_steps) ? pipe.disabled_steps : [];
+    setSkipThumbnail(disabled.includes("thumbnail"));
+    setSkipNotify(disabled.includes("notify"));
+
     const g = (c as any).gemini ?? {};
     setGeminiEnabled(g.enabled ?? false);
     setGeminiProvider(g.provider ?? "gemini");
@@ -585,6 +599,7 @@ export default function ConfigPage() {
     brollEnabled, brollPexelsKey, brollMaxPerMin,
     postsDir, usedPostsFile,
     discordEnabled, webhookUrl, uploadMedia,
+    skipThumbnail, skipNotify,
     geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
     geminiModel, geminiHook, geminiThumbnail, geminiModels, openrouterModels,
     ollamaUrl, ollamaModels, nvidiaNimModels,
@@ -615,6 +630,7 @@ export default function ConfigPage() {
       brollEnabled, brollPexelsKey, brollMaxPerMin,
       postsDir, usedPostsFile,
       discordEnabled, webhookUrl, uploadMedia,
+      skipThumbnail, skipNotify,
       geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
       geminiModel, geminiHook, geminiThumbnail, geminiModels, openrouterModels,
       ollamaUrl, ollamaModels, nvidiaNimModels, youtubeApiKey,
@@ -747,6 +763,15 @@ export default function ConfigPage() {
         output: {
           posts_directory: postsDir,
           used_posts_file: usedPostsFile,
+        },
+        pipeline: {
+          // Build the disabled list from inverted toggles. Empty array
+          // when neither is checked — backend treats missing/empty
+          // identically to "everything enabled."
+          disabled_steps: [
+            ...(skipThumbnail ? ["thumbnail"] : []),
+            ...(skipNotify ? ["notify"] : []),
+          ],
         },
         discord: {
           enabled: discordEnabled,
@@ -2394,6 +2419,32 @@ export default function ConfigPage() {
               Restore on a new machine: install the suite, click Import, restart the server.
             </p>
             <WorkspaceBackupPanel />
+          </Section>
+
+          <Section title="Pipeline Steps" icon={<Settings2 className="h-4 w-4 text-primary" />}>
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              Skip optional steps on every render. Saves wall time +
+              token spend for users who don't need them. Affects all
+              renders globally — per-run overrides aren't yet exposed.
+            </p>
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="text-xs text-muted-foreground">Skip thumbnail generation</label>
+                <p className="text-[10px] text-muted-foreground/70 leading-snug">
+                  ~5–15 s/render of PIL composition. Skip if you don't upload to YouTube.
+                </p>
+              </div>
+              <Switch checked={skipThumbnail} onCheckedChange={setSkipThumbnail} />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="text-xs text-muted-foreground">Skip Discord notify</label>
+                <p className="text-[10px] text-muted-foreground/70 leading-snug">
+                  Bypass the notify step entirely. (You can also leave the webhook blank.)
+                </p>
+              </div>
+              <Switch checked={skipNotify} onCheckedChange={setSkipNotify} />
+            </div>
           </Section>
 
           <Section title="Discord Notifications" icon={<Bell className="h-4 w-4 text-accent" />}>

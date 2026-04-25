@@ -3883,33 +3883,41 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
 
             _set_step("video", "done", f"Rendered {len(generated_video_paths)} video(s)")
 
-            # Thumbnails
-            _set_step("thumbnail", "running", "Generating thumbnails...")
-            p_title = title
-            p_sub = pipeline_state.get("current_post", {}).get("subreddit", "")
-            p_score = pipeline_state.get("current_post", {}).get("score", 0)
-            num_thumbs = len(generated_video_paths)
+            # Thumbnails — skippable via config.pipeline.disabled_steps
+            if _is_step_disabled("thumbnail", config):
+                _set_step("thumbnail", "done", "Skipped (disabled in config)")
+                _log("Thumbnails: skipped per config.pipeline.disabled_steps")
+            else:
+                _set_step("thumbnail", "running", "Generating thumbnails...")
+                p_title = title
+                p_sub = pipeline_state.get("current_post", {}).get("subreddit", "")
+                p_score = pipeline_state.get("current_post", {}).get("score", 0)
+                num_thumbs = len(generated_video_paths)
 
-            try:
-                if num_thumbs > 1:
-                    series_dir = os.path.dirname(generated_video_paths[0])
-                    for idx in range(1, num_thumbs + 1):
-                        thumb_path = os.path.join(series_dir, f"thumbnail_part{idx}.png")
-                        await asyncio.to_thread(video_gen.generate_thumbnail, p_title, p_sub, idx, num_thumbs, thumb_path, p_score, branding)
-                elif video_mode in ("reel", "short_reel"):
-                    vdir = os.path.dirname(generated_video_paths[0])
-                    vbase = os.path.splitext(os.path.basename(generated_video_paths[0]))[0]
-                    thumb_path = os.path.join(vdir, f"{vbase}_thumbnail.png")
-                    await asyncio.to_thread(video_gen.generate_thumbnail, p_title, p_sub, 1, 1, thumb_path, p_score, branding)
-                _set_step("thumbnail", "done", f"Generated {num_thumbs} thumbnail(s)")
-            except Exception as e:
-                _set_step("thumbnail", "error", f"Thumbnail failed: {str(e)[:80]}")
+                try:
+                    if num_thumbs > 1:
+                        series_dir = os.path.dirname(generated_video_paths[0])
+                        for idx in range(1, num_thumbs + 1):
+                            thumb_path = os.path.join(series_dir, f"thumbnail_part{idx}.png")
+                            await asyncio.to_thread(video_gen.generate_thumbnail, p_title, p_sub, idx, num_thumbs, thumb_path, p_score, branding)
+                    elif video_mode in ("reel", "short_reel"):
+                        vdir = os.path.dirname(generated_video_paths[0])
+                        vbase = os.path.splitext(os.path.basename(generated_video_paths[0]))[0]
+                        thumb_path = os.path.join(vdir, f"{vbase}_thumbnail.png")
+                        await asyncio.to_thread(video_gen.generate_thumbnail, p_title, p_sub, 1, 1, thumb_path, p_score, branding)
+                    _set_step("thumbnail", "done", f"Generated {num_thumbs} thumbnail(s)")
+                except Exception as e:
+                    _set_step("thumbnail", "error", f"Thumbnail failed: {str(e)[:80]}")
         else:
             _set_step("video", "error", "No video output")
             _set_step("thumbnail", "done", "Skipped — no video")
 
-        # Notify
-        _set_step("notify", "done", "Resume complete — notify skipped")
+        # Notify — resume path never sends, but still respects the
+        # disabled list for consistency with the main pipeline flow.
+        if _is_step_disabled("notify", config):
+            _set_step("notify", "done", "Skipped (disabled in config)")
+        else:
+            _set_step("notify", "done", "Resume complete — notify skipped")
 
         # Record
         elapsed = time.time() - start_time
@@ -4785,12 +4793,19 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
         _check_cancelled()
 
         # ── Step 5: Thumbnails ───────────────────────────────────────
-        _set_step("thumbnail", "running", "Generating thumbnails...")
-        _log("Step 5: Generating thumbnails...")
-        if not generated_video_paths:
+        # Skippable via config.pipeline.disabled_steps. Users with no
+        # YouTube upload flow often don't need thumbnails — saving the
+        # ~5-15s/render of PIL composition + the captioning AI call
+        # adds up across a batch.
+        if _is_step_disabled("thumbnail", config):
+            _set_step("thumbnail", "done", "Skipped (disabled in config)")
+            _log("Step 5: Thumbnails skipped per config")
+        elif not generated_video_paths:
             _set_step("thumbnail", "done", "No videos — skipped")
             _log("Thumbnails skipped: no video output")
         else:
+            _set_step("thumbnail", "running", "Generating thumbnails...")
+            _log("Step 5: Generating thumbnails...")
             try:
                 from video_generator import VideoGenerator
                 if 'video_gen' not in dir():
@@ -4847,16 +4862,25 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
         _check_cancelled()
 
         # ── Step 6: Discord Notify ───────────────────────────────────
-        _set_step("notify", "running", "Sending notification...")
-        _log("Step 6: Discord notification...")
+        # Three layers of opt-out:
+        # 1. config.pipeline.disabled_steps — global "I never want
+        #    notifications, don't even consider them" (per-user choice).
+        # 2. config.discord.enabled — separate Discord-specific toggle.
+        # 3. webhook_url empty — physically can't notify.
+        # Each short-circuits earlier in the chain.
         discord_conf = config.get("discord", {})
-        if not discord_conf.get("enabled"):
+        if _is_step_disabled("notify", config):
+            _set_step("notify", "done", "Skipped (disabled in config)")
+            _log("Step 6: Notify skipped per config")
+        elif not discord_conf.get("enabled"):
             _set_step("notify", "done", "Discord disabled — skipped")
             _log("Discord notifications disabled")
         elif not discord_conf.get("webhook_url"):
             _set_step("notify", "done", "No webhook URL configured — skipped")
             _log("No Discord webhook URL")
         else:
+            _set_step("notify", "running", "Sending notification...")
+            _log("Step 6: Discord notification...")
             try:
                 from discord_notifier import DiscordNotifier
                 notifier = DiscordNotifier(discord_conf["webhook_url"])
@@ -4962,6 +4986,28 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
     finally:
         pipeline_state["is_running"] = False
         pipeline_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+
+# ── Pipeline step skipping ────────────────────────────────────────────
+# `config.pipeline.disabled_steps` is a list of step IDs the user wants
+# to skip on every render — typically "thumbnail" for users who never
+# upload to YouTube and "notify" for users without Discord. Saves real
+# wall time per render plus any provider/API quota the step would use.
+#
+# Skippable steps: thumbnail, notify. The earlier steps (fetch, format,
+# tts, video, ai_generate) are core — skipping them produces no output.
+SKIPPABLE_STEPS = {"thumbnail", "notify"}
+
+
+def _is_step_disabled(step_id: str, config: dict) -> bool:
+    """True if the user has marked this step disabled in config."""
+    if step_id not in SKIPPABLE_STEPS:
+        return False
+    pipe_cfg = (config.get("pipeline") or {}) if isinstance(config, dict) else {}
+    disabled = pipe_cfg.get("disabled_steps") or []
+    if not isinstance(disabled, list):
+        return False
+    return step_id in disabled
 
 
 def _set_step(step_id: str, status: str, detail: str = "", sub_steps: Optional[List[Dict]] = None):
