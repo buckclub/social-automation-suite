@@ -4979,6 +4979,76 @@ async def elevenlabs_voices():
 # ──────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────────────
+# Channel-niche finder — turns "what should my next channel be?" into
+# concrete niche cards backed by current YouTube trend data + the
+# user's interests/audience/content-filter brief.
+#
+# Cheap on quota: 1 unit for the trending fetch + ~100 units per
+# user-supplied keyword for the per-keyword "top videos" fetch.
+# Trending result is cached 6h, keyword searches reuse the existing
+# 24h benchmark cache.
+# ──────────────────────────────────────────────────────────────────────
+
+@app.post("/api/niches/generate")
+async def niches_generate(req: dict):
+    """
+    Body:
+      {
+        interests:       "comma, separated, seed keywords (optional)",
+        audience:        "free-text target",
+        content_filter:  "safe" | "normal" | "edgy",
+        region:          "US",
+        count:           6
+      }
+    Returns:
+      { niches: [...], trend_signals: {trending_count, keywords_used: [...]} }
+    """
+    config = _load_config()
+    yt_key = (config.get("youtube") or {}).get("api_key", "")
+    if not yt_key:
+        raise HTTPException(400, "YouTube API key not configured (Config → Publishing).")
+
+    g = config.get("gemini") or {}
+    if not g.get("enabled"):
+        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
+    provider = g.get("provider", "gemini")
+    ai_api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    interests = (req.get("interests") or "").strip()
+    audience  = (req.get("audience") or "").strip()
+    cf = (req.get("content_filter") or "normal").strip().lower()
+    if cf not in ("safe", "normal", "edgy"):
+        cf = "normal"
+    region = (req.get("region") or "US").strip().upper()
+    try:
+        count = max(3, min(10, int(req.get("count") or 6)))
+    except (TypeError, ValueError):
+        count = 6
+
+    from niche_finder import generate_niches
+    out = await asyncio.to_thread(
+        generate_niches,
+        interests=interests,
+        audience=audience,
+        content_filter=cf,
+        region=region,
+        api_key=yt_key,
+        provider=provider, ai_api_key=ai_api_key, model=model, ollama_url=ollama_url,
+        count=count,
+        project_root=PROJECT_ROOT,
+    )
+    if out.get("error"):
+        raise HTTPException(502, out["error"])
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Brand profiles — saved snapshots of every "what this channel looks
 # like" config key (captions, title card, watermark, voice, BG selector,
 # auto-broll style, music). Switching brands writes the brand's

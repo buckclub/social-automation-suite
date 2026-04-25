@@ -904,6 +904,28 @@ export const api = {
     ),
   carouselRenderUrl: () => `${API_BASE}/api/carousels/render`,
 
+  // ── Channel niche finder ─────────────────────────────────────
+  generateNiches: (params: {
+    interests?: string;
+    audience?: string;
+    content_filter?: "safe" | "normal" | "edgy";
+    region?: string;
+    count?: number;
+  }) =>
+    request<{
+      niches: Array<{
+        name: string;
+        description: string;
+        why_trending: string;
+        saturation: "low" | "medium" | "high";
+        audience: string;
+        channel_name_ideas: string[];
+        first_video_ideas: string[];
+        fit_score: number;
+      }>;
+      trend_signals: { trending_count: number; keywords_used: string[] };
+    }>("/api/niches/generate", { method: "POST", body: JSON.stringify(params) }),
+
   // ── Brand Profiles ───────────────────────────────────────────
   listBrands: () =>
     request<{ brands: BrandSummary[]; active_id: string | null }>("/api/brands"),

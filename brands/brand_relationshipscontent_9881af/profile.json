@@ -1,0 +1,118 @@
+{
+  "id": "brand_relationshipscontent_9881af",
+  "name": "RelationshipsContent",
+  "color": "#0080ff",
+  "created_at": "2026-04-25T02:01:55.369336+00:00",
+  "updated_at": "2026-04-25T02:01:55.369336+00:00",
+  "config_overrides": {
+    "captions": {
+      "font_path": "C:\\Users\\Administrator\\AppData\\Local\\Microsoft\\Windows\\Fonts\\Gotham Ultra.otf",
+      "font_size": 90,
+      "color": "white",
+      "stroke_color": "black",
+      "stroke_width": 4,
+      "bg_color": null,
+      "bg_opacity": 160,
+      "padding": 30,
+      "corner_radius": 20,
+      "max_width_pct": 0.92,
+      "position": "center",
+      "position_offset": 0,
+      "words_per_caption": 2,
+      "uppercase": true,
+      "attribution": false,
+      "animation": "fade_pop",
+      "animation_duration": 0.15,
+      "pop_overshoot": 1.16,
+      "pop_start_scale": 0.51,
+      "enabled": true,
+      "force_align": true,
+      "align_model_size": "large-v3",
+      "highlight_word": true,
+      "highlight_color": "#ad42f4",
+      "highlight_scale": 1.1,
+      "highlight_stroke_color": "black",
+      "single_line": false,
+      "shadow_enabled": true,
+      "shadow_color": "#000000",
+      "shadow_opacity": 190,
+      "shadow_offset_x": 4,
+      "shadow_offset_y": 4,
+      "shadow_blur": 8
+    },
+    "clip_captions": {
+      "enabled": true,
+      "font_path": "C:\\Users\\Administrator\\AppData\\Local\\Microsoft\\Windows\\Fonts\\Gotham Ultra.otf",
+      "font_size": 90,
+      "color": "white",
+      "stroke_color": "black",
+      "stroke_width": 4,
+      "bg_color": null,
+      "bg_opacity": 160,
+      "padding": 30,
+      "corner_radius": 20,
+      "max_width_pct": 0.92,
+      "position": "center",
+      "position_offset": 0,
+      "words_per_caption": 2,
+      "uppercase": true,
+      "attribution": false,
+      "animation": "fade_pop",
+      "animation_duration": 0.12,
+      "pop_overshoot": 1.16,
+      "pop_start_scale": 0.31,
+      "force_align": true,
+      "align_model_size": "large-v3",
+      "highlight_word": true,
+      "highlight_color": "#ad42f4",
+      "highlight_scale": 1.1,
+      "highlight_stroke_color": "black",
+      "single_line": false,
+      "shadow_enabled": false,
+      "shadow_color": "#000000",
+      "shadow_opacity": 180,
+      "shadow_offset_x": 4,
+      "shadow_offset_y": 4,
+      "shadow_blur": 6
+    },
+    "thumbnail": {
+      "profile_pic_path": "branding/avatar.jpg",
+      "username": "RelationshipsContent",
+      "hide_stats": true,
+      "card_bg_color": "#FFFFFF",
+      "text_color": "#141414",
+      "username_color": "#1E1E1E",
+      "accent_color": "#FF4500",
+      "corner_radius": 80,
+      "card_max_width_pct": 0.9,
+      "title_font_size": 50,
+      "username_font_size": 40
+    },
+    "video": {
+      "branding": "@relationshipscontent",
+      "outro_text": "Follow for Part {next_part}",
+      "background_selector": ""
+    },
+    "tts": {
+      "main_voice": "hpp4J3VqNfWAUOO0d1Us",
+      "voice_presets": {
+        "elevenlabs": {
+          "male": "nPczCjzI2devNBz1zQrb",
+          "female": "cgSgspJ2msm6clMCkdW9"
+        }
+      },
+      "use_multiple_voices": false,
+      "comment_voices": [
+        "en-Frank_man",
+        "en-Alice_woman"
+      ],
+      "elevenlabs": {
+        "model_id": "eleven_monolingual_v1",
+        "stability": 0.5,
+        "similarity_boost": 0.65,
+        "style": 0.25,
+        "use_speaker_boost": true
+      }
+    }
+  }
+}

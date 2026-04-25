@@ -2,7 +2,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Video, LayoutDashboard, Newspaper, Settings2, Film, Command,
   Images, Scissors, PenLine, Plus, ChevronDown,
-  FileText, Layers, Hash, Globe, Quote, Music, TrendingUp,
+  FileText, Layers, Hash, Globe, Quote, Music, TrendingUp, Compass,
 } from "lucide-react";
 import { useHealth } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
@@ -32,6 +32,7 @@ const topLevelItems = [
   { to: "/config",      label: "Configuration", icon: Settings2 },
 ];
 const createGroupItems = [
+  { to: "/niche-finder",  label: "Niche Finder",   icon: Compass,   desc: "What channel to start? Trend-driven niche ideas" },
   { to: "/posts",         label: "Reddit Posts",   icon: Newspaper, desc: "Browse + queue Reddit content" },
   { to: "/clips",         label: "Clip Maker",     icon: Scissors,  desc: "Long-form → Shorts" },
   { to: "/text-posts",    label: "Text Posts",     icon: PenLine,   desc: "Tweets / comments / community posts" },
