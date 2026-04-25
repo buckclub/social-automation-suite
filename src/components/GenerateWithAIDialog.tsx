@@ -148,6 +148,126 @@ function ScoreBadge({ score, minScore }: { score?: ScoreShape | null; minScore: 
   );
 }
 
+// Animated progress strip while variants are being fetched.
+//
+// We don't have real-time progress events from the backend (the request
+// is one fetch that returns when everything's done), so this cycles
+// through plausible-feeling steps on a timer to give the UI signal
+// instead of a single "generating…" line. The cycle duration matches
+// typical per-step wall time on Gemini/Claude class models — slower
+// providers (Ollama) just see the last step longer, which is fine.
+//
+// The step list adapts to the run shape:
+//   - regen-one or single candidate    → simpler 3-step cycle
+//   - multi-candidate batch            → drafts each candidate by name
+//   - gated (min_score)                → adds 'scoring' + 'reviewing'
+function GenerationProgress({
+  count, minScore, maxAttempts, isRegen, extraNote,
+}: {
+  count: number; minScore: number; maxAttempts: number;
+  isRegen: boolean; extraNote: string | null;
+}) {
+  const steps = useMemo(() => {
+    const list: string[] = [];
+    if (isRegen) {
+      list.push("Reading your previous script…");
+      list.push("Drafting a fresh take…");
+    } else {
+      // Drafting phase — one item per candidate so the user feels the
+      // batch happening instead of a single spinner.
+      if (count === 1) {
+        list.push("Drafting your story…");
+      } else {
+        for (let i = 1; i <= count; i++) {
+          list.push(`Drafting candidate ${i} of ${count}…`);
+        }
+      }
+    }
+    list.push("Proofreading and tightening prose…");
+    list.push("Polishing the hook and closer…");
+    if (minScore > 0) {
+      list.push(`Scoring against rubric (target ≥ ${minScore})…`);
+      list.push("Comparing candidates…");
+      if (maxAttempts > 1) {
+        list.push("Retrying any that fell short…");
+      }
+    } else {
+      list.push("Scoring each candidate…");
+    }
+    list.push("Almost there — final pass…");
+    return list;
+  }, [count, minScore, maxAttempts, isRegen]);
+
+  const [idx, setIdx] = useState(0);
+  useEffect(() => {
+    setIdx(0);
+    // Hold each message ~1.6s — long enough to read, short enough that
+    // even a 30s render shows real motion. We CLAMP at the last step
+    // rather than looping so a stuck request looks honestly stuck
+    // instead of falsely cycling forever.
+    const t = setInterval(() => {
+      setIdx((i) => (i + 1 < steps.length ? i + 1 : i));
+    }, 1600);
+    return () => clearInterval(t);
+  }, [steps]);
+
+  return (
+    <div className="flex flex-col items-center gap-3 py-8 text-muted-foreground">
+      <Loader2 className="h-6 w-6 animate-spin text-primary" />
+      <div className="w-full max-w-xs">
+        {/* Progress bar (visual only — not tied to real progress, see
+            comment above. Bar fills as the message index advances so
+            the user gets a sense of forward motion.) */}
+        <div className="h-1 w-full bg-secondary rounded-full overflow-hidden mb-2">
+          <div
+            className="h-full bg-primary transition-all duration-500 ease-out"
+            style={{
+              width: `${Math.min(95, ((idx + 1) / steps.length) * 100)}%`,
+            }}
+          />
+        </div>
+        {/* Current step (animated fade — keyed so React remounts on
+            change and the keyframe re-runs). */}
+        <p
+          key={idx}
+          className="text-[11px] text-center text-foreground animate-in fade-in slide-in-from-bottom-1 duration-300"
+        >
+          {steps[idx]}
+        </p>
+        {/* Tiny step list for context — past steps dimmed, future
+            steps even dimmer. Only render in non-regen mode where
+            list length is meaningful. */}
+        {!isRegen && steps.length <= 8 && (
+          <ul className="mt-3 space-y-0.5 text-[9px]">
+            {steps.map((s, i) => (
+              <li
+                key={s}
+                className={cn(
+                  "flex items-center gap-1.5 transition-opacity",
+                  i < idx && "opacity-50",
+                  i === idx && "text-foreground",
+                  i > idx && "opacity-30",
+                )}
+              >
+                <span
+                  className={cn(
+                    "h-1 w-1 rounded-full",
+                    i < idx ? "bg-success" :
+                    i === idx ? "bg-primary animate-pulse" :
+                    "bg-muted-foreground/40",
+                  )}
+                />
+                {s}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {extraNote && <p className="text-[10px] opacity-70">{extraNote}</p>}
+    </div>
+  );
+}
+
 export function GenerateWithAIDialog() {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
@@ -749,21 +869,17 @@ export function GenerateWithAIDialog() {
         </div>
 
         {variantsLoading && (
-          <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
-            <Loader2 className="h-6 w-6 animate-spin" />
-            <p className="text-[11px]">
-              {variants.length > 0
-                ? `Regenerating ${variants.length} candidate${variants.length === 1 ? "" : "s"}…`
-                : minScore > 0
-                  ? `Generating + scoring (target ${minScore}/100, up to ${maxAttempts} attempts)…`
-                  : `Generating ${candidateCount} candidate${candidateCount === 1 ? "" : "s"} in parallel…`}
-            </p>
-            {aiProvider !== "ollama" && candidateCount > 1 && (
-              <p className="text-[10px] opacity-70">
-                Uses ~{candidateCount}× the provider tokens of a normal run.
-              </p>
-            )}
-          </div>
+          <GenerationProgress
+            count={candidateCount}
+            minScore={minScore}
+            maxAttempts={maxAttempts}
+            isRegen={variants.length > 0}
+            extraNote={
+              aiProvider !== "ollama" && candidateCount > 1
+                ? `Uses ~${candidateCount}× the provider tokens of a normal run.`
+                : null
+            }
+          />
         )}
 
         {/* Attempt history — shown after a min_score gate run with >1

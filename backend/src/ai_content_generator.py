@@ -181,39 +181,71 @@ def _tone_instruction(tone: Optional[str]) -> str:
 # block (different shape — no narrative arc).
 
 VIRAL_MECHANICS_NARRATIVE = """\
-VIRAL MECHANICS — every script must hit all five beats:
+VIRAL MECHANICS — these are HOW you write, not WHAT you write. Do NOT
+label the parts in the body. The reader must never see the words
+"Hook:", "Stakes:", "Turn:", "Closer:" anywhere in the script — those
+are craft notes for you, not section headers.
 
-1. HOOK (first sentence, ≤12 words):
-   - Specific, not generic. NOT "I have a crazy story." YES "My fiancé's
-     mom just texted me at 2am asking for her ring back."
-   - Breaks pattern: name a number, name a specific person/object, or
-     state an outcome that contradicts the setup.
-   - Promises an answer the rest of the script will deliver.
+1. HOOK (the title + first sentence):
+   - Name a SPECIFIC, SURPRISING moment or detail from the story —
+     not the topic, not the genre.
+   - BAD (just labels the topic): "Caught my GF cheating and got
+     revenge"
+   - GOOD (names a concrete moment): "Caught my GF cheating because
+     she Venmo'd him $14 for parking"
+   - The title is the most important sentence in the script. If the
+     title only describes the genre, rewrite it.
+   - First sentence ≤14 words, specific, and promises something the
+     reader doesn't yet know.
 
-2. STAKES (named by sentence 2):
-   - What does the narrator stand to lose? Money, a relationship, a
-     reputation, a child. Make it concrete.
-   - If you can't name what's at stake in plain words, the rest of the
-     script won't land.
+2. STAKES (woven in by sentence 2-3, NOT labeled):
+   - The reader should feel what the narrator stands to lose without
+     you announcing it. Show, don't list.
+   - Do NOT write "The stakes were ___." or "I had a lot to lose."
+     The stakes come through in HOW you describe the scene.
 
 3. ESCALATION (middle 60%):
-   - Each new sentence raises the temperature OR reveals new info.
-   - No filler — every line must move the story.
-   - Bias toward dialogue and specific actions over summary ("she
-     screamed at me" beats "she got upset").
+   - Each new sentence reveals new info OR raises the temperature.
+   - Specific moments and brief dialogue ARE allowed when they
+     advance the story — but default to first-person reflection.
+     Never write a four-line back-and-forth dialogue. Pick the ONE
+     line that mattered, paraphrase the rest.
+   - No filler. Cut anything that doesn't either reveal or escalate.
 
 4. TURN (~60-75% mark):
-   - Something flips. The villain becomes sympathetic. The narrator
-     realizes they were wrong. A piece of evidence appears.
-   - Without a turn, the script is a list of complaints. Lists die.
+   - Something flips. New information, a realization, or an action
+     the reader didn't predict.
+   - The turn must feel EARNED. Don't have a character switch from
+     smug to crying in two sentences — show the in-between, or skip
+     the smugness entirely.
 
 5. CLOSER (last 1-2 sentences):
-   - Take a strong side ("AITA? I don't think so.") or leave one
-     dangling question that begs comment ("Would you have stayed?").
-   - NEVER end with "and I learned a lesson" or "anyway thanks for
-     reading." Those are dead air.
-   - The closer is a comment-bait — your goal is to make scrolling
-     viewers stop and type.
+   - Take a strong side ("AITA? I don't think so.") or leave a
+     question that begs comment ("Would you have stayed?").
+   - NEVER end with "and I learned a lesson," "anyway thanks for
+     reading," or "what would you do?" if you can be more specific.
+   - The closer is comment-bait — make scrolling viewers stop and type.
+
+BEHAVIORAL REALISM — non-negotiable:
+- Characters act like real adults under stress. Real people don't go
+  from smug → crying in two lines. Real people don't deliver
+  monologues. Real cheaters deny first, get caught a second time, then
+  break.
+- If the topic is REVENGE: the revenge must be plausible enough that
+  a real person would actually do it AND get away with it. No
+  movie-villain antics. No ketchup-in-drawers, no slashing tires, no
+  cartoon pranks. Best revenge is usually small, specific, and legal.
+- If the topic is a DISCOVERY: the discovery itself should be the
+  hook (one tiny detail that unraveled everything), not the
+  aftermath.
+
+OUTPUT HYGIENE:
+- Do NOT include any meta labels in the body — no "Stakes:", no
+  "Turn:", no scene headers, no [brackets], no asterisks, no
+  parentheticals. Just prose.
+- Do NOT prefix the title with "AITA", "TIFU", or "Story:".
+- Do NOT include the words "viral", "epic", or "insane" — those are
+  hack-tier copy.
 """
 
 VIRAL_MECHANICS_INTERACTIVE = """\
@@ -278,24 +310,41 @@ CRAFT RULES:
 - NO emojis, NO hashtags, NO markdown, NO stage directions, NO asterisks.
 - Do NOT prefix the title with "AITA" or "TIFU" — start naturally.
 
-EXAMPLE OF A STRONG OPENING (study the hook + stakes pattern, do NOT
-copy the content):
+EXAMPLE OF A STRONG OPENING (study the shape, do NOT copy the
+content). Note how it has ZERO meta labels, almost no dialogue, and
+every sentence reveals something new:
 
   Title: "My sister wore my wedding dress to her engagement party"
   Body:  "I haven't spoken to my sister Megan in 6 weeks. Last month
           she got engaged and threw an engagement party at our parents'
           house — I wasn't invited because we 'have history.' I found
-          out what happened from my cousin who sent me a photo. Megan
-          was wearing my wedding dress. The dress I got married in two
-          years ago. The dress that's been hanging in my parents'
-          spare closet because we don't have storage in our apartment.
-          When I called my mom she said 'oh she just borrowed it for
-          fun, don't be dramatic'…"
+          out what happened from my cousin, who sent me a photo. Megan
+          was wearing my wedding dress. The actual dress I got married
+          in two years ago. The dress that's been hanging in my
+          parents' spare closet because we don't have room in our
+          apartment. When I called my mom, all she said was that
+          Megan 'just borrowed it for fun, don't be dramatic.' That's
+          when I drove over and saw the rest of my stuff already
+          packed in boxes by the front door…"
 
-  ↑ Why it works: hook names a specific outrageous act (8 words);
-  stakes (relationship, dress sentimentality) named by sentence 3;
-  every line reveals new info; clear villain + complicit parents set
-  up the turn.
+  ↑ Why it works: title names a specific outrageous moment (NOT 'my
+  family is crazy'). No labeled stakes — the dress's sentimental
+  weight comes through naturally. One brief line of paraphrased
+  dialogue, no four-line dialogue scenes. Every sentence delivers a
+  new fact. Clear villain + complicit parent set up an obvious turn.
+
+EXAMPLE OF A WEAK OPENING (avoid all of these patterns):
+
+  Title: "Caught my GF cheating and got epic revenge"
+  Body:  "I found out yesterday that my girlfriend of two years was
+          cheating with this guy named Alex. Stakes: our relationship
+          and my self-respect were on the line. I waited until midnight
+          and confronted her. 'Hey babe,' she says. 'Sit down,' I tell
+          her. She tries to deny it but can't keep eye contact…"
+
+  ↑ Why it fails: title is the genre, not a moment. Body literally
+  writes "Stakes:" as a label. Dialogue is wooden ping-pong. Reads
+  like an AI following a checklist instead of telling a story.
 
 NICHE: {niche_name}
 THEMES TO DRAW FROM: {niche_themes}
