@@ -84,7 +84,7 @@ CORE_MODULES = [
 
 ROUTER_MODULES = [
     "routes.dialogue", "routes.niche", "routes.hashtags",
-    "routes.calendar", "routes.social",
+    "routes.calendar", "routes.social", "routes.analytics",
 ]
 
 
