@@ -78,6 +78,39 @@ export default function FirstRunPage() {
   // Step 4 — YouTube key (optional)
   const [ytKey, setYtKey] = useState("");
 
+  // Test-connection state. Keyed by provider so swapping providers
+  // doesn't show a stale "OK" against the new credentials.
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    provider: AiProvider;
+    ok: boolean;
+    detail: string;
+  } | null>(null);
+
+  async function testAi() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const r = await api.testAIProvider({
+        provider: aiProvider,
+        api_key: aiOpt.needs === "key" ? aiKey : undefined,
+        ollama_url: aiOpt.needs === "url" ? aiUrl : undefined,
+      });
+      setTestResult({ provider: aiProvider, ok: r.ok, detail: r.detail });
+      if (r.ok) {
+        toast({ title: "Connection OK", description: r.detail });
+      }
+    } catch (e: unknown) {
+      setTestResult({
+        provider: aiProvider,
+        ok: false,
+        detail: e instanceof Error ? e.message : "Test failed.",
+      });
+    } finally {
+      setTesting(false);
+    }
+  }
+
   // Hydrate from current config so a partial setup can resume cleanly.
   // We only run this ONCE per dialog session — re-running every time
   // the user changes provider would clobber their typed key with a
@@ -276,25 +309,61 @@ export default function FirstRunPage() {
             {aiOpt.needs === "key" ? (
               <div className="space-y-2">
                 <Label htmlFor="aikey">API key</Label>
-                <Input
-                  id="aikey"
-                  type="password"
-                  value={aiKey}
-                  onChange={e => setAiKey(e.target.value)}
-                  placeholder="paste your key"
-                  autoFocus
-                />
+                <div className="flex gap-2">
+                  <Input
+                    id="aikey"
+                    type="password"
+                    value={aiKey}
+                    onChange={e => { setAiKey(e.target.value); setTestResult(null); }}
+                    placeholder="paste your key"
+                    autoFocus
+                    className="flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={testAi}
+                    disabled={testing || aiKey.trim().length < 5}
+                    title="Send a tiny ping to confirm the key works"
+                  >
+                    {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test"}
+                  </Button>
+                </div>
               </div>
             ) : (
               <div className="space-y-2">
                 <Label htmlFor="aiurl">Ollama URL</Label>
-                <Input
-                  id="aiurl"
-                  value={aiUrl}
-                  onChange={e => setAiUrl(e.target.value)}
-                  placeholder="http://localhost:11434"
-                  autoFocus
-                />
+                <div className="flex gap-2">
+                  <Input
+                    id="aiurl"
+                    value={aiUrl}
+                    onChange={e => { setAiUrl(e.target.value); setTestResult(null); }}
+                    placeholder="http://localhost:11434"
+                    autoFocus
+                    className="flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={testAi}
+                    disabled={testing || aiUrl.trim().length < 8}
+                    title="Confirm the Ollama server responds"
+                  >
+                    {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test"}
+                  </Button>
+                </div>
+              </div>
+            )}
+            {testResult && testResult.provider === aiProvider && (
+              <div
+                className={
+                  "text-xs rounded-md px-3 py-2 border " +
+                  (testResult.ok
+                    ? "border-success/40 bg-success/10 text-success"
+                    : "border-destructive/40 bg-destructive/10 text-destructive")
+                }
+              >
+                {testResult.ok ? "✓ " : "✗ "}{testResult.detail}
               </div>
             )}
             <div className="space-y-2">

@@ -907,6 +907,110 @@ async def events_stats():
     return _ev_bus.stats()
 
 
+@app.post("/api/config/test-ai-provider")
+async def test_ai_provider(req: dict):
+    """
+    Validate an AI provider's credentials with a tiny ping. Used by the
+    first-run wizard so users find out at setup time (instead of at
+    generate time) that they pasted the wrong key, ran out of quota, or
+    typed the wrong Ollama URL.
+
+    Body:
+      {
+        "provider": "gemini" | "openrouter" | "nvidia_nim" | "ollama",
+        "api_key":  str (required for cloud providers),
+        "ollama_url": str (required for ollama)
+      }
+    Returns:
+      { "ok": bool, "detail": str }
+
+    Always returns 200; the user-visible result is in the body. Network
+    errors and HTTP 4xx/5xx all surface as ok=false with a short detail.
+    Times out at 12 s so a slow Ollama doesn't block the wizard.
+    """
+    import asyncio as _asyncio
+    import requests as _rq
+
+    provider = (req.get("provider") or "").strip().lower()
+    api_key  = (req.get("api_key") or "").strip()
+    ollama_url = (req.get("ollama_url") or "").strip()
+
+    def _do() -> dict:
+        try:
+            if provider == "gemini":
+                if not api_key:
+                    return {"ok": False, "detail": "API key is required."}
+                r = _rq.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params={"key": api_key},
+                    timeout=10,
+                )
+                if r.status_code == 200:
+                    n = len((r.json() or {}).get("models", []))
+                    return {"ok": True, "detail": f"Gemini OK — {n} models reachable."}
+                if r.status_code in (400, 401, 403):
+                    return {"ok": False, "detail": "Key rejected by Google. Double-check at ai.studio/google.com."}
+                return {"ok": False, "detail": f"Gemini returned HTTP {r.status_code}."}
+
+            if provider == "openrouter":
+                if not api_key:
+                    return {"ok": False, "detail": "API key is required."}
+                r = _rq.get(
+                    "https://openrouter.ai/api/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=10,
+                )
+                if r.status_code == 200:
+                    n = len((r.json() or {}).get("data", []))
+                    return {"ok": True, "detail": f"OpenRouter OK — {n} models available."}
+                if r.status_code == 401:
+                    return {"ok": False, "detail": "Key rejected by OpenRouter. Re-paste from openrouter.ai/keys."}
+                return {"ok": False, "detail": f"OpenRouter returned HTTP {r.status_code}."}
+
+            if provider == "nvidia_nim":
+                if not api_key:
+                    return {"ok": False, "detail": "API key is required."}
+                r = _rq.get(
+                    "https://integrate.api.nvidia.com/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=10,
+                )
+                if r.status_code == 200:
+                    n = len((r.json() or {}).get("data", []))
+                    return {"ok": True, "detail": f"NVIDIA NIM OK — {n} models available."}
+                if r.status_code == 401:
+                    return {"ok": False, "detail": "Key rejected by NVIDIA. Re-paste from build.nvidia.com."}
+                return {"ok": False, "detail": f"NVIDIA NIM returned HTTP {r.status_code}."}
+
+            if provider == "ollama":
+                base = ollama_url.rstrip("/") or "http://localhost:11434"
+                r = _rq.get(f"{base}/api/tags", timeout=10)
+                if r.status_code == 200:
+                    n = len((r.json() or {}).get("models", []))
+                    return {
+                        "ok": True,
+                        "detail": (
+                            f"Ollama reachable — {n} model(s) installed." if n else
+                            "Ollama reachable, but no models installed yet. Run `ollama pull <model>`."
+                        ),
+                    }
+                return {"ok": False, "detail": f"Ollama at {base} returned HTTP {r.status_code}."}
+
+            return {"ok": False, "detail": f"Unknown provider: {provider!r}"}
+        except _rq.exceptions.ConnectTimeout:
+            return {"ok": False, "detail": "Connection timed out. Check the URL / firewall."}
+        except _rq.exceptions.ConnectionError as e:
+            return {"ok": False, "detail": f"Couldn't connect: {str(e)[:120]}"}
+        except Exception as e:
+            return {"ok": False, "detail": f"Unexpected error: {type(e).__name__}: {str(e)[:120]}"}
+
+    # 12s outer timeout so a hung TCP doesn't pin the wizard.
+    try:
+        return await _asyncio.wait_for(_asyncio.to_thread(_do), timeout=12)
+    except _asyncio.TimeoutError:
+        return {"ok": False, "detail": "Test timed out after 12 s."}
+
+
 # ── Endpoints ────────────────────────────────────────────────────────
 
 if os.path.isdir(FRONTEND_ASSETS):

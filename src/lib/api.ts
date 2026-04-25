@@ -905,6 +905,19 @@ export const api = {
   clearAIDraft: () =>
     request<{ cleared: boolean }>("/api/ai/drafts", { method: "DELETE" }),
 
+  // First-run wizard support — ping a provider to validate credentials
+  // before persisting them. The endpoint always returns 200 with
+  // {ok, detail}; HTTP errors / timeouts are folded into ok=false.
+  testAIProvider: (params: {
+    provider: "gemini" | "openrouter" | "nvidia_nim" | "ollama";
+    api_key?: string;
+    ollama_url?: string;
+  }) =>
+    request<{ ok: boolean; detail: string }>(
+      "/api/config/test-ai-provider",
+      { method: "POST", body: JSON.stringify(params) },
+    ),
+
   // Generate N candidate variants WITHOUT starting the pipeline.
   // Caller picks one, then hands it to runPipelineAI via preselected_content.
   // Each variant comes back with a `score` block (0-100 + sub-scores)
