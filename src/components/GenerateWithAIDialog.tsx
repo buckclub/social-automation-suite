@@ -1397,11 +1397,13 @@ export function GenerateWithAIDialog() {
           </div>
 
           {/* ── Virality target slider (Layer 3) ───────────────────────
-              Off by default. When dragged ≥ 50, the backend regenerates
-              up to maxAttempts times until any candidate beats the bar.
-              We render it as a single horizontal slider so the trade-
-              off (higher bar = more retries = more tokens) is obvious
-              at a glance. */}
+              The slider's range is 50-100, where the leftmost stop (50)
+              means "off — no quality gate." We don't expose 0-49 because
+              nothing below 50 is a meaningful bar (the model would treat
+              it as "anything goes"). Internally `minScore` stays 0-95 so
+              the backend's existing semantics don't change — we just
+              translate slider position 50 → minScore 0 here at the
+              boundary. */}
           <div className="space-y-1">
             <div className="p-2.5 rounded-lg border border-border bg-secondary/30 space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -1415,18 +1417,30 @@ export function GenerateWithAIDialog() {
               </div>
               <input
                 type="range"
-                min={0}
+                min={50}
                 max={95}
                 step={5}
-                value={minScore}
+                // Slider thumb sits at 50 when the gate is off, otherwise
+                // tracks the actual minScore. This keeps the visual thumb
+                // position monotonic as the user drags right.
+                value={minScore === 0 ? 50 : minScore}
                 onChange={(e) => {
                   const v = parseInt(e.target.value, 10);
-                  // Snap from 0 → 50 (skip the 5-45 range — anything
-                  // below 50 isn't a meaningful gate).
-                  setMinScore(v < 50 ? 0 : v);
+                  // Position 50 = off (sentinel value 0 internally).
+                  // 55-95 = active gate at that score.
+                  setMinScore(v <= 50 ? 0 : v);
                 }}
                 className="w-full h-1.5 bg-secondary rounded-full appearance-none cursor-pointer accent-primary"
               />
+              {/* Tick rail — explains what each end of the slider does
+                  without needing a tooltip. */}
+              <div className="flex justify-between text-[9px] text-muted-foreground/70 px-0.5 -mt-0.5">
+                <span>off</span>
+                <span>60</span>
+                <span>70</span>
+                <span>80</span>
+                <span>90+</span>
+              </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
                 {minScore === 0
                   ? "No quality gate — variants come back as generated. Each one is still scored so you can sort the picker."
