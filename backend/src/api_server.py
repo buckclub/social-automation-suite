@@ -743,6 +743,20 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Social Automation Suite API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# ── Modular routers ──────────────────────────────────────────────────
+# Endpoints split into routes/<group>.py for navigability. Each router
+# uses lazy imports for shared state to avoid circulars at module load.
+from routes.dialogue import router as _dialogue_router
+from routes.niche    import router as _niche_router
+from routes.hashtags import router as _hashtags_router
+from routes.calendar import router as _calendar_router
+from routes.social   import router as _social_router
+app.include_router(_dialogue_router)
+app.include_router(_niche_router)
+app.include_router(_hashtags_router)
+app.include_router(_calendar_router)
+app.include_router(_social_router)
+
 
 # ── Endpoints ────────────────────────────────────────────────────────
 
@@ -2924,152 +2938,7 @@ async def carousel_render_zip(req: dict):
     )
 
 
-@app.post("/api/hashtags/analyze")
-async def analyze_hashtags(req: dict):
-    """
-    Body: { caption: str, niche?: str, platform?: "tiktok"|"instagram"|"youtube"|"all" }
-    Returns:
-      {
-        "suggestions": [{ "tag": "#aita", "score": 87, "reason": "core Reddit-TikTok niche tag" }, …],
-        "from_caption": ["#existingTag", …],     # tags already in the user's caption
-        "benchmarks_used": int,                   # # of YT videos scraped, 0 if no API key
-        "provider": str, "model": str
-      }
-    """
-    caption = (req.get("caption") or "").strip()
-    if not caption:
-        raise HTTPException(400, "caption is required")
-    niche = (req.get("niche") or "").strip()
-    platform = (req.get("platform") or "all").strip().lower()
-    if platform not in ("tiktok", "instagram", "youtube", "all"):
-        platform = "all"
-
-    config = _load_config()
-    g = config.get("gemini") or {}
-    if not g.get("enabled"):
-        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
-    provider = g.get("provider", "gemini")
-    api_key = (
-        g.get("api_key") if provider == "gemini" else
-        g.get("openrouter_api_key") if provider == "openrouter" else
-        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
-    )
-    model = g.get("model") or "gemini-2.0-flash"
-    ollama_url = g.get("ollama_url", "http://localhost:11434")
-
-    # Tags already in the caption — don't recommend duplicates.
-    existing = re.findall(r"#[\w_]+", caption)
-    existing_lower = {t.lower() for t in existing}
-
-    # YouTube benchmarks for tag-density reference (graceful no-op if no key).
-    yt_cfg = config.get("youtube", {}) or {}
-    yt_key = yt_cfg.get("api_key", "")
-    benchmarks: list[dict] = []
-    if yt_key and niche:
-        try:
-            from youtube_benchmarks import fetch_benchmarks
-            benchmarks = fetch_benchmarks(
-                f"{niche} reddit stories shorts" if niche else "reddit stories shorts",
-                yt_key, project_root=PROJECT_ROOT, count=8,
-            )
-        except Exception as e:
-            _log(f"Hashtag Lab: benchmark fetch failed: {e}")
-
-    # Build benchmarks block exactly like Social Copy does, then ask the
-    # LLM to rank tags. Strict JSON output.
-    benchmarks_block = ""
-    if benchmarks:
-        lines = []
-        for i, b in enumerate(benchmarks[:8], 1):
-            tags_str = ", ".join(b.get("tags", [])[:10]) or "(no tags)"
-            lines.append(
-                f"[{i}] {b.get('view_count', 0):,} views — \"{b.get('title','')}\"\n"
-                f"    tags: {tags_str}"
-            )
-        benchmarks_block = (
-            "\n\n=== HIGH-PERFORMING VIDEOS IN THIS NICHE (tag references) ===\n"
-            + "\n\n".join(lines) + "\n"
-        )
-
-    system = (
-        "You are a hashtag strategist for short-form video. Return ONLY minified "
-        "JSON, no markdown. Each suggestion must be a real, currently-active hashtag "
-        "(no fabricated trends). Score 0-100 reflecting how well the tag matches the "
-        "caption's content AND its likely reach on the target platform. Avoid generic "
-        "filler unless the benchmarks clearly use it."
-    )
-
-    prompt = (
-        f"Caption to analyze:\n\"{caption[:1500]}\"\n\n"
-        f"Niche: {niche or '(unspecified)'}\n"
-        f"Target platform: {platform}\n"
-        f"Tags already in the caption (do NOT re-recommend): {', '.join(existing) or 'none'}\n"
-        + benchmarks_block +
-        "\n"
-        "Return JSON of this exact shape:\n"
-        "{\n"
-        '  "suggestions": [\n'
-        '    {"tag": "#example", "score": 85, "reason": "<≤80 chars why this fits>"},\n'
-        '    ...\n'
-        "  ]\n"
-        "}\n\n"
-        "Return 12-20 suggestions, sorted by score descending. Mix:\n"
-        "- 3-5 core niche tags (the ones with the most accounts following them)\n"
-        "- 4-6 specific topical tags drawn from the caption's actual content\n"
-        "- 2-3 algorithmic reach tags (#fyp / #foryoupage etc) IF appropriate to platform\n"
-        "- 2-3 long-tail / community tags that target specific audiences\n"
-        "Tags MUST start with '#'. No spaces inside tags. Lowercase except for proper nouns."
-    )
-
-    from gemini_hooks import _call_ai  # type: ignore
-    raw = _call_ai(provider, api_key, prompt, system, model, ollama_url)
-    if not raw:
-        raise HTTPException(502, f"AI provider '{provider}' returned empty response")
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("```")[1]
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:]
-        cleaned = cleaned.strip("`").strip()
-    try:
-        parsed = json.loads(cleaned)
-    except Exception:
-        s = cleaned.find("{"); e = cleaned.rfind("}")
-        if s >= 0 and e > s:
-            try: parsed = json.loads(cleaned[s:e + 1])
-            except Exception:
-                raise HTTPException(502, f"AI returned non-JSON: {cleaned[:200]}")
-        else:
-            raise HTTPException(502, f"AI returned non-JSON: {cleaned[:200]}")
-
-    suggestions = []
-    for s in (parsed.get("suggestions") or []):
-        tag = (s.get("tag") or "").strip()
-        if not tag:
-            continue
-        if not tag.startswith("#"):
-            tag = "#" + tag
-        # Drop duplicates of existing tags.
-        if tag.lower() in existing_lower:
-            continue
-        try:
-            score = int(s.get("score") or 0)
-        except (TypeError, ValueError):
-            score = 0
-        suggestions.append({
-            "tag": tag,
-            "score": max(0, min(100, score)),
-            "reason": str(s.get("reason") or "")[:140],
-        })
-    suggestions.sort(key=lambda x: x["score"], reverse=True)
-
-    return {
-        "suggestions": suggestions,
-        "from_caption": existing,
-        "benchmarks_used": len(benchmarks),
-        "provider": provider,
-        "model": model,
-    }
+# Hashtag Lab endpoint moved to routes/hashtags.py
 
 
 @app.get("/api/news/feeds")
@@ -5001,63 +4870,8 @@ async def elevenlabs_voices():
 # top-fit, and enqueues the render.
 # ──────────────────────────────────────────────────────────────────────
 
-@app.get("/api/calendar")
-async def calendar_list():
-    from content_calendar import list_slots
-    return {"slots": list_slots(PROJECT_ROOT)}
-
-
-@app.post("/api/calendar")
-async def calendar_create(req: dict):
-    from content_calendar import create_slot
-    sched = (req.get("scheduled_at") or "").strip()
-    if not sched:
-        raise HTTPException(400, "scheduled_at (ISO datetime) is required")
-    title = (req.get("title") or "").strip() or "Scheduled run"
-    kind  = (req.get("kind") or "ai").strip()
-    if kind not in ("ai",):
-        # MVP: only the AI pipeline path is wired. custom/news can come later.
-        raise HTTPException(400, "kind must be 'ai' for now")
-    brand_id = req.get("brand_id") or None
-    params   = req.get("params") or {}
-    slot = create_slot(
-        PROJECT_ROOT,
-        scheduled_at=sched, kind=kind,
-        brand_id=brand_id, title=title, params=params,
-    )
-    return {"slot": slot}
-
-
-@app.put("/api/calendar/{slot_id}")
-async def calendar_update(slot_id: str, req: dict):
-    from content_calendar import update_slot
-    s = update_slot(PROJECT_ROOT, slot_id, req)
-    if not s:
-        raise HTTPException(404, "Slot not found")
-    return {"slot": s}
-
-
-@app.delete("/api/calendar/{slot_id}")
-async def calendar_delete(slot_id: str):
-    from content_calendar import delete_slot
-    if not delete_slot(PROJECT_ROOT, slot_id):
-        raise HTTPException(404, "Slot not found")
-    return {"deleted": True}
-
-
-@app.post("/api/calendar/{slot_id}/fire-now")
-async def calendar_fire_now(slot_id: str):
-    """Reschedule a slot to NOW so the worker picks it up next tick."""
-    from content_calendar import update_slot, get_slot
-    s = get_slot(PROJECT_ROOT, slot_id)
-    if not s:
-        raise HTTPException(404, "Slot not found")
-    update_slot(PROJECT_ROOT, slot_id, {
-        "scheduled_at": datetime.now(timezone.utc).isoformat(),
-        "status": "planned",
-        "error": None,
-    })
-    return {"queued_for_immediate_fire": True}
+# Calendar CRUD endpoints moved to routes/calendar.py.
+# The firing worker stays here because it touches module-local state.
 
 
 async def _calendar_worker():
@@ -5170,74 +4984,7 @@ async def _calendar_worker():
             await asyncio.sleep(15)
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Channel-niche finder — turns "what should my next channel be?" into
-# concrete niche cards backed by current YouTube trend data + the
-# user's interests/audience/content-filter brief.
-#
-# Cheap on quota: 1 unit for the trending fetch + ~100 units per
-# user-supplied keyword for the per-keyword "top videos" fetch.
-# Trending result is cached 6h, keyword searches reuse the existing
-# 24h benchmark cache.
-# ──────────────────────────────────────────────────────────────────────
-
-@app.post("/api/niches/generate")
-async def niches_generate(req: dict):
-    """
-    Body:
-      {
-        interests:       "comma, separated, seed keywords (optional)",
-        audience:        "free-text target",
-        content_filter:  "safe" | "normal" | "edgy",
-        region:          "US",
-        count:           6
-      }
-    Returns:
-      { niches: [...], trend_signals: {trending_count, keywords_used: [...]} }
-    """
-    config = _load_config()
-    yt_key = (config.get("youtube") or {}).get("api_key", "")
-    if not yt_key:
-        raise HTTPException(400, "YouTube API key not configured (Config → Publishing).")
-
-    g = config.get("gemini") or {}
-    if not g.get("enabled"):
-        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
-    provider = g.get("provider", "gemini")
-    ai_api_key = (
-        g.get("api_key") if provider == "gemini" else
-        g.get("openrouter_api_key") if provider == "openrouter" else
-        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
-    )
-    model = g.get("model") or "gemini-2.0-flash"
-    ollama_url = g.get("ollama_url", "http://localhost:11434")
-
-    interests = (req.get("interests") or "").strip()
-    audience  = (req.get("audience") or "").strip()
-    cf = (req.get("content_filter") or "normal").strip().lower()
-    if cf not in ("safe", "normal", "edgy"):
-        cf = "normal"
-    region = (req.get("region") or "US").strip().upper()
-    try:
-        count = max(3, min(10, int(req.get("count") or 6)))
-    except (TypeError, ValueError):
-        count = 6
-
-    from niche_finder import generate_niches
-    out = await asyncio.to_thread(
-        generate_niches,
-        interests=interests,
-        audience=audience,
-        content_filter=cf,
-        region=region,
-        api_key=yt_key,
-        provider=provider, ai_api_key=ai_api_key, model=model, ollama_url=ollama_url,
-        count=count,
-        project_root=PROJECT_ROOT,
-    )
-    if out.get("error"):
-        raise HTTPException(502, out["error"])
-    return out
+# Niche Finder endpoints relocated to routes/niche.py — see app.include_router above.
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -5822,134 +5569,66 @@ def _resolve_background_music(post_id: str, config: dict) -> tuple[Optional[str]
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Dialogue Mode — AI generates a back-and-forth conversation between two
-# characters, and the existing Custom Script pipeline handles the render.
-# Speaker labels stay in the captions so viewers can follow who's talking.
-#
-# Future: per-segment voice swap + dual avatar overlay extension to
-# Avatar Reels. This MVP ships the script primitive and the render hook.
+# Dialogue Mode endpoints live in routes/dialogue.py — registered via
+# app.include_router after the FastAPI app object is created (search
+# below for `from routes import`). Keeping this comment marker so old
+# greps for "Dialogue Mode" still find the relocation.
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Workspace export / import — one-click backup of every config,
+# brand profile, queue state, and per-post sidecar so a disk failure
+# (or new machine) can be restored from a single zip. Audio / video /
+# backgrounds are deliberately excluded (large + regenerable / source-
+# controlled separately).
 # ──────────────────────────────────────────────────────────────────────
 
-@app.post("/api/dialogue/generate")
-async def dialogue_generate(req: dict):
-    """
-    Generate a two-character dialogue script. Body:
-      {
-        topic:               "what they argue / discuss",
-        primary_persona:     "who Speaker A is — short personality blurb",
-        guest_persona:       "who Speaker B is",
-        primary_label:       "default 'A'",  guest_label: "default 'B'",
-        exchanges:           "default 6 — number of A↔B turns",
-        tone:                "dramatic | funny | heartfelt | shocking | cringe",
-        content_filter:      "safe | normal | edgy",
-      }
-    Returns: { title, segments: [{speaker, label, text}], plain_script }
-    """
-    cfg = _load_config()
-    g = cfg.get("gemini") or {}
-    if not g.get("enabled"):
-        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
-
-    topic = (req.get("topic") or "").strip()
-    if not topic:
-        raise HTTPException(400, "topic is required")
-    primary_persona = (req.get("primary_persona") or "").strip() or "narrator"
-    guest_persona   = (req.get("guest_persona") or "").strip() or "the other person"
-    primary_label   = (req.get("primary_label") or "A").strip()[:24] or "A"
-    guest_label     = (req.get("guest_label") or "B").strip()[:24] or "B"
-    if primary_label.lower() == guest_label.lower():
-        guest_label = guest_label + "2"
+@app.get("/api/workspace/export")
+async def workspace_export():
+    """Download a zip containing the full setup. Streamed back as
+    application/zip so the browser triggers a Save-As dialog."""
+    from fastapi.responses import StreamingResponse
+    from workspace_backup import export_workspace
     try:
-        exchanges = max(2, min(20, int(req.get("exchanges") or 6)))
-    except (TypeError, ValueError):
-        exchanges = 6
-    tone = (req.get("tone") or "dramatic").lower()
-    cf = (req.get("content_filter") or "normal").lower()
+        zip_bytes = await asyncio.to_thread(export_workspace, PROJECT_ROOT)
+    except Exception as e:
+        raise HTTPException(500, f"Export failed: {e}")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return StreamingResponse(
+        io.BytesIO(zip_bytes),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="social_automation_workspace_{ts}.zip"'},
+    )
 
-    provider = g.get("provider", "gemini")
-    api_key = (
-        g.get("api_key") if provider == "gemini" else
-        g.get("openrouter_api_key") if provider == "openrouter" else
-        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
-    )
-    model = g.get("model") or "gemini-2.0-flash"
-    ollama_url = g.get("ollama_url", "http://localhost:11434")
 
-    system = (
-        "You are writing a two-character viral short-form dialogue. Each "
-        "line MUST be a single-sentence punchy turn (≤25 words). Tone "
-        f"is {tone}. Content filter is {cf}. NO stage directions, no "
-        "[asterisks], no parentheses for actions — just spoken lines. "
-        "Return ONLY minified JSON, no markdown."
-    )
-    prompt = (
-        f"Topic / scenario: {topic}\n\n"
-        f"Speaker {primary_label} (\"primary\"): {primary_persona}\n"
-        f"Speaker {guest_label} (\"guest\"): {guest_persona}\n\n"
-        f"Write {exchanges} alternating exchanges (each = 1 line by {primary_label}, "
-        f"then 1 line by {guest_label}). Build a clear arc — setup, escalation, payoff. "
-        f"End on a line that begs for a comment or share.\n\n"
-        "Return JSON of this exact shape:\n"
-        "{\n"
-        '  "title":  "<≤55 char hook for the video title — about the conversation>",\n'
-        '  "segments": [\n'
-        '    {"speaker": "primary", "text": "<line>"},\n'
-        '    {"speaker": "guest",   "text": "<line>"},\n'
-        "    ...\n"
-        "  ]\n"
-        "}"
-    )
-    from gemini_hooks import _call_ai
-    raw = await asyncio.to_thread(_call_ai, provider, api_key, prompt, system, model, ollama_url)
-    if not raw:
-        raise HTTPException(502, f"AI provider '{provider}' returned empty response")
-    s = raw.strip()
-    if s.startswith("```"):
-        s = s.split("```")[1]
-        if s.startswith("json"): s = s[4:]
-        s = s.strip("`").strip()
+@app.post("/api/workspace/import")
+async def workspace_import(file: UploadFile = File(...), overwrite: bool = True):
+    """
+    Restore a previously-exported workspace zip. Existing files are
+    backed up under .cache/imports/<timestamp>/ before being clobbered,
+    so a bad import is undoable.
+
+    The user should pause active renders before importing — files are
+    swapped atomically per-file but not transactionally, so an in-flight
+    pipeline could see a mid-state. Frontend prompts about this.
+    """
+    from workspace_backup import import_workspace
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "empty upload")
     try:
-        parsed = json.loads(s)
-    except Exception:
-        a = s.find("{"); b = s.rfind("}")
-        if a < 0 or b <= a:
-            raise HTTPException(502, f"AI returned non-JSON: {s[:200]}")
-        try: parsed = json.loads(s[a:b + 1])
-        except Exception:
-            raise HTTPException(502, f"AI returned non-JSON: {s[:200]}")
-
-    out_segments = []
-    for seg in (parsed.get("segments") or []):
-        sp = (seg.get("speaker") or "").strip().lower()
-        if sp not in ("primary", "guest"):
-            continue
-        txt = (seg.get("text") or "").strip()
-        if not txt:
-            continue
-        out_segments.append({
-            "speaker": sp,
-            "label":   primary_label if sp == "primary" else guest_label,
-            "text":    txt[:600],
-        })
-    if not out_segments:
-        raise HTTPException(502, "AI returned no usable lines")
-
-    # Build a plain-text script the existing Custom Script pipeline can
-    # render. Each line begins with the speaker's label so captions
-    # naturally show who's talking. Blank line between turns gives the
-    # caption chunker a natural pause boundary.
-    plain_lines = []
-    for seg in out_segments:
-        plain_lines.append(f"{seg['label']}: {seg['text']}")
-    plain_script = "\n\n".join(plain_lines)
-
-    return {
-        "title":         (parsed.get("title") or topic)[:120],
-        "segments":      out_segments,
-        "plain_script":  plain_script,
-        "primary_label": primary_label,
-        "guest_label":   guest_label,
-    }
+        result = await asyncio.to_thread(import_workspace, PROJECT_ROOT, content, overwrite=overwrite)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Import failed: {e}")
+    # Reload in-memory state that may have changed on disk.
+    try:
+        _load_videos_from_disk()
+    except Exception as e:
+        _log(f"Workspace import: video registry reload failed: {e}")
+    _log(f"Workspace import: restored {len(result['restored'])} file(s), backup at {result['backup_dir']}")
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -7049,49 +6728,8 @@ async def generate_social_copy(post_id: str):
 # Social-copy batch queue — background generation for N posts at once.
 # ──────────────────────────────────────────────────────────────────────
 
-@app.post("/api/social/batch-generate")
-async def batch_generate_social(req: dict):
-    """
-    Enqueue multiple posts for background social-copy generation. The
-    user returns to the Videos page; a small status chip shows queue
-    progress. Items already running/queued for the same post_id are
-    skipped so a double-click doesn't duplicate work.
-
-    Body: { "items": [{"post_id": "abc", "title": "..."}, ...] }
-    Returns the queue rows that were actually added.
-    """
-    from social_queue import enqueue_many
-    items_in = req.get("items") or []
-    if not isinstance(items_in, list) or not items_in:
-        raise HTTPException(400, "items[] required")
-    added = enqueue_many(PROJECT_ROOT, items_in)
-    _log(f"Social copy queue: +{len(added)} item(s) (skipped {len(items_in) - len(added)} dup/empty)")
-    return {"added": added, "count": len(added)}
-
-
-@app.get("/api/social/queue")
-async def social_queue_snapshot():
-    """Return the full queue state (pending/running/history)."""
-    from social_queue import snapshot
-    return snapshot(PROJECT_ROOT)
-
-
-@app.delete("/api/social/queue/{queue_id}")
-async def social_queue_cancel(queue_id: str):
-    """Cancel a queued entry (running entries can't be cancelled mid-call)."""
-    from social_queue import cancel
-    ok = cancel(PROJECT_ROOT, queue_id)
-    if not ok:
-        raise HTTPException(409, "Can't cancel — item is currently running")
-    return {"cancelled": True}
-
-
-@app.delete("/api/social/queue")
-async def social_queue_clear_history():
-    """Clear finished / failed / cancelled rows from the queue view."""
-    from social_queue import clear_history
-    removed = clear_history(PROJECT_ROOT)
-    return {"removed": removed}
+# Social-copy batch queue endpoints moved to routes/social.py.
+# The background worker stays here because it calls _do_generate_social_copy.
 
 
 # The background worker — one iteration per queued item. Spawned by

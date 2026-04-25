@@ -1099,6 +1099,25 @@ export const api = {
   brandPicUrl: (id: string, bust?: string) =>
     `${API_BASE}/api/brands/${encodeURIComponent(id)}/profile-pic${bust ? `?v=${encodeURIComponent(bust)}` : ""}`,
 
+  // ── Workspace export / import ────────────────────────────────
+  workspaceExportUrl: () => `${API_BASE}/api/workspace/export`,
+  workspaceImport: (file: File, overwrite = true) =>
+    new Promise<{ restored: string[]; skipped: string[]; backup_dir: string }>((resolve, reject) => {
+      const form = new FormData();
+      form.append("file", file);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/api/workspace/import?overwrite=${overwrite ? "true" : "false"}`);
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+          else reject(new Error(data.detail || data.error || xhr.statusText));
+        } catch (e) { reject(e); }
+      };
+      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.send(form);
+    }),
+
   // ── Activity strip (cross-worker snapshot for the status bar) ─
   getActivity: () =>
     request<{

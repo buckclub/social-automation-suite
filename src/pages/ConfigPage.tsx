@@ -26,6 +26,7 @@ import { YouTubePublishingPanel } from "@/components/YouTubePublishingPanel";
 import { TitleCardSettings } from "@/components/TitleCardSettings";
 import { ELEVENLABS_LIBRARY } from "@/components/ElevenLabsLibraryPresets";
 import { ElevenLabsVoiceCloneCard } from "@/components/ElevenLabsVoiceCloneCard";
+import { WorkspaceBackupPanel } from "@/components/WorkspaceBackupPanel";
 
 function TestAiButton({ provider, model, apiKey, ollamaUrl }: { provider: string; model: string; apiKey: string; ollamaUrl?: string }) {
   const [testing, setTesting] = useState(false);
@@ -2383,6 +2384,16 @@ export default function ConfigPage() {
               <Label className="text-xs text-muted-foreground">Used Posts File</Label>
               <Input value={usedPostsFile} onChange={(e) => setUsedPostsFile(e.target.value)} className="h-8 text-xs bg-secondary border-border font-mono" />
             </div>
+          </Section>
+
+          <Section title="Workspace backup" icon={<Save className="h-4 w-4 text-primary" />}>
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              One-click backup of every config, brand profile, queue state, music
+              metadata, and per-post social copy. Audio / video / backgrounds are
+              excluded — they're large and regenerable.
+              Restore on a new machine: install the suite, click Import, restart the server.
+            </p>
+            <WorkspaceBackupPanel />
           </Section>
 
           <Section title="Discord Notifications" icon={<Bell className="h-4 w-4 text-accent" />}>
