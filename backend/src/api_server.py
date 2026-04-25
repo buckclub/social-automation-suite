@@ -5822,6 +5822,137 @@ def _resolve_background_music(post_id: str, config: dict) -> tuple[Optional[str]
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Dialogue Mode — AI generates a back-and-forth conversation between two
+# characters, and the existing Custom Script pipeline handles the render.
+# Speaker labels stay in the captions so viewers can follow who's talking.
+#
+# Future: per-segment voice swap + dual avatar overlay extension to
+# Avatar Reels. This MVP ships the script primitive and the render hook.
+# ──────────────────────────────────────────────────────────────────────
+
+@app.post("/api/dialogue/generate")
+async def dialogue_generate(req: dict):
+    """
+    Generate a two-character dialogue script. Body:
+      {
+        topic:               "what they argue / discuss",
+        primary_persona:     "who Speaker A is — short personality blurb",
+        guest_persona:       "who Speaker B is",
+        primary_label:       "default 'A'",  guest_label: "default 'B'",
+        exchanges:           "default 6 — number of A↔B turns",
+        tone:                "dramatic | funny | heartfelt | shocking | cringe",
+        content_filter:      "safe | normal | edgy",
+      }
+    Returns: { title, segments: [{speaker, label, text}], plain_script }
+    """
+    cfg = _load_config()
+    g = cfg.get("gemini") or {}
+    if not g.get("enabled"):
+        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
+
+    topic = (req.get("topic") or "").strip()
+    if not topic:
+        raise HTTPException(400, "topic is required")
+    primary_persona = (req.get("primary_persona") or "").strip() or "narrator"
+    guest_persona   = (req.get("guest_persona") or "").strip() or "the other person"
+    primary_label   = (req.get("primary_label") or "A").strip()[:24] or "A"
+    guest_label     = (req.get("guest_label") or "B").strip()[:24] or "B"
+    if primary_label.lower() == guest_label.lower():
+        guest_label = guest_label + "2"
+    try:
+        exchanges = max(2, min(20, int(req.get("exchanges") or 6)))
+    except (TypeError, ValueError):
+        exchanges = 6
+    tone = (req.get("tone") or "dramatic").lower()
+    cf = (req.get("content_filter") or "normal").lower()
+
+    provider = g.get("provider", "gemini")
+    api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    system = (
+        "You are writing a two-character viral short-form dialogue. Each "
+        "line MUST be a single-sentence punchy turn (≤25 words). Tone "
+        f"is {tone}. Content filter is {cf}. NO stage directions, no "
+        "[asterisks], no parentheses for actions — just spoken lines. "
+        "Return ONLY minified JSON, no markdown."
+    )
+    prompt = (
+        f"Topic / scenario: {topic}\n\n"
+        f"Speaker {primary_label} (\"primary\"): {primary_persona}\n"
+        f"Speaker {guest_label} (\"guest\"): {guest_persona}\n\n"
+        f"Write {exchanges} alternating exchanges (each = 1 line by {primary_label}, "
+        f"then 1 line by {guest_label}). Build a clear arc — setup, escalation, payoff. "
+        f"End on a line that begs for a comment or share.\n\n"
+        "Return JSON of this exact shape:\n"
+        "{\n"
+        '  "title":  "<≤55 char hook for the video title — about the conversation>",\n'
+        '  "segments": [\n'
+        '    {"speaker": "primary", "text": "<line>"},\n'
+        '    {"speaker": "guest",   "text": "<line>"},\n'
+        "    ...\n"
+        "  ]\n"
+        "}"
+    )
+    from gemini_hooks import _call_ai
+    raw = await asyncio.to_thread(_call_ai, provider, api_key, prompt, system, model, ollama_url)
+    if not raw:
+        raise HTTPException(502, f"AI provider '{provider}' returned empty response")
+    s = raw.strip()
+    if s.startswith("```"):
+        s = s.split("```")[1]
+        if s.startswith("json"): s = s[4:]
+        s = s.strip("`").strip()
+    try:
+        parsed = json.loads(s)
+    except Exception:
+        a = s.find("{"); b = s.rfind("}")
+        if a < 0 or b <= a:
+            raise HTTPException(502, f"AI returned non-JSON: {s[:200]}")
+        try: parsed = json.loads(s[a:b + 1])
+        except Exception:
+            raise HTTPException(502, f"AI returned non-JSON: {s[:200]}")
+
+    out_segments = []
+    for seg in (parsed.get("segments") or []):
+        sp = (seg.get("speaker") or "").strip().lower()
+        if sp not in ("primary", "guest"):
+            continue
+        txt = (seg.get("text") or "").strip()
+        if not txt:
+            continue
+        out_segments.append({
+            "speaker": sp,
+            "label":   primary_label if sp == "primary" else guest_label,
+            "text":    txt[:600],
+        })
+    if not out_segments:
+        raise HTTPException(502, "AI returned no usable lines")
+
+    # Build a plain-text script the existing Custom Script pipeline can
+    # render. Each line begins with the speaker's label so captions
+    # naturally show who's talking. Blank line between turns gives the
+    # caption chunker a natural pause boundary.
+    plain_lines = []
+    for seg in out_segments:
+        plain_lines.append(f"{seg['label']}: {seg['text']}")
+    plain_script = "\n\n".join(plain_lines)
+
+    return {
+        "title":         (parsed.get("title") or topic)[:120],
+        "segments":      out_segments,
+        "plain_script":  plain_script,
+        "primary_label": primary_label,
+        "guest_label":   guest_label,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Comment Replier — fetch top-level comments on the user's uploads, AI
 # drafts replies in the active brand voice, user approves and posts.
 # Read uses the YT API key (free); posting uses OAuth + the

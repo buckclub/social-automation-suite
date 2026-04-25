@@ -938,6 +938,25 @@ export const api = {
     ),
   carouselRenderUrl: () => `${API_BASE}/api/carousels/render`,
 
+  // ── Dialogue mode (two-character scripts) ────────────────────
+  generateDialogue: (params: {
+    topic: string;
+    primary_persona?: string;
+    guest_persona?: string;
+    primary_label?: string;
+    guest_label?: string;
+    exchanges?: number;
+    tone?: "dramatic" | "funny" | "heartfelt" | "shocking" | "cringe";
+    content_filter?: "safe" | "normal" | "edgy";
+  }) =>
+    request<{
+      title: string;
+      segments: { speaker: "primary" | "guest"; label: string; text: string }[];
+      plain_script: string;
+      primary_label: string;
+      guest_label: string;
+    }>("/api/dialogue/generate", { method: "POST", body: JSON.stringify(params) }),
+
   // ── Comment Replier ──────────────────────────────────────────
   listCommentDrafts: () =>
     request<{ drafts: CommentDraft[] }>("/api/comments/drafts"),

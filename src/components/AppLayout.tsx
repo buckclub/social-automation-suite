@@ -3,7 +3,7 @@ import {
   Video, LayoutDashboard, Newspaper, Settings2, Film, Command,
   Images, Scissors, PenLine, Plus, ChevronDown,
   FileText, Layers, Hash, Globe, Quote, Music, TrendingUp, Compass, User as UserIcon,
-  Calendar as CalendarIcon, MessageCircle,
+  Calendar as CalendarIcon, MessageCircle, Users as UsersIcon,
 } from "lucide-react";
 import { useHealth } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
@@ -41,6 +41,7 @@ const createGroupItems = [
   { to: "/text-posts",    label: "Text Posts",     icon: PenLine,   desc: "Tweets / comments / community posts" },
   { to: "/custom-script", label: "Custom Script",  icon: FileText,  desc: "Paste your own narration → render" },
   { to: "/avatar-reels",  label: "Avatar Reels",   icon: UserIcon,  desc: "PNG-tuber overlay with talk + emotion swaps" },
+  { to: "/dialogue",      label: "Dialogue Mode",  icon: UsersIcon, desc: "Two-character back-and-forth scripts" },
   { to: "/carousels",     label: "Carousel Posts", icon: Layers,    desc: "Multi-slide IG / TikTok carousels" },
   { to: "/quote-cards",   label: "Quote Cards",    icon: Quote,     desc: "Single-image quote post (extract from video)" },
   { to: "/news",          label: "News Roundup",   icon: Globe,     desc: "RSS feeds → AI riff prompts" },

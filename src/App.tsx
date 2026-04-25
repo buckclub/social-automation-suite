@@ -31,6 +31,7 @@ import NicheFinderPage from "./pages/NicheFinderPage";
 import AvatarReelsPage from "./pages/AvatarReelsPage";
 import CalendarPage from "./pages/CalendarPage";
 import CommentReplierPage from "./pages/CommentReplierPage";
+import DialoguePage from "./pages/DialoguePage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -62,6 +63,7 @@ const App = () => (
             <Route path="/avatar-reels" element={<AvatarReelsPage />} />
             <Route path="/calendar" element={<CalendarPage />} />
             <Route path="/comments" element={<CommentReplierPage />} />
+            <Route path="/dialogue" element={<DialoguePage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
