@@ -48,10 +48,13 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import threading
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
+
+_log = logging.getLogger("json_ledger")
 
 
 # Module-level registries — locks are per absolute path so two callers
@@ -90,7 +93,8 @@ class JsonLedger:
         indent:  json.dump indent (default 2 — keeps the files
                  hand-readable and diff-friendly).
     """
-    __slots__ = ("path", "default", "_lock", "indent")
+    __slots__ = ("path", "default", "_lock", "indent",
+                 "_cached", "_cached_mtime")
 
     def __init__(
         self,
@@ -104,6 +108,14 @@ class JsonLedger:
         self.default = default if default is not None else {}
         self._lock = _lock_for(path) if lock else None
         self.indent = indent
+        # In-memory parsed-dict cache. Hot paths (queue snapshots,
+        # ai_score_cache.get on every score lookup) call .load() many
+        # times per second and were each re-parsing the file from disk.
+        # Cache is invalidated by save() and by a stat()-mtime check
+        # on every load — so an external editor (or another process)
+        # touching the file is detected and re-read.
+        self._cached: Any = None
+        self._cached_mtime: float = -1.0
 
     # ── basic ops ──────────────────────────────────────────────────────
 
@@ -111,27 +123,62 @@ class JsonLedger:
         """Return parsed JSON, or a fresh deep copy of `default` on
         FileNotFoundError / parse error / any other read failure. Never
         raises — callers that need to distinguish 'missing' vs 'corrupt'
-        should check `os.path.exists` themselves first."""
+        should check `os.path.exists` themselves first.
+
+        Uses an in-memory cache invalidated by mtime + save(). The
+        cache is held under the same per-path lock that mutate() uses
+        — callers using load() outside a mutate()/read() block are
+        responsible for not racing it. Both read() and mutate() do
+        hold the lock.
+        """
         try:
+            try:
+                mtime = os.path.getmtime(self.path)
+            except OSError:
+                mtime = -1.0
+            if self._cached is not None and mtime == self._cached_mtime:
+                # Hot path — file hasn't changed since our last parse.
+                # Return a deep copy to preserve the load()/save()
+                # contract that callers can mutate the result without
+                # affecting our cache. (Without this, mutate() yields
+                # the shared cached dict and the next save persists
+                # whatever the caller mutated mid-flight.)
+                return copy.deepcopy(self._cached)
             with open(self.path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                parsed = json.load(f)
+            self._cached = parsed
+            self._cached_mtime = mtime
+            return copy.deepcopy(parsed)
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return copy.deepcopy(self.default)
 
     def save(self, data: Any) -> None:
         """Atomic write: tmp → os.replace. Creates parent dir if
-        missing. Failures are swallowed (matching the pre-refactor
-        behavior where transient disk errors didn't crash the queue);
-        the next successful save catches up."""
+        missing. Best-effort: transient disk errors are logged but
+        don't crash the queue (matches the pre-refactor behavior).
+        Updates the in-memory cache on success so the next load() is
+        a true hit."""
         try:
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=self.indent, ensure_ascii=False)
             os.replace(tmp, self.path)
-        except OSError:
-            # Intentional: best-effort writes match the old _save() bodies.
-            pass
+            # Refresh cache so the next load is a hit. Store our own
+            # deep copy so caller mutations after save() don't bleed
+            # into the cache.
+            self._cached = copy.deepcopy(data)
+            try:
+                self._cached_mtime = os.path.getmtime(self.path)
+            except OSError:
+                self._cached_mtime = -1.0
+        except OSError as e:
+            # Surface to logs — silent disk-full was previously a
+            # silent data loss.
+            try:
+                _log.warning("JsonLedger save failed for %s: %s", self.path, e)
+            except Exception:
+                pass
 
     # ── locked mutate ──────────────────────────────────────────────────
 

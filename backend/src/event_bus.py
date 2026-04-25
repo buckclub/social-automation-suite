@@ -109,15 +109,23 @@ class EventBus:
             return
 
         loop = self._loop
-        if loop is None:
-            # Pre-startup publish (rare). Drop it — no subscribers
-            # could exist anyway.
+        if loop is None or loop.is_closed():
+            # Pre-startup or post-shutdown publish. Drop silently —
+            # no subscribers could meaningfully receive it. Without
+            # the is_closed() guard, call_soon_threadsafe raises
+            # RuntimeError during shutdown races (worker thread
+            # publishes mid-cancel).
             return
 
         for s in subs:
             # Hopping back onto the loop thread is required because
             # asyncio.Queue is not thread-safe for put().
-            loop.call_soon_threadsafe(self._deliver, s, evt)
+            try:
+                loop.call_soon_threadsafe(self._deliver, s, evt)
+            except RuntimeError:
+                # Loop closed between is_closed() check and the call.
+                # Drop the rest of the fan-out — nothing to deliver to.
+                return
 
     @staticmethod
     def _deliver(sub: _Subscriber, evt: dict) -> None:

@@ -7,6 +7,7 @@ zero otherwise (graceful no-op without benchmarks).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from fastapi import APIRouter, HTTPException
@@ -110,7 +111,12 @@ async def analyze_hashtags(req: dict):
     )
 
     from gemini_hooks import _call_ai  # type: ignore
-    raw = _call_ai(provider, api_key, prompt, system, model, ollama_url)
+    # Synchronous network call; bounce to a worker thread so we don't
+    # block the asyncio event loop for the LLM round-trip (5-30 s
+    # depending on provider).
+    raw = await asyncio.to_thread(
+        _call_ai, provider, api_key, prompt, system, model, ollama_url,
+    )
     if not raw:
         raise HTTPException(502, f"AI provider '{provider}' returned empty response")
     cleaned = raw.strip()

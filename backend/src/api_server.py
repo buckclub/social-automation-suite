@@ -152,15 +152,19 @@ stats = {
     "videos_today": 0, "posts_scanned": 0,
     "total_render_time_s": 0, "total_runs": 0, "successful_runs": 0,
 }
-run_logs: List[str] = []
+# Bounded ring of recent log lines. Was a plain list with `pop(0)` —
+# fine in CPython 3.12 under the GIL, but `len + pop + append` from
+# many worker threads can momentarily exceed the cap and is undefined
+# under 3.13t free-threading. deque(maxlen=…) does the bounded
+# behavior atomically per-op.
+from collections import deque as _deque
+run_logs: "_deque[str]" = _deque(maxlen=500)
 
 
 def _log(msg: str):
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
     entry = f"[{ts}] {msg}"
-    run_logs.append(entry)
-    if len(run_logs) > 500:
-        run_logs.pop(0)
+    run_logs.append(entry)  # deque drops the oldest automatically at maxlen
     print(entry)
 
 
@@ -171,8 +175,9 @@ def _ensure_config():
         shutil.copy2(CONFIG_EXAMPLE_PATH, CONFIG_PATH)
         _log("Created config.json from config.json.example")
     else:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_CONFIG, f, indent=2)
+        # Use the same atomic-write path as _save_config so a crashed
+        # / killed first-launch can't leave a half-written config.
+        _atomic_write_json(CONFIG_PATH, DEFAULT_CONFIG)
         _log("Created config.json with default values")
 
 
@@ -182,9 +187,22 @@ def _load_config() -> dict:
         return json.load(f)
 
 
+def _atomic_write_json(path: str, data: dict) -> None:
+    """tmpfile + os.replace, so a reader never sees a half-written file.
+    The previous _save_config did a direct overwrite — if a render
+    worker happened to read mid-write, it could see truncated JSON
+    and crash. Mirrors JsonLedger.save() but lives here because
+    _load_config / _save_config can't import json_ledger at module
+    load (json_ledger has no dependency on api_server, and we want
+    to keep it that way)."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
 def _save_config(config: dict):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
+    _atomic_write_json(CONFIG_PATH, config)
 
 
 def _get_video_file_info(post_id: str) -> dict:
@@ -219,19 +237,44 @@ def _get_video_file_info(post_id: str) -> dict:
     return {"paths": paths, "total_size": total_size}
 
 
-def _persist_videos_db() -> None:
-    """
-    Write the full in-memory videos_db to projects.json.
-
-    We dump the whole list verbatim so every flavor of entry (published,
-    audio_only, failed) survives a server restart — not just successful
-    renders. Called after any mutation to videos_db.
-    """
+def _persist_videos_db_now() -> None:
+    """The actual write, called by the debouncer. Always emits a fresh
+    list copy because videos_db can mutate during the JSON encode."""
     try:
         from projects_db import save_registry
         save_registry(PROJECT_ROOT, list(videos_db))
     except Exception as e:
         _log(f"projects.json save failed: {e}")
+
+
+# Debouncer state. Many call sites call _persist_videos_db() in tight
+# loops (e.g. _load_videos_from_disk processes 200+ rows then bulk-
+# rewrites; the bulk-delete path mutates per-row). Flushing on every
+# call rewrites the whole projects.json each time. Coalesce: schedule
+# a single write 500ms after the last mutation. Final exit-time flush
+# happens via lifespan shutdown (or just on process kill — projects.json
+# is recoverable from per-post sidecars on next startup).
+import threading as _threading
+_videos_db_flush_lock = _threading.Lock()
+_videos_db_flush_timer: Optional["_threading.Timer"] = None
+
+
+def _persist_videos_db() -> None:
+    """
+    Schedule a write of videos_db to projects.json. Coalesces rapid
+    successive calls into one I/O operation 500ms after the last mutation.
+
+    Was: synchronous full-rewrite on every call. With 200+ video rows
+    and a bulk-delete sequence calling this once per row, that meant
+    200 full-file rewrites for a single user action.
+    """
+    global _videos_db_flush_timer
+    with _videos_db_flush_lock:
+        if _videos_db_flush_timer is not None:
+            _videos_db_flush_timer.cancel()
+        _videos_db_flush_timer = _threading.Timer(0.5, _persist_videos_db_now)
+        _videos_db_flush_timer.daemon = True
+        _videos_db_flush_timer.start()
 
 
 def _load_videos_from_disk():
@@ -751,6 +794,17 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Flush any pending debounced videos_db write before exiting so
+        # we don't lose the last batch of mutations on a clean shutdown.
+        try:
+            global _videos_db_flush_timer
+            with _videos_db_flush_lock:
+                if _videos_db_flush_timer is not None:
+                    _videos_db_flush_timer.cancel()
+                    _videos_db_flush_timer = None
+            _persist_videos_db_now()
+        except Exception as e:
+            _log(f"final videos_db flush failed: {e}")
         for t in (task, social_task, calendar_task):
             t.cancel()
             try:
@@ -2471,6 +2525,7 @@ async def generate_ai_variants(req: dict = {}):
 
     attempts: list[dict] = []
     best_so_far: Optional[dict] = None
+    consecutive_scoring_failures = 0  # short-circuit if scorer is dead
 
     for attempt_idx in range(max_attempts):
         # ── Generate this attempt's batch in parallel ────────────────
@@ -2493,16 +2548,27 @@ async def generate_ai_variants(req: dict = {}):
             raise HTTPException(502, "All variants failed to generate. Check AI provider logs.")
 
         # ── Score this batch in one LLM call ─────────────────────────
+        scoring_ok = False
         try:
             scored = await _score_variants_batch(batch, content_style, config)
             for v, s in zip(batch, scored):
                 v["score"] = s
+            # Treat as success if we got a score dict for at least one
+            # variant — partial scoring is still useful, but two
+            # consecutive 'all None' batches likely means the scorer
+            # itself is broken and retrying won't help.
+            scoring_ok = any((v.get("score") or {}).get("score") is not None for v in batch)
         except Exception as e:
             # Scoring is a best-effort enrichment — if it fails, ship
             # variants ungated so the user isn't blocked.
             _log(f"[variants] scoring failed: {e}")
             for v in batch:
                 v["score"] = None
+
+        if scoring_ok:
+            consecutive_scoring_failures = 0
+        else:
+            consecutive_scoring_failures += 1
 
         # Track best-of-best across attempts so we can return SOMETHING
         # even when the gate is never cleared.
@@ -2521,6 +2587,16 @@ async def generate_ai_variants(req: dict = {}):
 
         # Did anything clear the gate? If so, return immediately.
         if min_score and any(((v.get("score") or {}).get("score") or 0) >= min_score for v in batch):
+            break
+
+        # Short-circuit: if the scorer has failed twice in a row, the
+        # gate will never be evaluable. Burning the rest of the
+        # attempts (each = `count` LLM generations) accomplishes
+        # nothing and just runs up the user's API bill. Break and
+        # return ungated variants — frontend handles the
+        # "couldn't hit target" toast already.
+        if min_score and consecutive_scoring_failures >= 2:
+            _log(f"[variants] scoring failed {consecutive_scoring_failures}× in a row — aborting retry loop.")
             break
 
     # The "current" variants the UI displays are the LAST attempt's
