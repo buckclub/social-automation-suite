@@ -184,6 +184,25 @@ export interface BrandProfile extends BrandSummary {
   config_overrides: Record<string, any>;
 }
 
+// Comment replier drafts.
+export interface CommentDraft {
+  id: string;
+  comment_id: string;
+  thread_id: string;
+  yt_video_id: string;
+  post_id: string;
+  brand_id: string;
+  comment_text: string;
+  comment_author: string;
+  comment_url: string;
+  draft_reply: string;
+  edited_reply: string | null;
+  status: "draft" | "posted" | "rejected" | "failed";
+  created_at: string;
+  posted_at: string | null;
+  error: string | null;
+}
+
 // Content calendar — scheduled Generate-with-AI runs.
 export interface CalendarSlot {
   id: string;
@@ -918,6 +937,24 @@ export const api = {
       { method: "POST", body: JSON.stringify(params) },
     ),
   carouselRenderUrl: () => `${API_BASE}/api/carousels/render`,
+
+  // ── Comment Replier ──────────────────────────────────────────
+  listCommentDrafts: () =>
+    request<{ drafts: CommentDraft[] }>("/api/comments/drafts"),
+  syncCommentDrafts: (params: { max_videos?: number; max_per_video?: number }) =>
+    request<{ added: number; videos_scanned?: number; message?: string }>(
+      "/api/comments/sync", { method: "POST", body: JSON.stringify(params || {}) },
+    ),
+  updateCommentDraft: (id: string, body: { edited_reply?: string | null }) =>
+    request<{ draft: CommentDraft }>(`/api/comments/drafts/${encodeURIComponent(id)}`, {
+      method: "PUT", body: JSON.stringify(body),
+    }),
+  rejectCommentDraft: (id: string) =>
+    request<{ draft: CommentDraft }>(`/api/comments/drafts/${encodeURIComponent(id)}/reject`, { method: "POST" }),
+  postCommentDraft: (id: string) =>
+    request<{ posted: boolean }>(`/api/comments/drafts/${encodeURIComponent(id)}/post`, { method: "POST" }),
+  deleteCommentDraft: (id: string) =>
+    request<{ deleted: boolean }>(`/api/comments/drafts/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   // ── Content Calendar ─────────────────────────────────────────
   listCalendarSlots: () =>

@@ -5822,6 +5822,220 @@ def _resolve_background_music(post_id: str, config: dict) -> tuple[Optional[str]
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Comment Replier — fetch top-level comments on the user's uploads, AI
+# drafts replies in the active brand voice, user approves and posts.
+# Read uses the YT API key (free); posting uses OAuth + the
+# youtube.force-ssl scope (50 quota units per reply).
+# ──────────────────────────────────────────────────────────────────────
+
+@app.get("/api/comments/drafts")
+async def comments_list_drafts():
+    from comment_replier import list_drafts
+    return {"drafts": list_drafts(PROJECT_ROOT)}
+
+
+@app.post("/api/comments/sync")
+async def comments_sync(req: dict = {}):
+    """
+    Pulls latest comments from up to N most-recently uploaded videos,
+    runs the LLM drafter on each, and stores fresh drafts. Skips any
+    comment_id already in the ledger so re-syncs don't duplicate.
+
+    Body: { max_videos?: 5, max_per_video?: 15 }
+    """
+    cfg = _load_config()
+    yt_cfg = cfg.get("youtube", {}) or {}
+    api_key = yt_cfg.get("api_key", "")
+    if not api_key:
+        raise HTTPException(400, "YouTube API key not configured (Config → Publishing).")
+    g = cfg.get("gemini") or {}
+    if not g.get("enabled"):
+        raise HTTPException(400, "AI is not enabled (Config → AI Hooks).")
+
+    try:
+        max_videos = max(1, min(20, int(req.get("max_videos") or 5)))
+        max_per_video = max(1, min(30, int(req.get("max_per_video") or 15)))
+    except Exception:
+        max_videos, max_per_video = 5, 15
+
+    # Walk the registry for uploaded videos, newest-first.
+    uploads = []
+    for v in videos_db:
+        for up in (v.get("uploads") or []):
+            if up.get("platform") != "youtube" or not up.get("video_id"):
+                continue
+            uploads.append({
+                "yt_video_id": up["video_id"],
+                "post_id":     v.get("id") or "",
+                "title":       v.get("title") or up.get("title") or "",
+                "uploaded_at": up.get("uploaded_at") or "",
+                "brand_id":    v.get("brand_id") or "",
+                "brand_name":  v.get("brand_name") or "",
+            })
+    uploads.sort(key=lambda x: x.get("uploaded_at", ""), reverse=True)
+    uploads = uploads[:max_videos]
+    if not uploads:
+        return {"added": 0, "message": "No tracked YouTube uploads yet."}
+
+    provider = g.get("provider", "gemini")
+    ai_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+    bm = (cfg.get("video") or {}).get("branding") or ""
+
+    from comment_replier import fetch_top_level_comments, draft_reply, add_drafts
+    new_rows: list[dict] = []
+    for u in uploads:
+        comments = await asyncio.to_thread(
+            fetch_top_level_comments, api_key, u["yt_video_id"],
+            max_results=max_per_video,
+        )
+        for c in comments:
+            txt = c.get("text") or ""
+            if not txt.strip():
+                continue
+            draft = await asyncio.to_thread(
+                draft_reply,
+                comment_text=txt,
+                video_title=u["title"],
+                brand_name=u["brand_name"],
+                brand_persona_hint=bm,
+                provider=provider, api_key=ai_key,
+                model=model, ollama_url=ollama_url,
+            )
+            if not draft:
+                # SKIP path or LLM refusal — don't bother the user
+                continue
+            new_rows.append({
+                "comment_id":     c.get("comment_id") or "",
+                "thread_id":      c.get("thread_id") or "",
+                "yt_video_id":    u["yt_video_id"],
+                "post_id":        u["post_id"],
+                "brand_id":       u["brand_id"],
+                "comment_text":   txt,
+                "comment_author": c.get("author") or "",
+                "comment_url":    f"https://youtube.com/watch?v={u['yt_video_id']}&lc={c.get('comment_id','')}",
+                "draft_reply":    draft,
+            })
+    added = await asyncio.to_thread(add_drafts, PROJECT_ROOT, new_rows)
+    _log(f"Comment replier: synced {len(uploads)} video(s), added {added} new draft(s)")
+    return {"added": added, "videos_scanned": len(uploads)}
+
+
+@app.put("/api/comments/drafts/{draft_id}")
+async def comments_update_draft(draft_id: str, req: dict):
+    from comment_replier import update_draft
+    r = update_draft(PROJECT_ROOT, draft_id, {
+        "edited_reply": req.get("edited_reply"),
+    })
+    if not r:
+        raise HTTPException(404, "Draft not found")
+    return {"draft": r}
+
+
+@app.delete("/api/comments/drafts/{draft_id}")
+async def comments_delete_draft(draft_id: str):
+    from comment_replier import delete_draft, update_draft
+    # If the user wants to keep history but skip the comment, mark rejected
+    # via PUT; outright delete is ok too.
+    if not delete_draft(PROJECT_ROOT, draft_id):
+        raise HTTPException(404, "Draft not found")
+    return {"deleted": True}
+
+
+@app.post("/api/comments/drafts/{draft_id}/reject")
+async def comments_reject_draft(draft_id: str):
+    from comment_replier import update_draft
+    r = update_draft(PROJECT_ROOT, draft_id, {"status": "rejected"})
+    if not r:
+        raise HTTPException(404, "Draft not found")
+    return {"draft": r}
+
+
+@app.post("/api/comments/drafts/{draft_id}/post")
+async def comments_post_draft(draft_id: str):
+    """
+    Actually post the (possibly edited) reply to YouTube via OAuth.
+    Requires the youtube.force-ssl scope — users who connected before
+    that scope was added must Disconnect + Connect again on the
+    Publishing tab.
+    """
+    from comment_replier import get_draft, update_draft
+    d = get_draft(PROJECT_ROOT, draft_id)
+    if not d:
+        raise HTTPException(404, "Draft not found")
+    text = (d.get("edited_reply") or d.get("draft_reply") or "").strip()
+    if not text:
+        raise HTTPException(400, "Reply text is empty.")
+
+    yt = _yt_cfg()
+    if not (yt.get("client_id") and yt.get("client_secret") and yt.get("refresh_token")):
+        raise HTTPException(400, "YouTube OAuth not connected. Connect it on the Publishing tab.")
+
+    # Refresh the access token (same trick the publisher uses).
+    import requests as _requests
+    try:
+        tok_r = _requests.post(
+            YT_OAUTH_TOKEN_URL,
+            data={
+                "client_id":     yt["client_id"],
+                "client_secret": yt["client_secret"],
+                "refresh_token": yt["refresh_token"],
+                "grant_type":    "refresh_token",
+            },
+            timeout=15,
+        )
+    except Exception as e:
+        update_draft(PROJECT_ROOT, draft_id, {"status": "failed", "error": f"token refresh failed: {e}"})
+        raise HTTPException(502, f"OAuth token refresh failed: {e}")
+    if tok_r.status_code != 200:
+        msg = f"OAuth refresh {tok_r.status_code}: {tok_r.text[:160]}"
+        update_draft(PROJECT_ROOT, draft_id, {"status": "failed", "error": msg})
+        raise HTTPException(401, msg + " — try Disconnect + Connect on the Publishing tab.")
+    access_token = tok_r.json().get("access_token")
+
+    try:
+        post_r = _requests.post(
+            "https://www.googleapis.com/youtube/v3/comments",
+            params={"part": "snippet"},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type":  "application/json",
+            },
+            json={
+                "snippet": {
+                    "parentId":     d.get("thread_id"),  # YT threads expects the thread id, not the comment id
+                    "textOriginal": text,
+                }
+            },
+            timeout=20,
+        )
+    except Exception as e:
+        update_draft(PROJECT_ROOT, draft_id, {"status": "failed", "error": str(e)})
+        raise HTTPException(502, f"YouTube comment-insert failed: {e}")
+    if post_r.status_code >= 300:
+        # 403 here usually means the OAuth scope is missing.
+        msg = f"YT comments.insert {post_r.status_code}: {post_r.text[:280]}"
+        update_draft(PROJECT_ROOT, draft_id, {"status": "failed", "error": msg})
+        if post_r.status_code == 403:
+            raise HTTPException(403, msg + " — likely missing youtube.force-ssl scope. Disconnect + Connect again on the Publishing tab.")
+        raise HTTPException(post_r.status_code, msg)
+
+    update_draft(PROJECT_ROOT, draft_id, {"status": "posted", "posted_at": datetime.now(timezone.utc).isoformat()})
+    # Quota ledger so the user sees the cost.
+    try:
+        from youtube_quota import record
+        record(PROJECT_ROOT, "comments.insert", 50)
+    except Exception:
+        pass
+    return {"posted": True}
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Performance Analytics — pull YouTube view/like/comment stats for every
 # upload tracked in the project registry, aggregate, and serve to the
 # dashboard. Uses the same YouTube Data API key that benchmarks/social
@@ -6712,7 +6926,14 @@ async def _social_queue_worker():
 # private + publishAt=<timestamp>. YouTube itself flips them public at the
 # scheduled time, so our server can be offline at release.
 
-YT_OAUTH_SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
+YT_OAUTH_SCOPES = (
+    "https://www.googleapis.com/auth/youtube.upload "
+    "https://www.googleapis.com/auth/youtube.readonly "
+    # `youtube.force-ssl` is required for posting comment replies via
+    # comments.insert. Existing connected users will need to disconnect
+    # + reconnect to get this added scope.
+    "https://www.googleapis.com/auth/youtube.force-ssl"
+)
 YT_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 YT_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
