@@ -7946,22 +7946,89 @@ async def get_narrator_gender(post_id: str):
     return {"detected": _detect(title, body), "title": title[:200]}
 
 
+# Sensible per-provider, per-gender defaults so the narrator-gender
+# selector works out-of-the-box even without a user-configured
+# voice_preset entry. Without these, picking "male" silently fell
+# back to `tts.main_voice` (typically female default), making the
+# narrator-gender control feel broken.
+#
+# These IDs are stable across the providers' voice catalogs and
+# represent broadly-acceptable, neutral-accent narrator voices. Users
+# who want a different default still override via Config →
+# tts.voice_presets.<provider>.<gender>; this map is only consulted
+# when that override is missing.
+_DEFAULT_GENDERED_VOICES: dict[str, dict[str, str]] = {
+    "elevenlabs": {
+        "male":   "pNInz6obpgDQGcFmaJgB",  # Adam — well-known stable narrator
+        "female": "EXAVITQu4vr4xnSDxMaL",  # Bella — softer female narrator
+    },
+    "streamlabs_polly": {
+        "male":   "Matthew",
+        "female": "Joanna",
+    },
+    # Local engines (vibevoice, qwen3tts) use installed model paths
+    # rather than named voices — defaults aren't portable across
+    # installs, so we leave them empty and fall through to main_voice.
+}
+
+
 def _resolve_voice(provider: str, config: dict, narrator_gender: Optional[str],
                    voice_override: Optional[str]) -> str:
     """
     Resolve the main narrator voice to use for this run.
-    Priority: voice_override > gendered preset > tts.main_voice.
+
+    Priority (first match wins):
+      1. voice_override            — explicit per-run UI selection
+      2. config voice_presets[…]   — user-configured per-gender preset
+      3. _DEFAULT_GENDERED_VOICES  — built-in defaults so the gender
+                                     control works without setup
+      4. tts.main_voice            — channel-wide default
+      5. ""                        — engine picks its own default
+
+    Logs the resolved voice + reason via _log() so the user can
+    confirm in the run log whether their narrator-gender pick was
+    honored. Was previously silent, which is what made the
+    "always-female" bug invisible.
     """
     tts_cfg = config.get("tts", {}) or {}
+
     if voice_override:
+        _log(f"Voice resolved → '{voice_override}' (per-run override)")
         return voice_override
+
     presets = tts_cfg.get("voice_presets", {}) or {}
     provider_presets = presets.get(provider, {}) or {}
+
     if narrator_gender in ("male", "female"):
+        # Configured preset for this provider+gender wins.
         v = provider_presets.get(narrator_gender)
         if v:
+            _log(f"Voice resolved → '{v}' (config preset for {narrator_gender}/{provider})")
             return v
-    return tts_cfg.get("main_voice", "")
+        # Fall back to the built-in default for this provider+gender
+        # so an unconfigured preset doesn't silently route to the
+        # wrong-gender main_voice.
+        default_v = (_DEFAULT_GENDERED_VOICES.get(provider) or {}).get(narrator_gender)
+        if default_v:
+            _log(
+                f"Voice resolved → '{default_v}' (built-in default for "
+                f"{narrator_gender}/{provider}; configure tts.voice_presets."
+                f"{provider}.{narrator_gender} to override)"
+            )
+            return default_v
+        # No default available (typically a local-engine provider).
+        # Fall through to main_voice but log so the user sees it.
+        main = tts_cfg.get("main_voice", "")
+        _log(
+            f"Voice resolved → '{main}' (no {narrator_gender} preset OR "
+            f"default for {provider}; using tts.main_voice — narrator-"
+            f"gender selection NOT honored)"
+        )
+        return main
+
+    main = tts_cfg.get("main_voice", "")
+    _log(f"Voice resolved → '{main}' (no gender override; using tts.main_voice)")
+    return main
 
 
 @app.get("/api/fonts")
