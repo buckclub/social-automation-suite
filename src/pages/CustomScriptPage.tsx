@@ -37,7 +37,7 @@ export default function CustomScriptPage() {
 
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [videoMode, setVideoMode] = useState<"short_reel" | "reel" | "full_video">("short_reel");
+  const [videoMode, setVideoMode] = useState<"short_reel" | "reel" | "long_reel">("short_reel");
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [narratorGender, setNarratorGender] = useState<"auto" | "male" | "female">("auto");
   const [voiceOverride, setVoiceOverride] = useState<string>("__config__");
@@ -171,8 +171,8 @@ export default function CustomScriptPage() {
                 <SelectTrigger className="h-8 text-xs bg-secondary border-border"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="short_reel">Short Reel (&lt;60s)</SelectItem>
-                  <SelectItem value="reel">Reel (60-90s)</SelectItem>
-                  <SelectItem value="full_video">Full Video</SelectItem>
+                  <SelectItem value="reel">Reel (60–90s)</SelectItem>
+                  <SelectItem value="long_reel">Long Reel (90s+)</SelectItem>
                 </SelectContent>
               </Select>
             </div>

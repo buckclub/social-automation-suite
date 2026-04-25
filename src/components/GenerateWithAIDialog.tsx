@@ -50,10 +50,16 @@ const INTERACTIVE_FORMATS = [
   { id: "guess_the_answer", label: "Guess the Answer", icon: Brain },
 ];
 
+// Three vertical-only lengths. Removed the "Full Video" horizontal
+// option — this app is a short-form (TikTok / Reels / Shorts) tool,
+// horizontal long-form doesn't fit the value prop and was almost
+// never picked anyway. Length affects (a) target script word count
+// the writer aims for and (b) TTS pacing / pause behavior in the
+// pipeline.
 const VIDEO_MODES = [
-  { id: "short_reel", label: "Short Reel", icon: Scissors, desc: "< 60s vertical video" },
-  { id: "full_video", label: "Full Video", icon: Film, desc: "Full-length horizontal" },
-  { id: "reel", label: "Reel", icon: Film, desc: "60-90s vertical format" },
+  { id: "short_reel", label: "Short Reel", icon: Scissors, desc: "< 60s · the punchy default" },
+  { id: "reel",       label: "Reel",       icon: Film,     desc: "60–90s · room for a real arc" },
+  { id: "long_reel",  label: "Long Reel",  icon: Film,     desc: "90s+ · multi-beat stories" },
 ];
 
 const TONES = [
@@ -107,6 +113,7 @@ interface ScoreShape {
   score: number | null;
   hook_strength: number | null;
   payoff_strength: number | null;
+  structure?: number | null;
   coherence?: number | null;
   emotion?: string | null;
   suggested_hook?: string | null;
@@ -127,6 +134,7 @@ function ScoreBadge({ score, minScore }: { score?: ScoreShape | null; minScore: 
   const tooltipParts = [
     score.hook_strength != null ? `hook ${score.hook_strength}` : null,
     score.payoff_strength != null ? `payoff ${score.payoff_strength}` : null,
+    score.structure != null ? `structure ${score.structure}` : null,
     score.coherence != null ? `coherence ${score.coherence}` : null,
     score.emotion ? `· ${score.emotion}` : null,
     score.pitfalls && score.pitfalls.length
@@ -134,11 +142,13 @@ function ScoreBadge({ score, minScore }: { score?: ScoreShape | null; minScore: 
       : null,
     score.reason ? `\n${score.reason}` : null,
   ].filter(Boolean).join(" ");
-  // Coherence dragging the overall down is the highest-signal failure
-  // mode (plot holes are nearly always why a candidate looks great in
-  // the title but doesn't read). Flag it visually with a different
-  // color so the user can tell at a glance.
-  const coherenceTanked = score.coherence != null && score.coherence < 60;
+  // Structure or coherence below 60 is the highest-signal failure mode
+  // (plot holes / stacked half-reveals are nearly always why a
+  // candidate looks great in the title but doesn't actually read).
+  // Flag visually with amber so the user can tell at a glance.
+  const structurallyTanked =
+    (score.coherence != null && score.coherence < 60) ||
+    (score.structure != null && score.structure < 60);
   return (
     <span
       title={tooltipParts || `Virality ${v}/100`}
@@ -146,7 +156,7 @@ function ScoreBadge({ score, minScore }: { score?: ScoreShape | null; minScore: 
         "px-1.5 h-5 inline-flex items-center rounded text-[10px] font-mono font-semibold " +
         (cleared
           ? "bg-success/20 text-success border border-success/30"
-          : coherenceTanked
+          : structurallyTanked
             ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
             : v >= 80
               ? "bg-primary/20 text-primary border border-primary/30"
@@ -196,6 +206,7 @@ function GenerationProgress({
       }
     }
     list.push("Proofreading and tightening prose…");
+    list.push("Auditing structure — setup, climax, resolution…");
     list.push("Auditing the timeline for plot holes…");
     list.push("Polishing the hook and closer…");
     if (minScore > 0) {

@@ -2624,23 +2624,36 @@ async def _score_variants_batch(
         "- 40-59 : has the shape but the prose is clumsy, the events are clichéd, or there are minor plot issues.\n"
         "- below 40 : meta-labels in the body, movie-villain antics, "
         "  dialogue-only filler, plot holes, contradictions, or 'revenge' that isn't revenge.\n\n"
-        "COHERENCE AUDIT — read the script chronologically and check ALL:\n"
-        "1. Time markers are consistent (no 'last night' followed by\n"
-        "   'yesterday' referring to the same event).\n"
+        "STRUCTURE AUDIT — every short-form story is a 3-act play:\n"
+        "  setup → inciting incident → escalation → CLIMAX → resolution.\n"
+        "Score `structure` 0-100 on these checks:\n"
+        "1. Can you name in one sentence what THE climactic moment is?\n"
+        "   Stories that stack 3-4 half-reveals (a photo + a text + a\n"
+        "   story tag + an email) WITHOUT one clear punch get ≤ 40.\n"
+        "2. Are all characters introduced BEFORE the climax? If a new\n"
+        "   character (e.g. 'his fiancée') appears only in the last\n"
+        "   sentence with no earlier setup: ≤ 35.\n"
+        "3. Does the script follow setup → inciting → escalation →\n"
+        "   climax → resolution in that order? Front-loaded climax or\n"
+        "   no resolution: ≤ 50.\n\n"
+        "COHERENCE AUDIT — read the script chronologically:\n"
+        "1. Time markers consistent (no 'last night' → 'yesterday' for\n"
+        "   the same event).\n"
         "2. Characters only reference what prior events made possible\n"
-        "   (no 'the look on his face' before they've met that person).\n"
+        "   (no reactions to people they haven't met).\n"
         "3. Character actions match their just-revealed state (no\n"
-        "   freshly-caught cheater calmly cooperating in the next paragraph).\n"
-        "4. The narrator only describes what they personally witnessed\n"
-        "   (no off-screen facial expressions).\n"
-        "5. If labeled 'revenge', the action must actually harm/embarrass\n"
-        "   the target — not just deliver them their own already-sent texts.\n"
-        "6. The cause-effect chain holds. Each action is plausibly motivated\n"
-        "   by what came before.\n\n"
-        "Score the dedicated `coherence` field 0-100 on this audit. Then\n"
-        "let coherence DRAG the overall score: a script with a great hook\n"
-        "but coherence ≤ 50 should not score above 55 overall.\n\n"
+        "   freshly-caught cheater calmly cooperating).\n"
+        "4. Narrator only describes what they personally witnessed.\n"
+        "5. If labeled 'revenge', the action must actually harm or\n"
+        "   embarrass the target.\n"
+        "6. Cause-effect chain holds throughout.\n"
+        "Score `coherence` 0-100 on this audit.\n\n"
+        "BOTH structure AND coherence DRAG the overall score. The lower\n"
+        "of the two is the ceiling: a script with a 90 hook but a\n"
+        "structure score of 40 is at most a 50 overall.\n\n"
         "AUTOMATIC SCORE CAPS (apply BEFORE picking a number — strictest cap wins):\n"
+        "- No identifiable single climax (story stacks half-reveals): cap at 50.\n"
+        "- New character introduced only in the climax with no setup: cap at 40.\n"
         "- Any plot hole / timeline contradiction / impossible knowledge: cap at 50.\n"
         "- Multiple plot holes, OR the central premise itself is illogical\n"
         "  (e.g. 'revenge' that doesn't harm anyone): cap at 35.\n"
@@ -2669,10 +2682,11 @@ async def _score_variants_batch(
         "object per variant, IN THE SAME ORDER AS INPUT, each with this "
         "exact shape:\n"
         "{\n"
-        '  "score": <0-100 overall — be ruthless. Coherence drags this down.>,\n'
+        '  "score": <0-100 overall — be ruthless. Structure AND coherence drag this down.>,\n'
         '  "hook_strength": <0-100 — first sentence grab>,\n'
         '  "payoff_strength": <0-100 — does the closer deliver?>,\n'
-        '  "coherence": <0-100 — does the story make logical sense? Run the audit. 100 = airtight, 50 = one plot hole, 0 = nonsensical>,\n'
+        '  "structure": <0-100 — clean 3-act with ONE identifiable climax. Stacked half-reveals = ≤ 40>,\n'
+        '  "coherence": <0-100 — does the story make logical sense? 100 = airtight, 50 = one plot hole, 0 = nonsensical>,\n'
         f'  "emotion": "<one of: {allowed_emotions}>",\n'
         '  "suggested_hook": "<≤90 char rewrite of the opening line if you can do better, else echo the existing hook>",\n'
         '  "pitfalls": ["<≤40 char issue — list any plot holes here FIRST, then craft issues>", ...0-3],\n'
@@ -2699,26 +2713,34 @@ async def _score_variants_batch(
 
         score     = _clamp_int(r.get("score"))
         coherence = _clamp_int(r.get("coherence"))
+        structure = _clamp_int(r.get("structure"))
 
-        # Belt-and-suspenders enforcement of the coherence cap. The
-        # prompt asks the model to drag overall down when coherence is
-        # low, but models are flaky about following instructions like
-        # that — especially weaker local models. We hard-cap here so
-        # the rule is guaranteed regardless of what the model emitted.
-        # Mapping mirrors the prompt's "any plot hole → 50, multiple
-        # plot holes → 35" caps.
-        if score is not None and coherence is not None:
-            if coherence < 35:
-                score = min(score, 35)
-            elif coherence < 60:
-                score = min(score, 50)
-            elif coherence < 75:
-                score = min(score, 65)
+        # Belt-and-suspenders enforcement. The prompt asks the model to
+        # drag overall down when coherence/structure are low, but
+        # models — especially weaker local ones — are flaky about
+        # honoring "drag this score down" instructions. We hard-cap
+        # here so the rule fires regardless of what the model emitted.
+        # The lower of structure / coherence drives the ceiling, since
+        # either failure mode independently makes the script unusable.
+        if score is not None:
+            limiter = None
+            for sub in (structure, coherence):
+                if sub is None:
+                    continue
+                limiter = sub if limiter is None else min(limiter, sub)
+            if limiter is not None:
+                if limiter < 35:
+                    score = min(score, 35)
+                elif limiter < 60:
+                    score = min(score, 50)
+                elif limiter < 75:
+                    score = min(score, 65)
 
         out.append({
             "score":            score,
             "hook_strength":    _clamp_int(r.get("hook_strength")),
             "payoff_strength":  _clamp_int(r.get("payoff_strength")),
+            "structure":        structure,
             "coherence":        coherence,
             "emotion":          (str(r.get("emotion") or "")[:30]).lower() or None,
             "suggested_hook":   str(r.get("suggested_hook") or "")[:120] or None,
@@ -3322,7 +3344,8 @@ async def run_pipeline_custom_script(req: dict = {}):
       title:               required
       body:                required (the script text — TTS will read this verbatim)
       content_style:       "story" (default) — kept here for forward-compat
-      video_mode:          "short_reel" (default) | "reel" | "full_video"
+      video_mode:          "short_reel" (default) | "reel" | "long_reel"
+                           Legacy "full_video" still accepted (treated as long_reel).
       tts_enabled:         bool (default true)
       narrator_gender:     "auto" | "male" | "female"
       voice_override:      voice_id or null
@@ -3340,6 +3363,11 @@ async def run_pipeline_custom_script(req: dict = {}):
         content_style = "story"
 
     video_mode = (req.get("video_mode") or "short_reel").strip()
+    # Legacy "full_video" → "long_reel" (we removed full-length horizontal
+    # output; existing configs / saved presets / queued items still
+    # reference the old name and would otherwise fall through silently).
+    if video_mode == "full_video":
+        video_mode = "long_reel"
     tts_enabled = bool(req.get("tts_enabled", True))
     narrator_gender = (req.get("narrator_gender") or "auto").strip().lower() or "auto"
     voice_override = (req.get("voice_override") or "").strip() or None

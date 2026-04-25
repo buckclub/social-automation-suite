@@ -12,9 +12,9 @@ import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 
 const VIDEO_MODES = [
-  { id: "short_reel", label: "Short Reel", icon: Scissors, desc: "< 60s vertical video" },
-  { id: "full_video", label: "Full Video", icon: Film, desc: "Full-length horizontal" },
-  { id: "reel", label: "Reel", icon: Film, desc: "60-90s vertical format" },
+  { id: "short_reel", label: "Short Reel", icon: Scissors, desc: "< 60s · the punchy default" },
+  { id: "reel",       label: "Reel",       icon: Film,     desc: "60–90s · room for a real arc" },
+  { id: "long_reel",  label: "Long Reel",  icon: Film,     desc: "90s+ · multi-beat stories" },
 ];
 
 const FORMAT_MODES = [

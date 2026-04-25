@@ -181,71 +181,89 @@ def _tone_instruction(tone: Optional[str]) -> str:
 # block (different shape — no narrative arc).
 
 VIRAL_MECHANICS_NARRATIVE = """\
-VIRAL MECHANICS — these are HOW you write, not WHAT you write. Do NOT
-label the parts in the body. The reader must never see the words
-"Hook:", "Stakes:", "Turn:", "Closer:" anywhere in the script — those
-are craft notes for you, not section headers.
+STORY STRUCTURE — every short-form story is a tiny three-act play.
+Every piece you write must have a clear:
 
-1. HOOK (the title + first sentence):
-   - Name a SPECIFIC, SURPRISING moment or detail from the story —
-     not the topic, not the genre.
-   - BAD (just labels the topic): "Caught my GF cheating and got
-     revenge"
-   - GOOD (names a concrete moment): "Caught my GF cheating because
-     she Venmo'd him $14 for parking"
-   - The title is the most important sentence in the script. If the
-     title only describes the genre, rewrite it.
-   - First sentence ≤14 words, specific, and promises something the
+  SETUP → INCITING INCIDENT → ESCALATION → CLIMAX → RESOLUTION
+
+These are HOW you write, not WHAT you write. Never label them in the
+body. The reader experiences the structure invisibly.
+
+1. TITLE + HOOK (sentence 1):
+   - Title names a SPECIFIC, SURPRISING moment or detail from the
+     story — not the topic, not the genre.
+   - BAD (just the topic): "Caught my GF cheating and got revenge"
+   - GOOD (a concrete moment): "Caught my GF cheating because she
+     Venmo'd him $14 for parking"
+   - First sentence ≤14 words, specific, and promises a reveal the
      reader doesn't yet know.
 
-2. STAKES (woven in by sentence 2-3, NOT labeled):
-   - The reader should feel what the narrator stands to lose without
-     you announcing it. Show, don't list.
-   - Do NOT write "The stakes were ___." or "I had a lot to lose."
-     The stakes come through in HOW you describe the scene.
+2. SETUP (sentences 2-3):
+   - Establish who the narrator is, who else matters, and what
+     "normal" looks like — in two sentences. No more.
+   - Do NOT explain the stakes in plain words. The reader should
+     feel them from the situation.
 
-3. ESCALATION (middle 60%):
-   - Each new sentence reveals new info OR raises the temperature.
-   - Specific moments and brief dialogue ARE allowed when they
-     advance the story — but default to first-person reflection.
-     Never write a four-line back-and-forth dialogue. Pick the ONE
-     line that mattered, paraphrase the rest.
-   - No filler. Cut anything that doesn't either reveal or escalate.
+3. INCITING INCIDENT (sentence 4-5):
+   - ONE specific event that breaks normal and starts the story.
+   - Concrete and witnessed — a text, a photo, a phone call, a
+     thing the narrator personally saw. Not a vague "I started
+     noticing things were off."
 
-4. TURN (~60-75% mark):
-   - Something flips. New information, a realization, or an action
-     the reader didn't predict.
-   - The turn must feel EARNED. Don't have a character switch from
-     smug to crying in two sentences — show the in-between, or skip
-     the smugness entirely.
+4. ESCALATION (middle 40-50% of the script):
+   - Two or three CONCRETE developments, each adding NEW information.
+   - NOT "and then I noticed more weird things." Each beat must
+     advance the story with specifics: a name, a place, a number, an
+     action.
+   - Brief dialogue allowed, but never a 4-line back-and-forth. Pick
+     the ONE line that mattered, paraphrase the rest.
+   - Cut anything that doesn't reveal or raise the temperature.
 
-5. CLOSER (last 1-2 sentences):
-   - Take a strong side ("AITA? I don't think so.") or leave a
+5. CLIMAX (one specific moment, near the end):
+   - There must be ONE single moment where everything snaps into
+     focus. The reveal. The confrontation. The single discovery
+     that recontextualizes the whole story.
+   - DO NOT stack multiple half-reveals. Stacking ambiguous clues
+     with no single climactic moment is the #1 way short-form
+     stories fall flat.
+   - The climax must be a moment the reader could PINPOINT if asked
+     "what was the punch?"
+
+6. RESOLUTION + CLOSER (last 1-2 sentences):
+   - Brief aftermath: what immediately happened next.
+   - Take a strong side ("I don't regret a thing.") or leave a
      question that begs comment ("Would you have stayed?").
-   - NEVER end with "and I learned a lesson," "anyway thanks for
-     reading," or "what would you do?" if you can be more specific.
-   - The closer is comment-bait — make scrolling viewers stop and type.
+   - NEVER end with "and I learned a lesson," "thanks for reading,"
+     or generic "what would you do?" If you ask a question, make it
+     specific to the story.
 
 BEHAVIORAL REALISM — non-negotiable:
 - Characters act like real adults under stress. Real people don't go
   from smug → crying in two lines. Real people don't deliver
-  monologues. Real cheaters deny first, get caught a second time, then
-  break.
+  monologues. Real cheaters deny first, get caught a second time,
+  then break.
 - If the topic is REVENGE: the revenge must be plausible enough that
   a real person would actually do it AND get away with it. No
   movie-villain antics. No ketchup-in-drawers, no slashing tires, no
   cartoon pranks. Best revenge is usually small, specific, and legal.
 - If the topic is a DISCOVERY: the discovery itself should be the
-  hook (one tiny detail that unraveled everything), not the
-  aftermath.
+  climax — one tiny specific detail that unraveled everything — not
+  a stack of vague clues that the narrator pieces together.
+- All character names, relationships, and events introduced earlier
+  must remain consistent. If you mention "his fiancée" at the end,
+  her existence had to be implicit from earlier in the story. Do
+  not invent new characters in the climax.
 
-OUTPUT HYGIENE:
-- Do NOT include any meta labels in the body — no "Stakes:", no
-  "Turn:", no scene headers, no [brackets], no asterisks, no
-  parentheticals. Just prose.
-- Do NOT prefix the title with "AITA", "TIFU", or "Story:".
-- Do NOT include the words "viral", "epic", or "insane" — those are
-  hack-tier copy.
+OUTPUT HYGIENE — these words / patterns are BANNED in the body:
+- Section labels: "Stakes:", "Hook:", "Turn:", "Closer:", "The
+  closer hit me…", "Setup:", "Climax:", "Resolution:", or any
+  other craft-term used as story prose.
+- Scene headers, [brackets], asterisks, parentheticals, "*"
+  emphasis — just prose.
+- Title prefixes: do NOT prefix with "AITA", "TIFU", "Story:",
+  "Update:".
+- Hack-tier filler words: "viral", "epic", "insane", "wild",
+  "you won't believe."
 """
 
 VIRAL_MECHANICS_INTERACTIVE = """\
@@ -285,9 +303,23 @@ QUALITY GATE — apply this BEFORE you emit the JSON:
 
 Step 1. Draft the content normally.
 
-Step 2. CHRONOLOGY + CAUSE-EFFECT AUDIT. Re-read the draft as if a
-        skeptical friend is poking holes. Walk through it event by
-        event and verify ALL of these:
+Step 2. STRUCTURE AUDIT. Re-read your draft and answer in your head:
+        a) Can I name, in one sentence, the SINGLE climactic moment?
+           If the answer is "well, there's the photo, and then the
+           text, and then…" — you've stacked half-reveals instead
+           of building to one moment. Rewrite so there is ONE clear
+           climax.
+        b) Are all characters introduced BEFORE the climax? If a new
+           character (a fiancée, a sibling, a coworker) appears for
+           the first time in the climax, they must have been at
+           least implied earlier. Either set them up or remove them.
+        c) Does the script have a setup → inciting incident →
+           escalation → climax → resolution shape, in that order?
+           If the climax happens in sentence 3 and the rest is
+           aftermath, restructure.
+
+Step 3. CHRONOLOGY + CAUSE-EFFECT AUDIT. Re-read as if a skeptical
+        friend is poking holes:
         a) Time markers are consistent. If sentence 1 says "last
            night," sentence 8 cannot say "yesterday" referring to the
            same event. Pick one timeline and stick to it.
@@ -313,11 +345,11 @@ Step 2. CHRONOLOGY + CAUSE-EFFECT AUDIT. Re-read the draft as if a
         common fix: cut the inconsistent paragraph entirely and
         rewrite a tighter version.
 
-Step 3. CRAFT AUDIT. Identify the THREE weakest beats from a craft
+Step 4. CRAFT AUDIT. Identify the THREE weakest beats from a craft
         standpoint — usually a generic hook, a missing turn, or a
         moralizing closer. Rewrite only those.
 
-Step 4. Output the FINAL revised version as JSON. Do not show me the
+Step 5. Output the FINAL revised version as JSON. Do not show me the
         audits — only the final script.
 """
 
@@ -375,6 +407,38 @@ EXAMPLE OF A WEAK OPENING (avoid all of these patterns):
   ↑ Why it fails: title is the genre, not a moment. Body literally
   writes "Stakes:" as a label. Dialogue is wooden ping-pong. Reads
   like an AI following a checklist instead of telling a story.
+
+EXAMPLE OF A STRUCTURALLY-BROKEN STORY (this one has a strong-ish
+hook but fails on STRUCTURE — study why it falls apart):
+
+  Title: "He kept choosing my friends, then I found out why"
+  Body:  "I noticed Liam choosing my friend's party over dinner.
+          Then I scrolled Instagram and saw a comment 'Liam's so
+          lucky to have both of you!'. That's when I started
+          digging — my friend tagged us in a wedding planner story.
+          The caption read 'I can't believe @Liam_and_Me are
+          planning together!' Then I found his phone connected to
+          her email account. The closer hit me when I saw them at
+          the mall holding hands in a photo. He had been using me
+          to shield his secret relationship from his fiancée."
+
+  ↑ Why it fails STRUCTURALLY:
+  - No single climax. The story stacks 4 different half-reveals
+    (comment → wedding tag → email account → mall photo) and none
+    is THE moment. Reader can't point to "the punch."
+  - "his fiancée" appears in the last sentence, but she was never
+    set up. New character invented at the climax.
+  - Body says "The closer hit me when…" — literal craft term as
+    prose. This is banned.
+  - The narrator's investigation is muddled — clues come from
+    Instagram, then the friend's story, then his email, then a
+    different photo. Pick ONE thread and follow it cleanly.
+
+  How to fix: collapse to ONE clean discovery. e.g. "I clicked the
+  Instagram tag and saw the wedding planner had captioned them
+  '@Liam_and_Sara — engaged 6 months.' Sara was my best friend."
+  That's a single reveal that recontextualizes everything before
+  it. THAT is a climax.
 
 NICHE: {niche_name}
 THEMES TO DRAW FROM: {niche_themes}
