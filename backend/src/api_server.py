@@ -20,7 +20,7 @@ import shutil
 import re
 import glob
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -144,7 +144,30 @@ def _initial_reddit_steps() -> list[dict]:
         ]
 
 
-pipeline_state = {
+# PipelineState — shape of the global `pipeline_state` dict. TypedDict
+# is typing-only (no runtime change) so we keep dict-style access
+# (`pipeline_state["error"]`) at every call site without rewriting them
+# all to attribute access. The benefit is purely IDE / lint level: you
+# can hover any pipeline_state usage and see the field type, and
+# typos like `pipeline_state["erorr"]` get flagged.
+#
+# `total=False` because most fields are only present during certain
+# pipeline phases (diagnostic only on failure; current_post only once
+# fetched; etc).
+from typing import TypedDict  # Any/Dict/List/Optional already imported above
+
+
+class PipelineState(TypedDict, total=False):
+    steps: List[Dict[str, Any]]              # per-step status dicts (id, status, detail, ...)
+    is_running: bool                         # one pipeline at a time — guards re-entry
+    current_post: Optional[Dict[str, Any]]   # the post being rendered (id, title, subreddit, score)
+    started_at: Optional[str]                # ISO timestamp of pipeline start
+    completed_at: Optional[str]              # ISO timestamp of pipeline end (success or failure)
+    error: Optional[str]                     # str(exception) on failure; None on success
+    diagnostic: Dict[str, Any]               # classify() output from render_diagnostics on failure
+
+
+pipeline_state: PipelineState = {
     "steps": _initial_reddit_steps(),
     "is_running": False,
     "current_post": None,
