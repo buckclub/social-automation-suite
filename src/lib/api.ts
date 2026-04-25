@@ -907,6 +907,10 @@ export const api = {
 
   // Generate N candidate variants WITHOUT starting the pipeline.
   // Caller picks one, then hands it to runPipelineAI via preselected_content.
+  // Each variant comes back with a `score` block (0-100 + sub-scores)
+  // unless scoring failed; the picker UI sorts + filters on it.
+  // `min_score`/`max_attempts` opt-in to a regenerate-until-quality
+  // loop on the backend.
   generateAIVariants: (params: {
     content_style: string; niche: string; custom_topic?: string;
     interactive_format?: string;
@@ -914,8 +918,18 @@ export const api = {
     target_audience?: string;
     tone?: "dramatic" | "funny" | "heartfelt" | "shocking" | "cringe";
     count?: number;
+    min_score?: number;
+    max_attempts?: number;
   }) =>
-    request<{ variants: Array<Record<string, unknown>>; count: number }>(
+    request<{
+      variants: Array<Record<string, unknown>>;
+      count: number;
+      attempts?: Array<{ attempt: number; best_score: number | null;
+                         variants: Array<Record<string, unknown>> }>;
+      min_score?: number;
+      cleared_gate?: boolean;
+      best_overall?: Record<string, unknown> | null;
+    }>(
       "/api/ai/generate-variants",
       { method: "POST", body: JSON.stringify(params) },
     ),

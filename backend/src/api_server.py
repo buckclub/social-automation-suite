@@ -2413,6 +2413,14 @@ async def generate_ai_variants(req: dict = {}):
     Generate N candidate content variants in parallel without touching pipeline state.
     The frontend shows these in a picker; the chosen one is then handed to
     /api/pipeline/run-ai via the `preselected_content` field.
+
+    Each variant is post-scored via the virality rubric and returned with
+    a `score` block so the picker can sort by quality and gate against a
+    minimum-score target. If `min_score` is supplied (and > 0), this
+    endpoint will retry the whole generate-then-score cycle up to
+    `max_attempts` times, returning early as soon as ANY variant clears
+    the bar. The full attempt history is returned so the UI can show
+    progress.
     """
     config = _load_config()
     gemini_cfg = config.get("gemini", {})
@@ -2438,6 +2446,20 @@ async def generate_ai_variants(req: dict = {}):
     except (TypeError, ValueError):
         count = 3
 
+    # Layer 3 — virality target. min_score=0 means "no gate, just score
+    # and return". 50-95 is the user-facing slider range.
+    try:
+        min_score = max(0, min(100, int(req.get("min_score", 0))))
+    except (TypeError, ValueError):
+        min_score = 0
+    try:
+        max_attempts = max(1, min(8, int(req.get("max_attempts", 3 if min_score else 1))))
+    except (TypeError, ValueError):
+        max_attempts = 3 if min_score else 1
+    # If no gate is set, do exactly one pass — no retry semantics needed.
+    if min_score <= 0:
+        max_attempts = 1
+
     from ai_content_generator import AIContentGenerator
     generator = AIContentGenerator(config)
 
@@ -2447,22 +2469,244 @@ async def generate_ai_variants(req: dict = {}):
             content_filter, target_audience, tone,
         )
 
-    # Run the N generations concurrently. Each call is already retried inside.
-    tasks = [asyncio.to_thread(_one) for _ in range(count)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    attempts: list[dict] = []
+    best_so_far: Optional[dict] = None
 
-    variants = []
-    for i, r in enumerate(results):
-        if isinstance(r, Exception):
-            _log(f"[variants] variant {i+1} raised: {r}")
+    for attempt_idx in range(max_attempts):
+        # ── Generate this attempt's batch in parallel ────────────────
+        tasks = [asyncio.to_thread(_one) for _ in range(count)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        batch: list[dict] = []
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                _log(f"[variants] attempt {attempt_idx+1} variant {i+1} raised: {r}")
+                continue
+            if r:
+                batch.append(r)
+
+        if not batch:
+            # Nothing generated this attempt — retry if budget allows,
+            # otherwise bail with the explicit failure.
+            if attempt_idx < max_attempts - 1:
+                continue
+            raise HTTPException(502, "All variants failed to generate. Check AI provider logs.")
+
+        # ── Score this batch in one LLM call ─────────────────────────
+        try:
+            scored = await _score_variants_batch(batch, content_style, config)
+            for v, s in zip(batch, scored):
+                v["score"] = s
+        except Exception as e:
+            # Scoring is a best-effort enrichment — if it fails, ship
+            # variants ungated so the user isn't blocked.
+            _log(f"[variants] scoring failed: {e}")
+            for v in batch:
+                v["score"] = None
+
+        # Track best-of-best across attempts so we can return SOMETHING
+        # even when the gate is never cleared.
+        for v in batch:
+            sc = (v.get("score") or {}).get("score")
+            if sc is None:
+                continue
+            if best_so_far is None or sc > (best_so_far.get("score") or {}).get("score", 0):
+                best_so_far = v
+
+        attempts.append({
+            "attempt": attempt_idx + 1,
+            "best_score": _best_score(batch),
+            "variants": batch,
+        })
+
+        # Did anything clear the gate? If so, return immediately.
+        if min_score and any(((v.get("score") or {}).get("score") or 0) >= min_score for v in batch):
+            break
+
+    # The "current" variants the UI displays are the LAST attempt's
+    # batch (so the user sees the freshest output). If we hit
+    # max_attempts without clearing the bar, the UI also gets the
+    # best_overall variant as a fallback hint.
+    final_variants = attempts[-1]["variants"] if attempts else []
+    cleared = any(
+        ((v.get("score") or {}).get("score") or 0) >= min_score
+        for v in final_variants
+    ) if min_score else True
+
+    return {
+        "variants": final_variants,
+        "count": len(final_variants),
+        "attempts": attempts,
+        "min_score": min_score,
+        "cleared_gate": cleared,
+        "best_overall": best_so_far,
+    }
+
+
+def _best_score(variants: list[dict]) -> Optional[int]:
+    """Highest score across a batch, or None if nothing scored."""
+    best = None
+    for v in variants:
+        s = (v.get("score") or {}).get("score")
+        if s is None:
             continue
-        if r:
-            variants.append(r)
+        if best is None or s > best:
+            best = s
+    return best
 
+
+# ── Variant scorer ────────────────────────────────────────────────────
+# A single-batch, no-cache version of the post scorer — purpose-built
+# for /api/ai/generate-variants. We can't reuse the Reddit-post scorer
+# wholesale because that one writes to ai_score_cache keyed by post id,
+# and generated variants don't have stable ids — we'd accumulate garbage
+# entries forever. This version uses the same rubric + prompt shape so
+# scores are directly comparable to those shown elsewhere in the UI.
+async def _score_variants_batch(
+    variants: list[dict], content_style: str, config: dict,
+) -> list[dict]:
+    """
+    Score 1-5 generated variants in a SINGLE LLM call. Returns a list
+    aligned to `variants` order. Each entry is the same shape the
+    Reddit-post scorer emits (score, hook_strength, payoff_strength,
+    emotion, suggested_hook, pitfalls, reason, …) so the UI can render
+    them with the existing components.
+    """
     if not variants:
-        raise HTTPException(502, "All variants failed to generate. Check AI provider logs.")
+        return []
 
-    return {"variants": variants, "count": len(variants)}
+    g = config.get("gemini") or {}
+    provider = g.get("provider", "gemini")
+    api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    # A scoring-specific model can be set in config (cheaper / faster
+    # than the main generation model). Fall back to the main model.
+    model = g.get("scoring_model") or g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    def _flatten(v: dict) -> str:
+        """Variant dicts have different shapes per style. Collapse to a
+        single 'body' string the rubric can evaluate against."""
+        if content_style == "story" or content_style == "hot_take":
+            return (v.get("body") or "")[:1500]
+        if content_style == "qa":
+            comments = v.get("comments") or []
+            joined = "\n".join(
+                f"  · {c.get('author', 'anon')}: {c.get('body', '')}"
+                for c in comments[:8]
+            )
+            return f"{v.get('question') or v.get('title', '')}\n\n{joined}"[:1500]
+        if content_style == "interactive":
+            segs = v.get("segments") or []
+            return "\n".join(s.get("text", "") for s in segs[:14])[:1500]
+        return (v.get("body") or v.get("title") or "")[:1500]
+
+    items_block = []
+    for i, v in enumerate(variants, 1):
+        items_block.append(
+            f"--- VARIANT {i} ---\n"
+            f"Title: {(v.get('title') or '')[:240]}\n"
+            f"Body:\n{_flatten(v)}"
+        )
+
+    system = (
+        "You are a TikTok/Shorts/Reels editor evaluating SHORT-FORM SCRIPTS "
+        "for virality. These are AI-generated drafts, not real Reddit posts "
+        "— score them on the script craft alone (hook, escalation, turn, "
+        "payoff, comment-bait closer). Be ruthless: 70+ requires a clear "
+        "hook AND a satisfying payoff AND a closer that begs comment. "
+        "Return STRICT minified JSON only, no markdown, no commentary."
+    )
+    allowed_emotions = (
+        "anger, outrage, shock, schadenfreude, sympathy, heartbreak, amusement, "
+        "curiosity, vindication, disgust, awe, fear"
+    )
+
+    prompt = (
+        f"Evaluate these {len(variants)} variant script(s) for a 30-90 "
+        f"second vertical video in the '{content_style}' style. Return a "
+        "JSON object with ONE key 'results' whose value is an array — one "
+        "object per variant, IN THE SAME ORDER AS INPUT, each with this "
+        "exact shape:\n"
+        "{\n"
+        '  "score": <0-100 overall — be ruthless>,\n'
+        '  "hook_strength": <0-100 — first sentence grab>,\n'
+        '  "payoff_strength": <0-100 — does the closer deliver?>,\n'
+        f'  "emotion": "<one of: {allowed_emotions}>",\n'
+        '  "suggested_hook": "<≤90 char rewrite of the opening line if you can do better, else echo the existing hook>",\n'
+        '  "pitfalls": ["<≤40 char issue>", ...0-3],\n'
+        '  "reason": "<≤140 char verdict — what would lift the score>"\n'
+        "}\n\n"
+        + "\n\n".join(items_block) +
+        "\n\nReturn ONLY the JSON object, no markdown."
+    )
+
+    raw = await asyncio.to_thread(_call_ai_lite, provider, api_key, prompt, system, model, ollama_url)
+    if not raw:
+        # Degrade gracefully — return None placeholders so callers can
+        # still render the variants without scores.
+        return [None] * len(variants)  # type: ignore[list-item]
+
+    parsed = _extract_json_object(raw)
+    results = (parsed or {}).get("results") if isinstance(parsed, dict) else None
+    if not isinstance(results, list):
+        return [None] * len(variants)  # type: ignore[list-item]
+
+    out: list[dict] = []
+    for i in range(len(variants)):
+        r = results[i] if i < len(results) and isinstance(results[i], dict) else {}
+        out.append({
+            "score":            _clamp_int(r.get("score")),
+            "hook_strength":    _clamp_int(r.get("hook_strength")),
+            "payoff_strength":  _clamp_int(r.get("payoff_strength")),
+            "emotion":          (str(r.get("emotion") or "")[:30]).lower() or None,
+            "suggested_hook":   str(r.get("suggested_hook") or "")[:120] or None,
+            "pitfalls":         [str(x)[:40] for x in (r.get("pitfalls") or [])[:3] if x],
+            "reason":           str(r.get("reason") or "")[:160],
+            "source":           provider,
+        })
+    return out
+
+
+def _call_ai_lite(provider: str, api_key: str, prompt: str, system: str,
+                  model: str, ollama_url: str) -> str:
+    """Thin sync wrapper so the variant scorer can run on a worker
+    thread without import-cycling through gemini_hooks at module load."""
+    from gemini_hooks import _call_ai
+    return _call_ai(provider, api_key, prompt, system, model, ollama_url) or ""
+
+
+def _extract_json_object(s: str) -> Optional[dict]:
+    """Pull the first JSON object out of a (possibly fenced) blob."""
+    s = (s or "").strip()
+    if s.startswith("```"):
+        # Strip ```json fences.
+        s = s.split("```", 2)[1] if "```" in s else s
+        if s.startswith("json"):
+            s = s[4:]
+        s = s.strip("`").strip()
+    try:
+        return json.loads(s)
+    except Exception:
+        a, b = s.find("{"), s.rfind("}")
+        if a >= 0 and b > a:
+            try:
+                return json.loads(s[a:b + 1])
+            except Exception:
+                return None
+    return None
+
+
+def _clamp_int(v) -> Optional[int]:
+    """Coerce a possibly-string value to 0-100 int, or None on failure."""
+    try:
+        n = int(v)
+        return max(0, min(100, n))
+    except (TypeError, ValueError):
+        return None
 
 
 def _write_ai_post_to_disk(

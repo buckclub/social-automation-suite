@@ -101,6 +101,53 @@ interface Preset {
   tone: Tone;
 }
 
+// Shape returned by the variant scorer (api_server._score_variants_batch).
+// All numeric fields are 0-100 or null when the model didn't supply them.
+interface ScoreShape {
+  score: number | null;
+  hook_strength: number | null;
+  payoff_strength: number | null;
+  emotion?: string | null;
+  suggested_hook?: string | null;
+  pitfalls?: string[];
+  reason?: string;
+}
+
+// Compact "87/100" pill on each candidate card. Color encodes the
+// gate-status — green when ≥ user's bar, neutral when below or no
+// bar set. Tooltip carries the sub-scores so the card itself stays
+// uncluttered.
+function ScoreBadge({ score, minScore }: { score?: ScoreShape | null; minScore: number }) {
+  if (!score || score.score == null) {
+    return null;
+  }
+  const v = score.score;
+  const cleared = minScore > 0 && v >= minScore;
+  const tooltipParts = [
+    score.hook_strength != null ? `hook ${score.hook_strength}` : null,
+    score.payoff_strength != null ? `payoff ${score.payoff_strength}` : null,
+    score.emotion ? `· ${score.emotion}` : null,
+    score.reason ? `\n${score.reason}` : null,
+  ].filter(Boolean).join(" ");
+  return (
+    <span
+      title={tooltipParts || `Virality ${v}/100`}
+      className={
+        "px-1.5 h-5 inline-flex items-center rounded text-[10px] font-mono font-semibold " +
+        (cleared
+          ? "bg-success/20 text-success border border-success/30"
+          : v >= 80
+            ? "bg-primary/20 text-primary border border-primary/30"
+            : v >= 60
+              ? "bg-secondary text-foreground border border-border"
+              : "bg-secondary text-muted-foreground border border-border")
+      }
+    >
+      {v}
+    </span>
+  );
+}
+
 export function GenerateWithAIDialog() {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
@@ -143,6 +190,20 @@ export function GenerateWithAIDialog() {
   const [regeneratingIdx, setRegeneratingIdx] = useState<number | null>(null);
   const [regeneratingAll, setRegeneratingAll] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
+
+  // ── Virality target (Layer 3) ──────────────────────────────────────
+  // 0 = "off" (no gate, single pass). 50-95 = minimum score required to
+  // accept a batch; backend regenerates up to maxAttempts times until
+  // any variant clears the bar. Default off because every retry costs
+  // tokens — users opt in when they want the loop.
+  const [minScore, setMinScore] = useState(0);
+  const [maxAttempts, setMaxAttempts] = useState(3);
+  // Attempt log returned by the backend when min_score > 0 — drives the
+  // "best so far / regenerating…" sub-status on the loading screen.
+  const [attemptLog, setAttemptLog] = useState<
+    Array<{ attempt: number; best_score: number | null; variants: Array<Record<string, unknown>> }>
+  >([]);
+  const [clearedGate, setClearedGate] = useState<boolean | null>(null);
 
   // Resumable draft — populated on dialog open by GET /api/ai/drafts.
   // When non-null we show a "Resume previous draft?" banner above step 0.
@@ -408,6 +469,8 @@ export function GenerateWithAIDialog() {
     setApprovedSet(new Set());
     setExpandedSet(new Set());
     setVariants([]);
+    setAttemptLog([]);
+    setClearedGate(null);
     try {
       const res = await api.generateAIVariants({
         content_style: contentStyle,
@@ -418,12 +481,37 @@ export function GenerateWithAIDialog() {
         target_audience: targetAudience.trim() || undefined,
         tone,
         count: n,
+        min_score: minScore || undefined,
+        max_attempts: minScore ? maxAttempts : undefined,
       });
-      setVariants(res.variants);
-      persistDraft(res.variants);
-      // When there's only one candidate, auto-approve it so the user
-      // can hit Run with one click — but we still show the script first.
-      if (res.variants.length === 1) setApprovedSet(new Set([0]));
+      // Sort by score (desc) so the best candidate is on top by default.
+      // Variants without a score sink to the bottom rather than getting
+      // randomly mixed in.
+      const sorted = [...res.variants].sort((a, b) => {
+        const sa = ((a.score as { score?: number } | null)?.score) ?? -1;
+        const sb = ((b.score as { score?: number } | null)?.score) ?? -1;
+        return sb - sa;
+      });
+      setVariants(sorted);
+      setAttemptLog(res.attempts ?? []);
+      setClearedGate(res.cleared_gate ?? null);
+      persistDraft(sorted);
+      if (sorted.length === 1) setApprovedSet(new Set([0]));
+      // When the user set a virality bar and the gate wasn't cleared,
+      // surface that clearly in a toast so it's not silently buried in
+      // the picker — the user might want to lower the bar or try again.
+      if (res.min_score && res.cleared_gate === false) {
+        const best = res.attempts?.reduce<number | null>(
+          (m, a) => (a.best_score != null && (m == null || a.best_score > m) ? a.best_score : m),
+          null,
+        ) ?? null;
+        toast({
+          title: `Couldn't hit your ${res.min_score} virality target`,
+          description: best != null
+            ? `Best so far: ${best}/100. Lower the bar or retry.`
+            : "Lower the bar or retry.",
+        });
+      }
     } catch (e: any) {
       toast({ title: "Generation failed", description: e?.message, variant: "destructive" });
       setShowPicker(false);
@@ -450,6 +538,11 @@ export function GenerateWithAIDialog() {
         target_audience: targetAudience.trim() || undefined,
         tone,
         count: 1,
+        // Per-card regenerate honors the slider too — if the user set a
+        // bar of 80 and a card is at 65, hitting regenerate retries
+        // until it clears the bar (or maxAttempts is hit).
+        min_score: minScore || undefined,
+        max_attempts: minScore ? maxAttempts : undefined,
       });
       const fresh = res.variants[0];
       if (!fresh) throw new Error("Empty result");
@@ -590,6 +683,10 @@ export function GenerateWithAIDialog() {
     setRegeneratingAll(false);
     setNewPresetName("");
     setPresetNameInputOpen(false);
+    setMinScore(0);
+    setMaxAttempts(3);
+    setAttemptLog([]);
+    setClearedGate(null);
   };
 
   // Pretty-print the variant body for the review screen. Each style has
@@ -657,12 +754,39 @@ export function GenerateWithAIDialog() {
             <p className="text-[11px]">
               {variants.length > 0
                 ? `Regenerating ${variants.length} candidate${variants.length === 1 ? "" : "s"}…`
-                : `Generating ${candidateCount} candidate${candidateCount === 1 ? "" : "s"} in parallel…`}
+                : minScore > 0
+                  ? `Generating + scoring (target ${minScore}/100, up to ${maxAttempts} attempts)…`
+                  : `Generating ${candidateCount} candidate${candidateCount === 1 ? "" : "s"} in parallel…`}
             </p>
             {aiProvider !== "ollama" && candidateCount > 1 && (
               <p className="text-[10px] opacity-70">
                 Uses ~{candidateCount}× the provider tokens of a normal run.
               </p>
+            )}
+          </div>
+        )}
+
+        {/* Attempt history — shown after a min_score gate run with >1
+            attempt, so the user can see how the bar shaped the output. */}
+        {!variantsLoading && attemptLog.length > 1 && (
+          <div className="flex items-center gap-1.5 px-1 text-[10px] text-muted-foreground">
+            <span>Attempts:</span>
+            {attemptLog.map((a) => (
+              <span
+                key={a.attempt}
+                className={cn(
+                  "px-1.5 py-0.5 rounded font-mono",
+                  a.best_score != null && minScore > 0 && a.best_score >= minScore
+                    ? "bg-success/20 text-success"
+                    : "bg-secondary text-muted-foreground",
+                )}
+                title={`Attempt ${a.attempt} best score`}
+              >
+                {a.best_score ?? "—"}
+              </span>
+            ))}
+            {clearedGate === false && minScore > 0 && (
+              <span className="text-amber-400 ml-1">target not hit</span>
             )}
           </div>
         )}
@@ -702,6 +826,7 @@ export function GenerateWithAIDialog() {
                             {(v.title as string) || `Variant ${i + 1}`}
                           </p>
                           <div className="flex items-center gap-1 shrink-0">
+                            <ScoreBadge score={v.score as ScoreShape | null | undefined} minScore={minScore} />
                             <Button
                               size="sm" variant="ghost"
                               className="h-6 w-6 p-0"
@@ -1269,6 +1394,67 @@ export function GenerateWithAIDialog() {
                 Uses ~{candidateCount}× the provider tokens of a normal run ({aiProvider}).
               </p>
             )}
+          </div>
+
+          {/* ── Virality target slider (Layer 3) ───────────────────────
+              Off by default. When dragged ≥ 50, the backend regenerates
+              up to maxAttempts times until any candidate beats the bar.
+              We render it as a single horizontal slider so the trade-
+              off (higher bar = more retries = more tokens) is obvious
+              at a glance. */}
+          <div className="space-y-1">
+            <div className="p-2.5 rounded-lg border border-border bg-secondary/30 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Sparkles className="h-3.5 w-3.5 text-accent shrink-0" />
+                  <p className="text-[11px] font-medium">Minimum virality</p>
+                </div>
+                <span className="text-[10px] font-mono text-muted-foreground shrink-0">
+                  {minScore === 0 ? "off" : `${minScore} / 100`}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={95}
+                step={5}
+                value={minScore}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  // Snap from 0 → 50 (skip the 5-45 range — anything
+                  // below 50 isn't a meaningful gate).
+                  setMinScore(v < 50 ? 0 : v);
+                }}
+                className="w-full h-1.5 bg-secondary rounded-full appearance-none cursor-pointer accent-primary"
+              />
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                {minScore === 0
+                  ? "No quality gate — variants come back as generated. Each one is still scored so you can sort the picker."
+                  : `Backend regenerates up to ${maxAttempts}× until a candidate scores ≥ ${minScore}. ${
+                      aiProvider !== "ollama"
+                        ? `Worst case: ~${candidateCount * maxAttempts}× tokens.`
+                        : ""
+                    }`}
+              </p>
+              {minScore > 0 && (
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[10px] text-muted-foreground">Max attempts</span>
+                  <div className="flex gap-1">
+                    {[2, 3, 5, 8].map((n) => (
+                      <Button
+                        key={n}
+                        size="sm"
+                        variant={maxAttempts === n ? "default" : "outline"}
+                        onClick={() => setMaxAttempts(n)}
+                        className="h-6 w-7 p-0 text-[10px]"
+                      >
+                        {n}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="space-y-1.5">
