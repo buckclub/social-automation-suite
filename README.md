@@ -5,6 +5,10 @@ End-to-end short-form content automation. What started as a Reddit-to-Reels pipe
 - **Reels** — Reddit posts or AI-generated scripts → vertical 1080×1920 video with TTS narration, word-level captions, and optional auto-publishing to YouTube Shorts / TikTok / Instagram Reels / Snapchat Spotlight.
 - **Clip Maker** — long-form YouTube URL or uploaded mp4 → AI-picked Shorts-worthy clips. Event-driven mode detects in-game moments (gunshots, goals, HUD events) in footage without a transcript.
 - **Text Posts** — generate tweets, Reddit comments, YouTube / TikTok / Instagram community posts, LinkedIn updates; with brand-voice presets and batch variants.
+- **Custom Script** — paste your own narration text → runs through the same TTS + caption + render pipeline with no AI generation step. Single-shot or batch via the run queue.
+- **Carousel Posts** — multi-slide square or 4:5 portrait images for IG / TikTok / LinkedIn carousels. Paste a long story, AI splits it into hook + beat slides + CTA, edit per-slide, live-preview at exact output resolution, download all slides as a zip.
+- **News Roundup** — pull RSS / Atom feeds (curated picks for tech / news / sports / entertainment / Reddit + custom URL), copy any headline + summary as a one-click prompt for Generate-with-AI.
+- **Hashtag Lab** — paste any caption, get 12-20 ranked tag suggestions cross-referenced against top-performing videos in your niche (when a YouTube API key is set). Pick + copy a curated set in one click.
 - **Social Copy** — per-video YouTube title/description + unified Reels/TikTok caption with a background batch queue; click "Social copy" on N videos and come back later.
 
 All rendering is local (FFmpeg). Narration uses your choice of ElevenLabs / Streamlabs Polly / LazyPy TikTok / VibeVoice / Qwen3 TTS. Content generation uses your configured LLM (Gemini / OpenRouter / Ollama / Nvidia NIM).

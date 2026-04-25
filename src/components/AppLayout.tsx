@@ -2,6 +2,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Video, LayoutDashboard, Newspaper, Settings2, Film, Command,
   Images, Scissors, PenLine, Plus, ChevronDown,
+  FileText, Layers, Hash, Globe,
 } from "lucide-react";
 import { useHealth } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
@@ -26,9 +27,13 @@ const topLevelItems = [
   { to: "/config",      label: "Configuration", icon: Settings2 },
 ];
 const createGroupItems = [
-  { to: "/posts",      label: "Reddit Posts", icon: Newspaper, desc: "Browse + queue Reddit content" },
-  { to: "/clips",      label: "Clip Maker",   icon: Scissors,  desc: "Long-form → Shorts" },
-  { to: "/text-posts", label: "Text Posts",   icon: PenLine,   desc: "Tweets / comments / community posts" },
+  { to: "/posts",         label: "Reddit Posts",   icon: Newspaper, desc: "Browse + queue Reddit content" },
+  { to: "/clips",         label: "Clip Maker",     icon: Scissors,  desc: "Long-form → Shorts" },
+  { to: "/text-posts",    label: "Text Posts",     icon: PenLine,   desc: "Tweets / comments / community posts" },
+  { to: "/custom-script", label: "Custom Script",  icon: FileText,  desc: "Paste your own narration → render" },
+  { to: "/carousels",     label: "Carousel Posts", icon: Layers,    desc: "Multi-slide IG / TikTok carousels" },
+  { to: "/news",          label: "News Roundup",   icon: Globe,     desc: "RSS feeds → AI riff prompts" },
+  { to: "/hashtag-lab",   label: "Hashtag Lab",    icon: Hash,      desc: "Rank tags for a caption" },
 ];
 // Combined list — used by the mobile nav so every page is reachable.
 const allNavItems = [...topLevelItems, ...createGroupItems];

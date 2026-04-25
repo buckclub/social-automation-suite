@@ -11,6 +11,7 @@ Email: faheemalvi2000@gmail.com
 License: CC BY-NC 4.0
 """
 import asyncio
+import io
 import os
 import sys
 import json
@@ -2612,6 +2613,421 @@ async def run_pipeline_ai(req: dict = {}):
         background_override=background_override,
     ))
     return {"started": True}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# News Roundup — RSS / Atom feed reader for the /news page.
+#
+# News-reaction content compounds (daily volume, daily algorithm refresh).
+# This endpoint fetches a feed, parses it via stdlib (no feedparser
+# dependency), and returns items the user can click to pre-fill the
+# Generate-with-AI dialog with the story as context.
+# ──────────────────────────────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────
+# Hashtag Lab — paste any caption, get ranked hashtag suggestions backed
+# by both AI tag-extraction and (when configured) YouTube benchmark
+# data so the user can compare against what's actually getting reach
+# in their niche.
+# ──────────────────────────────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────
+# Carousel posts — multi-slide IG / TikTok / LinkedIn carousels.
+#
+# State lives on the frontend (single-page editor with localStorage
+# auto-save). Backend is stateless: split a script into N slides, render
+# all slides as PNGs and ship them back as a zip.
+# ──────────────────────────────────────────────────────────────────────
+
+@app.post("/api/carousels/split-script")
+async def carousel_split_script(req: dict):
+    """
+    Use the configured LLM to split a long-form story into N slide-sized
+    chunks. The first slide is reserved for a hook (title only), the
+    last slide for a CTA. Body slides are 50-80 words each so they read
+    cleanly on mobile.
+
+    Body: { script: str, slide_count: int (3-10), hook_only_first: bool }
+    Returns: { slides: [{title, body}, …] }
+    """
+    script = (req.get("script") or "").strip()
+    if not script:
+        raise HTTPException(400, "script is required")
+    try:
+        n = max(3, min(10, int(req.get("slide_count") or 6)))
+    except (TypeError, ValueError):
+        n = 6
+
+    config = _load_config()
+    g = config.get("gemini") or {}
+    if not g.get("enabled"):
+        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
+    provider = g.get("provider", "gemini")
+    api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    system = (
+        "You are a viral Instagram-carousel scriptwriter. Split the provided "
+        "story into exactly N slides. Slide 1 is the HOOK (title only — bold, "
+        "≤90 chars, builds curiosity). Slides 2 to N-1 are story BEATS — each "
+        "~50-80 words, readable on mobile, ending on a mini-cliffhanger so the "
+        "reader swipes. The FINAL slide is the PAYOFF + CTA (title + short body "
+        "ending with 'Follow for more …' or 'What would you do?'). Return ONLY "
+        "minified JSON, no markdown."
+    )
+    prompt = (
+        f"Source story:\n\"\"\"\n{script[:4000]}\n\"\"\"\n\n"
+        f"Split into exactly {n} slides.\n"
+        "Return JSON of this exact shape:\n"
+        "{\n"
+        '  "slides": [\n'
+        '    {"title": "<bold hook ≤90 chars>", "body": ""},\n'
+        '    {"title": "", "body": "<beat 1, ~50-80 words>"},\n'
+        "    ...\n"
+        '    {"title": "<payoff title>", "body": "<CTA + question>"}\n'
+        "  ]\n"
+        "}\n"
+        "Hook slide title MUST be present. Final slide must include both title and body."
+    )
+
+    from gemini_hooks import _call_ai  # type: ignore
+    raw = _call_ai(provider, api_key, prompt, system, model, ollama_url)
+    if not raw:
+        raise HTTPException(502, f"AI provider '{provider}' returned empty response")
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip("`").strip()
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        s = cleaned.find("{"); e = cleaned.rfind("}")
+        if s >= 0 and e > s:
+            try: parsed = json.loads(cleaned[s:e + 1])
+            except Exception:
+                raise HTTPException(502, f"AI returned non-JSON: {cleaned[:200]}")
+        else:
+            raise HTTPException(502, f"AI returned non-JSON: {cleaned[:200]}")
+
+    slides = []
+    for s in (parsed.get("slides") or [])[:n]:
+        slides.append({
+            "title": (s.get("title") or "")[:200],
+            "body":  (s.get("body") or "")[:600],
+        })
+    if not slides:
+        raise HTTPException(502, "AI returned no slides")
+    return {"slides": slides, "count": len(slides)}
+
+
+@app.post("/api/carousels/preview")
+async def carousel_preview_slide(req: dict):
+    """
+    Render a single slide to PNG and return it as a data URI string.
+    Frontend uses this for the live preview pane on every keystroke
+    (debounced).
+
+    Body: { slide: {title, body}, style: {...}, idx: int, total: int }
+    """
+    from carousel_renderer import render_slide_to_png
+    slide = req.get("slide") or {}
+    style = req.get("style") or {}
+    try:
+        idx = max(1, int(req.get("idx") or 1))
+        total = max(1, int(req.get("total") or 1))
+    except (TypeError, ValueError):
+        idx, total = 1, 1
+    try:
+        png_bytes = await asyncio.to_thread(render_slide_to_png, slide, style, idx=idx, total=total)
+    except Exception as e:
+        raise HTTPException(500, f"Render failed: {e}")
+    import base64
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    return {"data_uri": f"data:image/png;base64,{b64}"}
+
+
+@app.post("/api/carousels/render")
+async def carousel_render_zip(req: dict):
+    """
+    Render every slide and stream back a zip of PNGs. Browser saves
+    locally — no server-side persistence. Each PNG is named
+    `slide_NN.png` in upload order.
+
+    Body: { slides: [{title, body}, …], style: {...} }
+    """
+    from carousel_renderer import render_carousel_to_zip
+    from fastapi.responses import StreamingResponse
+    slides = req.get("slides") or []
+    style = req.get("style") or {}
+    if not isinstance(slides, list) or not slides:
+        raise HTTPException(400, "slides[] required (and non-empty)")
+    try:
+        zip_bytes = await asyncio.to_thread(render_carousel_to_zip, slides, style)
+    except Exception as e:
+        raise HTTPException(500, f"Render failed: {e}")
+    return StreamingResponse(
+        io.BytesIO(zip_bytes),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="carousel.zip"'},
+    )
+
+
+@app.post("/api/hashtags/analyze")
+async def analyze_hashtags(req: dict):
+    """
+    Body: { caption: str, niche?: str, platform?: "tiktok"|"instagram"|"youtube"|"all" }
+    Returns:
+      {
+        "suggestions": [{ "tag": "#aita", "score": 87, "reason": "core Reddit-TikTok niche tag" }, …],
+        "from_caption": ["#existingTag", …],     # tags already in the user's caption
+        "benchmarks_used": int,                   # # of YT videos scraped, 0 if no API key
+        "provider": str, "model": str
+      }
+    """
+    caption = (req.get("caption") or "").strip()
+    if not caption:
+        raise HTTPException(400, "caption is required")
+    niche = (req.get("niche") or "").strip()
+    platform = (req.get("platform") or "all").strip().lower()
+    if platform not in ("tiktok", "instagram", "youtube", "all"):
+        platform = "all"
+
+    config = _load_config()
+    g = config.get("gemini") or {}
+    if not g.get("enabled"):
+        raise HTTPException(400, "AI is not enabled. Enable it in Config → AI Hooks first.")
+    provider = g.get("provider", "gemini")
+    api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    # Tags already in the caption — don't recommend duplicates.
+    existing = re.findall(r"#[\w_]+", caption)
+    existing_lower = {t.lower() for t in existing}
+
+    # YouTube benchmarks for tag-density reference (graceful no-op if no key).
+    yt_cfg = config.get("youtube", {}) or {}
+    yt_key = yt_cfg.get("api_key", "")
+    benchmarks: list[dict] = []
+    if yt_key and niche:
+        try:
+            from youtube_benchmarks import fetch_benchmarks
+            benchmarks = fetch_benchmarks(
+                f"{niche} reddit stories shorts" if niche else "reddit stories shorts",
+                yt_key, project_root=PROJECT_ROOT, count=8,
+            )
+        except Exception as e:
+            _log(f"Hashtag Lab: benchmark fetch failed: {e}")
+
+    # Build benchmarks block exactly like Social Copy does, then ask the
+    # LLM to rank tags. Strict JSON output.
+    benchmarks_block = ""
+    if benchmarks:
+        lines = []
+        for i, b in enumerate(benchmarks[:8], 1):
+            tags_str = ", ".join(b.get("tags", [])[:10]) or "(no tags)"
+            lines.append(
+                f"[{i}] {b.get('view_count', 0):,} views — \"{b.get('title','')}\"\n"
+                f"    tags: {tags_str}"
+            )
+        benchmarks_block = (
+            "\n\n=== HIGH-PERFORMING VIDEOS IN THIS NICHE (tag references) ===\n"
+            + "\n\n".join(lines) + "\n"
+        )
+
+    system = (
+        "You are a hashtag strategist for short-form video. Return ONLY minified "
+        "JSON, no markdown. Each suggestion must be a real, currently-active hashtag "
+        "(no fabricated trends). Score 0-100 reflecting how well the tag matches the "
+        "caption's content AND its likely reach on the target platform. Avoid generic "
+        "filler unless the benchmarks clearly use it."
+    )
+
+    prompt = (
+        f"Caption to analyze:\n\"{caption[:1500]}\"\n\n"
+        f"Niche: {niche or '(unspecified)'}\n"
+        f"Target platform: {platform}\n"
+        f"Tags already in the caption (do NOT re-recommend): {', '.join(existing) or 'none'}\n"
+        + benchmarks_block +
+        "\n"
+        "Return JSON of this exact shape:\n"
+        "{\n"
+        '  "suggestions": [\n'
+        '    {"tag": "#example", "score": 85, "reason": "<≤80 chars why this fits>"},\n'
+        '    ...\n'
+        "  ]\n"
+        "}\n\n"
+        "Return 12-20 suggestions, sorted by score descending. Mix:\n"
+        "- 3-5 core niche tags (the ones with the most accounts following them)\n"
+        "- 4-6 specific topical tags drawn from the caption's actual content\n"
+        "- 2-3 algorithmic reach tags (#fyp / #foryoupage etc) IF appropriate to platform\n"
+        "- 2-3 long-tail / community tags that target specific audiences\n"
+        "Tags MUST start with '#'. No spaces inside tags. Lowercase except for proper nouns."
+    )
+
+    from gemini_hooks import _call_ai  # type: ignore
+    raw = _call_ai(provider, api_key, prompt, system, model, ollama_url)
+    if not raw:
+        raise HTTPException(502, f"AI provider '{provider}' returned empty response")
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip("`").strip()
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        s = cleaned.find("{"); e = cleaned.rfind("}")
+        if s >= 0 and e > s:
+            try: parsed = json.loads(cleaned[s:e + 1])
+            except Exception:
+                raise HTTPException(502, f"AI returned non-JSON: {cleaned[:200]}")
+        else:
+            raise HTTPException(502, f"AI returned non-JSON: {cleaned[:200]}")
+
+    suggestions = []
+    for s in (parsed.get("suggestions") or []):
+        tag = (s.get("tag") or "").strip()
+        if not tag:
+            continue
+        if not tag.startswith("#"):
+            tag = "#" + tag
+        # Drop duplicates of existing tags.
+        if tag.lower() in existing_lower:
+            continue
+        try:
+            score = int(s.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        suggestions.append({
+            "tag": tag,
+            "score": max(0, min(100, score)),
+            "reason": str(s.get("reason") or "")[:140],
+        })
+    suggestions.sort(key=lambda x: x["score"], reverse=True)
+
+    return {
+        "suggestions": suggestions,
+        "from_caption": existing,
+        "benchmarks_used": len(benchmarks),
+        "provider": provider,
+        "model": model,
+    }
+
+
+@app.get("/api/news/feeds")
+async def list_news_feeds():
+    """Return the curated feed presets — surfaced as quick-pick buttons."""
+    from news_feeds import CURATED_FEEDS
+    return {"feeds": CURATED_FEEDS}
+
+
+@app.post("/api/news/fetch")
+async def fetch_news_feed(req: dict):
+    """Pull and parse an RSS/Atom feed. Body: { url: str }."""
+    from news_feeds import fetch_feed
+    url = (req.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "url is required")
+    items, err = await asyncio.to_thread(fetch_feed, url)
+    if err:
+        raise HTTPException(502, err)
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/api/pipeline/run-custom-script")
+async def run_pipeline_custom_script(req: dict = {}):
+    """
+    Render a user-pasted script — no AI generation, no Reddit fetching.
+    The script is materialised as a synthetic post via the same helper
+    the AI flow uses, then queued through the run-queue. UI lives at
+    /custom-script.
+
+    Body:
+      title:               required
+      body:                required (the script text — TTS will read this verbatim)
+      content_style:       "story" (default) — kept here for forward-compat
+      video_mode:          "short_reel" (default) | "reel" | "full_video"
+      tts_enabled:         bool (default true)
+      narrator_gender:     "auto" | "male" | "female"
+      voice_override:      voice_id or null
+      background_selector: folder | file | empty for random | null for config default
+      enqueue:             when true, push onto the run queue instead of firing
+                           immediately. Useful for paste-many-scripts workflows.
+    """
+    title = (req.get("title") or "").strip()
+    body  = (req.get("body") or "").strip()
+    if not title or not body:
+        raise HTTPException(400, "title and body are required")
+
+    content_style = (req.get("content_style") or "story").strip()
+    if content_style not in ("story", "qa", "interactive", "hot_take"):
+        content_style = "story"
+
+    video_mode = (req.get("video_mode") or "short_reel").strip()
+    tts_enabled = bool(req.get("tts_enabled", True))
+    narrator_gender = (req.get("narrator_gender") or "auto").strip().lower() or "auto"
+    voice_override = (req.get("voice_override") or "").strip() or None
+    bg = req.get("background_selector")
+    background_override = None if bg is None else str(bg).strip()
+    enqueue_only = bool(req.get("enqueue", False))
+
+    config = _load_config()
+
+    # Wrap the user's text into the same content_data shape AI generation
+    # produces, then write it to disk. The pipeline doesn't care where
+    # the body came from once posts/<id>/ exists.
+    content_data = {"title": title, "body": body}
+    post_id, _, subreddit, format_mode = _write_ai_post_to_disk(
+        content_data=content_data,
+        content_style=content_style,
+        niche="custom",
+        content_filter="normal",
+        target_audience=None,
+        tone="dramatic",
+        custom_title=title,
+    )
+
+    # Ensure the pipeline knows what mode + tts state to use.
+    if video_mode:
+        config.setdefault("video", {})["mode"] = video_mode
+    config.setdefault("formatting", {})["default_mode"] = format_mode
+    config.setdefault("tts", {})["enabled"] = tts_enabled
+    _save_config(config)
+
+    if enqueue_only or pipeline_state.get("is_running"):
+        from run_queue import enqueue
+        item = enqueue(PROJECT_ROOT, post_id=post_id, title=title, subreddit=subreddit,
+                       params={
+                           "kind": "post",
+                           "narrator_gender": narrator_gender if narrator_gender != "auto" else None,
+                           "voice_override": voice_override,
+                           "background_override": background_override,
+                       })
+        _log(f"Custom-script queued: {title[:60]} → {post_id}")
+        return {"started": False, "queued": True, "queue_item": item, "post_id": post_id}
+
+    pipeline_state["current_post"] = {"id": post_id, "title": title, "subreddit": subreddit, "score": 0}
+    _log(f"Custom-script pipeline starting: {title[:60]} → {post_id}")
+    asyncio.create_task(_run_pipeline_async(
+        specific_post_id=post_id,
+        narrator_gender=narrator_gender if narrator_gender != "auto" else None,
+        voice_override=voice_override,
+        background_override=background_override,
+    ))
+    return {"started": True, "queued": False, "post_id": post_id}
 
 
 @app.post("/api/pipeline/batch-run-ai")

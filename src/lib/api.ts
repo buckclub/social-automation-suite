@@ -869,6 +869,62 @@ export const api = {
       { method: "POST", body: JSON.stringify(params) },
     ),
 
+  // ── Carousel Posts ───────────────────────────────────────────
+  carouselSplitScript: (params: { script: string; slide_count?: number }) =>
+    request<{ slides: { title: string; body: string }[]; count: number }>(
+      "/api/carousels/split-script",
+      { method: "POST", body: JSON.stringify(params) },
+    ),
+  carouselPreview: (params: {
+    slide: { title: string; body: string };
+    style: Record<string, unknown>;
+    idx: number;
+    total: number;
+  }) =>
+    request<{ data_uri: string }>(
+      "/api/carousels/preview",
+      { method: "POST", body: JSON.stringify(params) },
+    ),
+  carouselRenderUrl: () => `${API_BASE}/api/carousels/render`,
+
+  // ── Hashtag Lab ──────────────────────────────────────────────
+  analyzeHashtags: (params: { caption: string; niche?: string; platform?: "tiktok" | "instagram" | "youtube" | "all" }) =>
+    request<{
+      suggestions: { tag: string; score: number; reason: string }[];
+      from_caption: string[];
+      benchmarks_used: number;
+      provider: string;
+      model: string;
+    }>("/api/hashtags/analyze", { method: "POST", body: JSON.stringify(params) }),
+
+  // ── News Roundup ─────────────────────────────────────────────
+  listNewsFeeds: () =>
+    request<{ feeds: { id: string; name: string; url: string; niche: string }[] }>(
+      "/api/news/feeds",
+    ),
+  fetchNewsFeed: (url: string) =>
+    request<{ items: { title: string; link: string; summary: string; published_at: string; source: string }[]; count: number }>(
+      "/api/news/fetch",
+      { method: "POST", body: JSON.stringify({ url }) },
+    ),
+
+  // Render a user-pasted script (no AI generation, no Reddit fetch).
+  runCustomScript: (params: {
+    title: string;
+    body: string;
+    content_style?: "story" | "qa" | "interactive" | "hot_take";
+    video_mode?: string;
+    tts_enabled?: boolean;
+    narrator_gender?: "auto" | "male" | "female";
+    voice_override?: string;
+    background_selector?: string;
+    enqueue?: boolean;
+  }) =>
+    request<{ started: boolean; queued: boolean; post_id: string }>(
+      "/api/pipeline/run-custom-script",
+      { method: "POST", body: JSON.stringify(params) },
+    ),
+
   // Queue many AI-generated stories at once. Each item is one approved
   // variant + the same per-run options runPipelineAI takes. The backend
   // writes each as a synthetic post and enqueues on the existing run

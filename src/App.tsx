@@ -19,6 +19,10 @@ import ClipsPage from "./pages/ClipsPage";
 import ClipProjectPage from "./pages/ClipProjectPage";
 import ConfigPage from "./pages/ConfigPage";
 import TextPostsPage from "./pages/TextPostsPage";
+import CustomScriptPage from "./pages/CustomScriptPage";
+import NewsRoundupPage from "./pages/NewsRoundupPage";
+import HashtagLabPage from "./pages/HashtagLabPage";
+import CarouselPage from "./pages/CarouselPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -38,6 +42,10 @@ const App = () => (
             <Route path="/clips" element={<ClipsPage />} />
             <Route path="/clips/:id" element={<ClipProjectPage />} />
             <Route path="/text-posts" element={<TextPostsPage />} />
+            <Route path="/custom-script" element={<CustomScriptPage />} />
+            <Route path="/news" element={<NewsRoundupPage />} />
+            <Route path="/hashtag-lab" element={<HashtagLabPage />} />
+            <Route path="/carousels" element={<CarouselPage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
