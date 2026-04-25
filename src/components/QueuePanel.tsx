@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { api, type QueueItem } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useAppEvent, isLiveConnected } from "@/lib/eventBus";
+import { useUndoableDelete } from "@/hooks/use-undoable-delete";
 import { formatDistanceToNow } from "date-fns";
 
 /**
@@ -85,12 +86,26 @@ export function QueuePanel() {
     }
   };
 
-  const clearHistory = async () => {
+  const undoDelete = useUndoableDelete();
+  const clearHistory = () => {
     if (!history.length) return;
-    try {
-      await api.queueClearHistory();
-      refresh();
-    } catch {}
+    // Snapshot the to-be-cleared rows so we can show them again on
+    // undo (the data prop snapshot itself is immutable; this keeps
+    // the displayed queue in lock-step with the optimistic hide).
+    const snapshot = data;
+    undoDelete({
+      label: `Cleared ${history.length} history row${history.length === 1 ? "" : "s"}`,
+      description: "Click Undo to restore.",
+      hide: () =>
+        setData((d) =>
+          d ? { ...d, items: d.items.filter((it) => !["done", "failed", "cancelled"].includes(it.status)) } : d,
+        ),
+      restore: () => setData(snapshot),
+      commit: async () => {
+        await api.queueClearHistory();
+        refresh();
+      },
+    });
   };
 
   return (

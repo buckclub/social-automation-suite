@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { useAppEvent, isLiveConnected } from "@/lib/eventBus";
+import { useUndoableDelete } from "@/hooks/use-undoable-delete";
 
 /**
  * Floating status chip for the Social Copy batch queue. Auto-hides when
@@ -56,14 +57,22 @@ export function SocialCopyQueueChip() {
     }
   };
 
-  const clearHistory = async () => {
-    try {
-      const r = await api.clearSocialQueueHistory();
-      if (r.removed) toast({ title: `Cleared ${r.removed} finished item(s)` });
-      refresh();
-    } catch (e: any) {
-      toast({ title: "Clear failed", description: e.message, variant: "destructive" });
-    }
+  const undoDelete = useUndoableDelete();
+  const clearHistory = () => {
+    const finishedCount = items.filter((it) => ["done", "failed", "cancelled"].includes(it.status)).length;
+    if (!finishedCount) return;
+    const snapshot = items;
+    undoDelete({
+      label: `Cleared ${finishedCount} finished item${finishedCount === 1 ? "" : "s"}`,
+      description: "Click Undo to restore.",
+      hide: () =>
+        setItems((cur) => cur.filter((it) => !["done", "failed", "cancelled"].includes(it.status))),
+      restore: () => setItems(snapshot),
+      commit: async () => {
+        await api.clearSocialQueueHistory();
+        refresh();
+      },
+    });
   };
 
   return (

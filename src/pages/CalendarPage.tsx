@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppEvent, isLiveConnected } from "@/lib/eventBus";
+import { useUndoableDelete } from "@/hooks/use-undoable-delete";
 import { useNavigate } from "react-router-dom";
 import {
   Calendar as CalendarIcon, Loader2, Plus, Trash2, Play,
@@ -109,14 +110,22 @@ export default function CalendarPage() {
     [brands],
   );
 
-  const onDelete = async (s: CalendarSlot) => {
-    if (!confirm(`Delete scheduled slot "${s.title}"?`)) return;
-    try {
-      await api.deleteCalendarSlot(s.id);
-      refresh();
-    } catch (e: any) {
-      toast({ title: "Delete failed", description: e.message, variant: "destructive" });
-    }
+  const undoDelete = useUndoableDelete();
+  const onDelete = (s: CalendarSlot) => {
+    // No more confirm() prompt — the 5-second undo window IS the
+    // confirmation. Optimistically remove from the list, fire the
+    // backend delete after the timer if not undone.
+    undoDelete({
+      label: `Deleted "${s.title || "slot"}"`,
+      description: "Click Undo to restore.",
+      hide: () => setSlots((cur) => cur.filter((x) => x.id !== s.id)),
+      restore: () => setSlots((cur) =>
+        // Re-insert maintaining scheduled_at order so it pops back into
+        // its original spot in the grouped view, not at the top.
+        [...cur, s].sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at)),
+      ),
+      commit: () => api.deleteCalendarSlot(s.id),
+    });
   };
   const onFireNow = async (s: CalendarSlot) => {
     try {
