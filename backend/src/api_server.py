@@ -2328,14 +2328,35 @@ async def pipeline_status():
 
 @app.post("/api/pipeline/run")
 async def run_pipeline(req: dict = {}):
-    if pipeline_state["is_running"]:
-        raise HTTPException(409, "Pipeline is already running")
     post_id = req.get("post_id")
     selected_comments = req.get("selected_comments")  # optional list of indices
     max_comment_chars = req.get("max_comment_chars", 0)
     narrator_gender  = req.get("narrator_gender")  # "auto" | "male" | "female" | None
     voice_override   = req.get("voice_override")
     fresh            = bool(req.get("fresh"))  # true = wipe existing project data first
+
+    # If the pipeline is already running, auto-enqueue instead of
+    # rejecting with 409. This way users clicking "render" on multiple
+    # Reddit posts in quick succession get their work queued instead of
+    # an error per click. Mirrors the run-custom-script behavior. The
+    # frontend's existing success path handles the queued response
+    # (started:false, queued:true) — calling code already special-cases
+    # this shape from the custom-script flow.
+    if pipeline_state["is_running"] and post_id:
+        from run_queue import enqueue
+        item = enqueue(
+            PROJECT_ROOT, post_id=post_id, title="", subreddit="",
+            params={
+                "kind": "post",
+                "selected_comments": selected_comments,
+                "max_comment_chars": max_comment_chars,
+                "narrator_gender": narrator_gender if narrator_gender != "auto" else None,
+                "voice_override": voice_override,
+                "fresh": fresh,
+            },
+        )
+        _log(f"Pipeline busy — queued post {post_id} ({item['queue_id'][:8]})")
+        return {"started": False, "queued": True, "queue_item": item, "post_id": post_id}
 
     # If `fresh` is set, delete EVERYTHING associated with this post so the
     # new run doesn't appear as a duplicate on the Videos page:
@@ -2435,13 +2456,10 @@ async def run_pipeline(req: dict = {}):
 @app.post("/api/pipeline/run-url")
 async def run_pipeline_from_url(req: dict = {}):
     """Run the pipeline from a specific Reddit URL with custom preferences."""
-    if pipeline_state["is_running"]:
-        raise HTTPException(409, "Pipeline is already running")
-    
     url = req.get("url", "").strip()
     if not url:
         raise HTTPException(400, "URL is required")
-    
+
     post_id = None
     match = re.search(r'/comments/([a-z0-9]+)', url)
     if match:
@@ -2450,15 +2468,33 @@ async def run_pipeline_from_url(req: dict = {}):
         match = re.search(r'redd\.it/([a-z0-9]+)', url)
         if match:
             post_id = match.group(1)
-    
+
     if not post_id:
         raise HTTPException(400, "Could not extract post ID from URL. Use a valid Reddit post URL.")
-    
+
     video_mode = req.get("video_mode")
     format_mode = req.get("format_mode")
     tts_enabled = req.get("tts_enabled")
     selected_comments = req.get("selected_comments")  # list of indices
     max_comment_chars = req.get("max_comment_chars", 0)
+
+    # Auto-enqueue if busy (mirrors /api/pipeline/run). User pasting a
+    # URL while a render is in flight gets queued instead of an error.
+    if pipeline_state["is_running"]:
+        from run_queue import enqueue
+        item = enqueue(
+            PROJECT_ROOT, post_id=post_id, title="", subreddit="",
+            params={
+                "kind": "post",
+                "selected_comments": selected_comments,
+                "max_comment_chars": max_comment_chars,
+                "video_mode": video_mode,
+                "format_mode": format_mode,
+                "tts_enabled": tts_enabled,
+            },
+        )
+        _log(f"Pipeline busy — queued URL post {post_id} ({item['queue_id'][:8]})")
+        return {"started": False, "queued": True, "queue_item": item, "post_id": post_id}
     
     config = _load_config()
     if video_mode:
@@ -2486,10 +2522,12 @@ async def run_pipeline_from_url(req: dict = {}):
 
 @app.post("/api/pipeline/run-custom")
 async def run_pipeline_custom(req: dict = {}):
-    """Run the pipeline from user-provided custom story or Q&A content."""
-    if pipeline_state["is_running"]:
-        raise HTTPException(409, "Pipeline is already running")
+    """Run the pipeline from user-provided custom story or Q&A content.
 
+    Auto-enqueues if a render is already in flight (mirrors
+    /api/pipeline/run). The synthetic post is materialised on disk
+    either way; the queue worker picks it up by post_id.
+    """
     title = req.get("title", "").strip()
     content = req.get("content", "").strip()
     format_mode = req.get("format_mode", "story")
@@ -2570,6 +2608,18 @@ async def run_pipeline_custom(req: dict = {}):
     if tts_enabled is not None:
         config.setdefault("tts", {})["enabled"] = tts_enabled
     _save_config(config)
+
+    # Auto-enqueue when busy. Synthetic post is already on disk above
+    # so the queue worker can resolve it via summary.json without
+    # needing to re-materialise.
+    if pipeline_state["is_running"]:
+        from run_queue import enqueue
+        item = enqueue(
+            PROJECT_ROOT, post_id=post_id, title=title, subreddit="Custom",
+            params={"kind": "post"},
+        )
+        _log(f"Pipeline busy — queued custom post {post_id} ({item['queue_id'][:8]})")
+        return {"started": False, "queued": True, "queue_item": item, "post_id": post_id}
 
     # Start pipeline
     for step in pipeline_state["steps"]:
@@ -3859,6 +3909,12 @@ async def resume_video_from_audio(req: dict = {}):
         summary = json.load(f)
 
     title = summary.get("title", post_id)
+    # Snapshot the original title for the visual title card / thumbnail
+    # before any TTS-prefilter mangling later in the pipeline. Defined
+    # here at the top so every code path (resume, normal, custom) has
+    # it available — the prefilter branch later overwrites `title` but
+    # leaves this snapshot untouched.
+    display_title = title
 
     # Prefer the authoritative timeline.json saved when TTS ran — its text ↔ audio
     # mapping is guaranteed correct. Fall back to the old audio-file scan for older posts.
@@ -4386,6 +4442,12 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
 
                 post_body = selftext if mode == "story" or selftext else ""
 
+                # display_title was snapshotted at the top of
+                # _run_pipeline_async before any prefilter ran — it
+                # holds the original "(32M)" form for the visual title
+                # card. The prefilter below mangles `title` for TTS but
+                # leaves display_title alone.
+
                 # Deterministic pre-TTS substitutions. Runs BEFORE Ollama
                 # normalization so our expansions (age+sex, TL;DR, AITA/NTA,
                 # in-law acronyms) survive any rewrite.
@@ -4822,10 +4884,15 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                         if idx < len(parts):
                             tail_text = outro_text_template.replace("{next_part}", str(idx + 1))
 
+                        # Use display_title (original "(32M)" / "(29F)"
+                        # form) for the visual title card. The TTS audio
+                        # was already generated upstream from the
+                        # spelled-out `title`, so the card text and the
+                        # narration intentionally diverge.
                         if engine == "ffmpeg":
-                            vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, part_segs, part_out, tail_text, tail_dur, branding, title, post_subreddit, post_score)
+                            vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, part_segs, part_out, tail_text, tail_dur, branding, display_title, post_subreddit, post_score)
                         else:
-                            vp = await asyncio.to_thread(video_gen.generate_video, part_segs, part_out, tail_text, tail_dur, branding, title, post_subreddit, post_score)
+                            vp = await asyncio.to_thread(video_gen.generate_video, part_segs, part_out, tail_text, tail_dur, branding, display_title, post_subreddit, post_score)
 
                         if vp:
                             generated_video_paths.append(vp)
@@ -4840,10 +4907,13 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                     video_sub_steps = [{"label": "Full video", "status": "running", "detail": f"{engine} engine · {len(timeline)} segments"}]
                     _set_step("video", "running", f"Rendering single video · engine: {engine}", video_sub_steps)
                     _log(f"Rendering single video ({engine} engine)...")
+                    # display_title preserves the original "(32M)" form
+                    # for the visual card; TTS audio used the spelled-out
+                    # `title` upstream.
                     if engine == "ffmpeg":
-                        vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, timeline, output_video, None, 0.0, branding, title, post_subreddit, post_score)
+                        vp = await asyncio.to_thread(video_gen.generate_video_ffmpeg, timeline, output_video, None, 0.0, branding, display_title, post_subreddit, post_score)
                     else:
-                        vp = await asyncio.to_thread(video_gen.generate_video, timeline, output_video, None, 0.0, branding, title, post_subreddit, post_score)
+                        vp = await asyncio.to_thread(video_gen.generate_video, timeline, output_video, None, 0.0, branding, display_title, post_subreddit, post_score)
                     if vp:
                         # Post-render overlays. Order matters: B-roll
                         # FIRST (replaces the background during its
@@ -4998,7 +5068,16 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                     video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
                 video_gen.set_background_selector(background_override if background_override is not None else (config.get("video", {}) or {}).get("background_selector", ""))
                 branding = config.get("video", {}).get("branding", "")
-                p_title = pipeline_state.get("current_post", {}).get("title", title) if pipeline_state.get("current_post") else title
+                # Thumbnails use display_title (the original "(32M)"
+                # form) so the visual matches the title card. The
+                # pipeline_state's "title" field can also drift to the
+                # prefiltered version if a brand-switch happened mid-
+                # render — fall back to display_title rather than the
+                # state title to keep the card and the thumbnail in sync.
+                p_title = display_title if display_title else (
+                    pipeline_state.get("current_post", {}).get("title", title)
+                    if pipeline_state.get("current_post") else title
+                )
                 p_sub = pipeline_state.get("current_post", {}).get("subreddit", "") if pipeline_state.get("current_post") else ""
                 p_score = pipeline_state.get("current_post", {}).get("score", 0) if pipeline_state.get("current_post") else 0
                 thumb_title_override = gemini_thumbnail_text if gemini_thumbnail_text else None

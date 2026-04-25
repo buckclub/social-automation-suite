@@ -54,11 +54,18 @@ export function FullRedoDialog({ postId, title, open, onOpenChange }: Props) {
       params.voice_override = voiceOverride.trim();
     }
     runPipeline.mutate(params, {
-      onSuccess: () => {
-        toast({
-          title: "Full pipeline started",
-          description: `Redoing "${title}" from scratch. New TTS credits will be used.`,
-        });
+      onSuccess: (r) => {
+        if (r.queued) {
+          toast({
+            title: "Queued — pipeline busy",
+            description: `"${title.slice(0, 60)}" will redo after the current render.`,
+          });
+        } else {
+          toast({
+            title: "Full pipeline started",
+            description: `Redoing "${title}" from scratch. New TTS credits will be used.`,
+          });
+        }
         onOpenChange(false);
       },
       onError: (e) => toast({ title: "Redo failed", description: e.message, variant: "destructive" }),

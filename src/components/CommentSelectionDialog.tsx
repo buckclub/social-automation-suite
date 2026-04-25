@@ -111,8 +111,19 @@ export function CommentSelectionDialog({
       if (maxCharLimit > 0) params.max_comment_chars = maxCharLimit;
     }
     runPipeline.mutate(params, {
-      onSuccess: () => {
-        toast({ title: "Pipeline started", description: `Creating reel from "${post.title}"` });
+      // Backend auto-enqueues when a render is already in flight, so
+      // we get a successful response either way. Branch on `queued` to
+      // tell the user whether their render started immediately or
+      // landed in the queue.
+      onSuccess: (r) => {
+        if (r.queued) {
+          toast({
+            title: "Queued — pipeline busy",
+            description: `"${post.title.slice(0, 60)}" will run after the current render.`,
+          });
+        } else {
+          toast({ title: "Pipeline started", description: `Creating reel from "${post.title}"` });
+        }
         handleClose();
       },
       onError: (e) => toast({ title: "Failed", description: e.message, variant: "destructive" }),

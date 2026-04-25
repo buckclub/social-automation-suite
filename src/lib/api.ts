@@ -798,18 +798,23 @@ export const api = {
       body: JSON.stringify(params),
     }),
 
-  // Generate from URL
+  // Generate from URL.
+  // Backend auto-enqueues if a render is already in flight; the
+  // response will then be { started: false, queued: true, queue_item }.
+  // Callers should toast "Queued" instead of "Started" in that case.
   runPipelineFromUrl: (params: {
     url: string; video_mode: string; format_mode: string; tts_enabled: boolean;
     selected_comments?: number[]; max_comment_chars?: number;
   }) =>
-    request<{ started: boolean }>("/api/pipeline/run-url", {
-      method: "POST",
-      body: JSON.stringify(params),
-    }),
+    request<{ started: boolean; queued?: boolean; post_id?: string; queue_item?: unknown }>(
+      "/api/pipeline/run-url",
+      { method: "POST", body: JSON.stringify(params) },
+    ),
 
   // Pipeline
   getPipelineStatus: () => request<PipelineState>("/api/pipeline/status"),
+  // Backend auto-enqueues when busy; treat { started: false, queued: true }
+  // as success and show a "Queued" toast instead of an error.
   runPipeline: (params?: {
     post_id?: string;
     selected_comments?: number[];
@@ -818,10 +823,10 @@ export const api = {
     voice_override?: string;
     fresh?: boolean;
   }) =>
-    request<{ started: boolean }>("/api/pipeline/run", {
-      method: "POST",
-      body: JSON.stringify(params || {}),
-    }),
+    request<{ started: boolean; queued?: boolean; post_id?: string; queue_item?: unknown }>(
+      "/api/pipeline/run",
+      { method: "POST", body: JSON.stringify(params || {}) },
+    ),
   resetPipeline: () =>
     request<{ success: boolean }>("/api/pipeline/reset", { method: "POST" }),
   cancelPipeline: () =>
