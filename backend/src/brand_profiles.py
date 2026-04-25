@@ -58,6 +58,7 @@ BRAND_KEYS: dict[str, object] = {
     "captions":      True,           # full block
     "clip_captions": True,
     "thumbnail":     True,
+    "avatar":        True,           # PNG-tuber settings (full block — see avatar_renderer.DEFAULT_SETTINGS)
     "video":         ("branding", "outro_text", "background_selector", "broll"),
     "tts":           ("main_voice", "voice_presets", "use_multiple_voices",
                       "comment_voices", "background_music", "elevenlabs_subset"),

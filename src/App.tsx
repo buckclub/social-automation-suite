@@ -28,6 +28,7 @@ import MusicLibraryPage from "./pages/MusicLibraryPage";
 import PerformancePage from "./pages/PerformancePage";
 import BrandsPage from "./pages/BrandsPage";
 import NicheFinderPage from "./pages/NicheFinderPage";
+import AvatarReelsPage from "./pages/AvatarReelsPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -56,6 +57,7 @@ const App = () => (
             <Route path="/performance" element={<PerformancePage />} />
             <Route path="/brands" element={<BrandsPage />} />
             <Route path="/niche-finder" element={<NicheFinderPage />} />
+            <Route path="/avatar-reels" element={<AvatarReelsPage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

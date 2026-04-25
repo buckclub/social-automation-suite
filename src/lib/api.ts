@@ -904,6 +904,41 @@ export const api = {
     ),
   carouselRenderUrl: () => `${API_BASE}/api/carousels/render`,
 
+  // ── Avatar Reels (per-brand PNG-tuber) ───────────────────────
+  listAvatars: (brandId: string) =>
+    request<{ avatars: { filename: string; emotion: string; talking: boolean; size_bytes: number }[] }>(
+      `/api/brands/${encodeURIComponent(brandId)}/avatar`,
+    ),
+  uploadAvatar: (brandId: string, file: File, emotion: string, talking: boolean) =>
+    new Promise<{ saved: boolean; filename: string; emotion: string; talking: boolean }>((resolve, reject) => {
+      const form = new FormData();
+      form.append("file", file);
+      const xhr = new XMLHttpRequest();
+      const qs = new URLSearchParams({ emotion, talking: String(talking) });
+      xhr.open("POST", `${API_BASE}/api/brands/${encodeURIComponent(brandId)}/avatar/upload?${qs}`);
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+          else reject(new Error(data.detail || data.error || xhr.statusText));
+        } catch (e) { reject(e); }
+      };
+      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.send(form);
+    }),
+  updateAvatarMeta: (brandId: string, filename: string, body: { emotion?: string; talking?: boolean }) =>
+    request<{ saved: boolean; emotion?: string; talking?: boolean }>(
+      `/api/brands/${encodeURIComponent(brandId)}/avatar/${encodeURIComponent(filename)}`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  deleteAvatar: (brandId: string, filename: string) =>
+    request<{ deleted: boolean }>(
+      `/api/brands/${encodeURIComponent(brandId)}/avatar/${encodeURIComponent(filename)}`,
+      { method: "DELETE" },
+    ),
+  avatarPngUrl: (brandId: string, filename: string, bust?: string) =>
+    `${API_BASE}/api/brands/${encodeURIComponent(brandId)}/avatar/${encodeURIComponent(filename)}${bust ? `?v=${encodeURIComponent(bust)}` : ""}`,
+
   // ── Channel niche finder ─────────────────────────────────────
   generateNiches: (params: {
     interests?: string;

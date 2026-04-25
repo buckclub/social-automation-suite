@@ -4320,9 +4320,11 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                     else:
                         vp = await asyncio.to_thread(video_gen.generate_video, timeline, output_video, None, 0.0, branding, title, post_subreddit, post_score)
                     if vp:
-                        # Auto B-roll overlay (best-effort post-render step).
-                        # Only meaningful for the FFmpeg engine; the moviepy
-                        # path skips this since its output format may differ.
+                        # Post-render overlays. Order matters: B-roll
+                        # FIRST (replaces the background during its
+                        # window), then the avatar layered on top so the
+                        # PNG-tuber is visible regardless of which b-roll
+                        # is showing behind it.
                         if engine == "ffmpeg":
                             try:
                                 n = await _maybe_apply_broll(post_id, vp, timeline, video_gen, config)
@@ -4330,6 +4332,11 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                                     _log(f"B-roll: overlaid {n} moment(s) onto {os.path.basename(vp)}")
                             except Exception as e:
                                 _log(f"B-roll overlay error (non-fatal): {e}")
+                            try:
+                                if await _maybe_apply_avatar(post_id, vp, timeline, video_gen, config):
+                                    _log(f"Avatar: overlaid onto {os.path.basename(vp)}")
+                            except Exception as e:
+                                _log(f"Avatar overlay error (non-fatal): {e}")
                         generated_video_paths.append(vp)
                         video_sub_steps[0]["status"] = "done"
                     else:
@@ -5222,6 +5229,161 @@ async def brands_get_pic(brand_id: str):
     return FileResponse(p, media_type="image/png")
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Avatar Reels — per-brand "PNG-tuber" management.
+#
+# Each brand has its own avatar directory: brands/<id>/avatar/<slug>.png
+# with metadata at brands/<id>/avatar.json giving each PNG an emotion
+# tag (neutral/happy/sad/angry/surprised/confused/excited) + a "talking"
+# boolean (mouth open variant).
+#
+# Animation knobs (position, scale, jiggle, threshold, fps) live in
+# the brand's config_overrides.avatar block — gets snapshotted/applied
+# along with everything else when brands are switched.
+# ──────────────────────────────────────────────────────────────────────
+
+def _avatar_dir(brand_id: str) -> str:
+    return os.path.join(PROJECT_ROOT, "brands", brand_id, "avatar")
+
+
+def _avatar_meta_path(brand_id: str) -> str:
+    return os.path.join(_avatar_dir(brand_id), "avatar.json")
+
+
+def _load_avatar_meta(brand_id: str) -> dict:
+    p = _avatar_meta_path(brand_id)
+    if not os.path.isfile(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _save_avatar_meta(brand_id: str, meta: dict) -> None:
+    os.makedirs(_avatar_dir(brand_id), exist_ok=True)
+    p = _avatar_meta_path(brand_id)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, p)
+
+
+@app.get("/api/brands/{brand_id}/avatar")
+async def avatar_list(brand_id: str):
+    """Every PNG in this brand's avatar/ folder + tags."""
+    from brand_profiles import get_profile
+    if not get_profile(PROJECT_ROOT, brand_id):
+        raise HTTPException(404, "Brand not found")
+    d = _avatar_dir(brand_id)
+    meta = _load_avatar_meta(brand_id)
+    out = []
+    if os.path.isdir(d):
+        for fn in sorted(os.listdir(d)):
+            if not fn.lower().endswith(".png"):
+                continue
+            full = os.path.join(d, fn)
+            row = meta.get(fn) or {}
+            out.append({
+                "filename":   fn,
+                "emotion":    (row.get("emotion") or "neutral"),
+                "talking":    bool(row.get("talking", False)),
+                "size_bytes": os.path.getsize(full),
+            })
+    return {"avatars": out}
+
+
+@app.post("/api/brands/{brand_id}/avatar/upload")
+async def avatar_upload(brand_id: str,
+                        file: UploadFile = File(...),
+                        emotion: str = "neutral",
+                        talking: bool = False):
+    """Upload a PNG. Tag it on upload (emotion + talking). De-dup name."""
+    from brand_profiles import get_profile
+    if not get_profile(PROJECT_ROOT, brand_id):
+        raise HTTPException(404, "Brand not found")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "empty upload")
+    fn = (file.filename or "avatar.png")
+    if not fn.lower().endswith(".png"):
+        # Force .png suffix — the renderer assumes RGBA PNG.
+        fn = re.sub(r"\.[^.]+$", "", fn) + ".png"
+    fn = re.sub(r"[^\w\.\- ]+", "_", fn).strip(" ._") or "avatar.png"
+
+    d = _avatar_dir(brand_id)
+    os.makedirs(d, exist_ok=True)
+    dest = os.path.join(d, fn)
+    n = 2
+    while os.path.exists(dest):
+        stem, ext = os.path.splitext(fn)
+        dest = os.path.join(d, f"{stem}_{n}{ext}")
+        n += 1
+    with open(dest, "wb") as f:
+        f.write(content)
+
+    em = (emotion or "neutral").lower().strip()
+    valid = ("neutral", "happy", "sad", "angry", "surprised", "confused", "excited")
+    if em not in valid:
+        em = "neutral"
+    meta = _load_avatar_meta(brand_id)
+    meta[os.path.basename(dest)] = {
+        "emotion": em,
+        "talking": bool(talking),
+    }
+    _save_avatar_meta(brand_id, meta)
+    return {
+        "saved": True,
+        "filename": os.path.basename(dest),
+        "emotion": em, "talking": bool(talking),
+    }
+
+
+@app.put("/api/brands/{brand_id}/avatar/{filename}")
+async def avatar_update_meta(brand_id: str, filename: str, req: dict):
+    """Update emotion / talking flag on an existing PNG."""
+    from brand_profiles import get_profile
+    if not get_profile(PROJECT_ROOT, brand_id):
+        raise HTTPException(404, "Brand not found")
+    if not os.path.isfile(os.path.join(_avatar_dir(brand_id), filename)):
+        raise HTTPException(404, "PNG not found")
+    valid = ("neutral", "happy", "sad", "angry", "surprised", "confused", "excited")
+    em = (req.get("emotion") or "").lower().strip()
+    if em and em not in valid:
+        raise HTTPException(400, f"emotion must be one of {valid}")
+    meta = _load_avatar_meta(brand_id)
+    row = meta.setdefault(filename, {})
+    if em:
+        row["emotion"] = em
+    if "talking" in req:
+        row["talking"] = bool(req["talking"])
+    _save_avatar_meta(brand_id, meta)
+    return {"saved": True, "filename": filename, **row}
+
+
+@app.delete("/api/brands/{brand_id}/avatar/{filename}")
+async def avatar_delete(brand_id: str, filename: str):
+    p = os.path.join(_avatar_dir(brand_id), filename)
+    if not os.path.isfile(p):
+        raise HTTPException(404, "PNG not found")
+    try: os.remove(p)
+    except OSError: raise HTTPException(500, "Failed to delete")
+    meta = _load_avatar_meta(brand_id)
+    meta.pop(filename, None)
+    _save_avatar_meta(brand_id, meta)
+    return {"deleted": True}
+
+
+@app.get("/api/brands/{brand_id}/avatar/{filename}")
+async def avatar_serve(brand_id: str, filename: str):
+    """Stream a single PNG so the UI thumbnails / preview can show it."""
+    p = os.path.join(_avatar_dir(brand_id), filename)
+    if not os.path.isfile(p):
+        raise HTTPException(404, "PNG not found")
+    return FileResponse(p, media_type="image/png")
+
+
 def _active_brand_summary() -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Helper for tagging videos_db rows. Returns (brand_id, brand_name, brand_color).
@@ -5239,6 +5401,125 @@ def _active_brand_summary() -> tuple[Optional[str], Optional[str], Optional[str]
         return bid, prof.get("name"), prof.get("color")
     except Exception:
         return None, None, None
+
+
+async def _maybe_apply_avatar(post_id: str, video_path: str, timeline: list, video_gen, config: dict) -> bool:
+    """
+    If the active brand has avatar.enabled, render a transparent webm
+    overlay matching the rendered video's duration / canvas, then
+    composite it on top via FFmpeg. Best-effort — never raises.
+    """
+    bid = (config or {}).get("active_brand_id")
+    if not bid:
+        return False
+    avatar_cfg = (config.get("avatar") or {})
+    if not avatar_cfg.get("enabled"):
+        return False
+
+    brand_avatar_dir = os.path.join(PROJECT_ROOT, "brands", bid, "avatar")
+    if not os.path.isdir(brand_avatar_dir):
+        return False
+    # Need at least one PNG.
+    has_png = any(
+        f.lower().endswith(".png") for f in os.listdir(brand_avatar_dir)
+    )
+    if not has_png:
+        return False
+
+    # Source narration text + total duration.
+    text = " ".join((seg.get("text") or "").strip() for seg in (timeline or []) if seg.get("text"))
+    total_dur = 0.0
+    for seg in (timeline or []):
+        try: total_dur += float(seg.get("duration") or 0)
+        except (TypeError, ValueError): pass
+    if total_dur < 1.0:
+        return False
+
+    # Find the rendered AUDIO file alongside the video so amplitude
+    # analysis doesn't have to demux the muxed mp4 a second time.
+    # `posts/<id>/audio_full.m4a` or `*.m4a` is a fair guess; fall back
+    # to the rendered video itself (FFmpeg will demux).
+    audio_for_amp = video_path
+    posts_dir = os.path.join(PROJECT_ROOT, "posts", post_id)
+    for cand in ("ffmpeg_audio_temp.m4a", "audio_full.m4a", "audio.m4a"):
+        p = os.path.join(posts_dir, cand)
+        if os.path.isfile(p):
+            audio_for_amp = p
+            break
+
+    g = config.get("gemini") or {}
+    provider = g.get("provider", "gemini")
+    api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    try:
+        from avatar_renderer import (
+            DEFAULT_SETTINGS, compute_amplitude_windows,
+            compute_emotion_windows, render_avatar_overlay,
+            overlay_webm_onto_video,
+        )
+        settings = {**DEFAULT_SETTINGS, **(avatar_cfg or {})}
+        fps = int(settings.get("fps", 30))
+        threshold_db = float(settings.get("talk_threshold_db", -32.0))
+        use_emotions = bool(settings.get("use_emotions", True)) and bool(g.get("enabled"))
+
+        _log(f"Avatar: analyzing audio amplitude (fps={fps}, threshold_db={threshold_db})")
+        amp = await asyncio.to_thread(
+            compute_amplitude_windows,
+            audio_for_amp, fps=fps, threshold_db=threshold_db,
+        )
+        if not amp:
+            _log("Avatar: amplitude analysis returned no frames; skipping overlay")
+            return False
+
+        _log(f"Avatar: tagging emotions (use_llm={use_emotions})")
+        emotions = await asyncio.to_thread(
+            compute_emotion_windows,
+            text=text, total_duration_s=total_dur,
+            provider=provider, api_key=api_key, model=model, ollama_url=ollama_url,
+            use_llm=use_emotions,
+        )
+
+        # Canvas size = video_gen's reel dims (already 1080×1920 for reels).
+        canvas_w = int(getattr(video_gen, "width", 1080))
+        canvas_h = int(getattr(video_gen, "height", 1920))
+
+        out_dir = os.path.dirname(video_path)
+        webm_path = os.path.join(out_dir, "avatar_overlay.webm")
+        _log(f"Avatar: rendering {fps}fps overlay (~{int(total_dur)}s, {canvas_w}×{canvas_h})")
+        ok = await asyncio.to_thread(
+            render_avatar_overlay,
+            avatar_dir=brand_avatar_dir,
+            canvas_w=canvas_w, canvas_h=canvas_h,
+            duration_s=total_dur, fps=fps,
+            amplitude_frames=amp,
+            emotions=emotions,
+            settings=settings,
+            output_webm=webm_path,
+        )
+        if not ok:
+            return False
+
+        composed = os.path.join(out_dir, "with_avatar.mp4")
+        ok = await asyncio.to_thread(
+            overlay_webm_onto_video,
+            video_path, webm_path, composed,
+        )
+        if ok:
+            os.replace(composed, video_path)
+            try: os.remove(webm_path)
+            except OSError: pass
+            _log(f"Avatar: ✓ overlaid onto {os.path.basename(video_path)}")
+            return True
+        return False
+    except Exception as e:
+        _log(f"Avatar overlay error (non-fatal): {e}")
+        return False
 
 
 async def _maybe_apply_broll(post_id: str, video_path: str, timeline: list, video_gen, config: dict) -> int:
