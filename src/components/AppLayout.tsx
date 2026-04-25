@@ -12,6 +12,8 @@ import { StatusBar } from "@/components/StatusBar";
 import { SocialCopyQueueChip } from "@/components/SocialCopyQueueChip";
 import { GenerateWithAIDialog } from "@/components/GenerateWithAIDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { BrandProvider } from "@/contexts/BrandContext";
+import { BrandSwitcher } from "@/components/BrandSwitcher";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator,
@@ -44,12 +46,14 @@ const allNavItems = [...topLevelItems, ...createGroupItems];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <CommandPaletteProvider>
-      <KeyboardShortcuts />
-      <AppLayoutInner>{children}</AppLayoutInner>
-      <SocialCopyQueueChip />
-      <StatusBar />
-    </CommandPaletteProvider>
+    <BrandProvider>
+      <CommandPaletteProvider>
+        <KeyboardShortcuts />
+        <AppLayoutInner>{children}</AppLayoutInner>
+        <SocialCopyQueueChip />
+        <StatusBar />
+      </CommandPaletteProvider>
+    </BrandProvider>
   );
 }
 
@@ -136,6 +140,9 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Active-brand switcher — every render uses this brand's
+                title-card / captions / watermark / voice settings. */}
+            <BrandSwitcher />
             {/* Primary "create" CTA — accessible from every page so the
                 user never has to navigate to the dashboard just to kick
                 off a generation run. */}

@@ -4555,6 +4555,11 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
 
         # Use actual generated paths (not _get_video_file_info which can't find moved files)
         total_size = sum(os.path.getsize(p) for p in generated_video_paths if os.path.exists(p))
+        # Tag the row with whichever brand profile was active when the
+        # render fired, so the Videos page can filter / group / display
+        # a brand badge per card. Looked up at the moment of write so
+        # mid-pipeline brand-switches don't retroactively re-label.
+        _b_id, _b_name, _b_color = _active_brand_summary()
         # Drop prior row for this id so a repeat run replaces instead of duplicating.
         videos_db = [v for v in videos_db if v["id"] != post_id]
         videos_db.insert(0, {
@@ -4573,6 +4578,9 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
             "video_paths": list(generated_video_paths),
             "audio_dir": locals().get("preserved_audio_dir"),
             "timeline_path": locals().get("preserved_timeline"),
+            "brand_id":   _b_id,
+            "brand_name": _b_name,
+            "brand_color": _b_color,
         })
         _persist_videos_db()
         try:
@@ -4689,6 +4697,12 @@ async def list_videos():
         entry["has_social"] = os.path.isfile(
             os.path.join(PROJECT_ROOT, "posts", str(v.get("id") or ""), "social.json")
         )
+        # Brand fields are already on `entry` thanks to the dict-copy at
+        # the top of the loop, but ensure they exist on legacy rows so
+        # the UI doesn't have to handle `undefined` everywhere.
+        entry.setdefault("brand_id",    None)
+        entry.setdefault("brand_name",  None)
+        entry.setdefault("brand_color", None)
         safe.append(entry)
     return {"videos": safe}
 
@@ -4963,6 +4977,199 @@ async def elevenlabs_voices():
 # tone, mix it under the narration during render. Storage layout mirrors
 # `backgrounds/`: flat files plus a metadata JSON for per-track moods.
 # ──────────────────────────────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────
+# Brand profiles — saved snapshots of every "what this channel looks
+# like" config key (captions, title card, watermark, voice, BG selector,
+# auto-broll style, music). Switching brands writes the brand's
+# config_overrides INTO config.json so every existing reader keeps
+# working unchanged.
+# ──────────────────────────────────────────────────────────────────────
+
+@app.get("/api/brands")
+async def brands_list():
+    """List every saved brand profile + the active id."""
+    from brand_profiles import list_profiles, get_active_id
+    cfg = _load_config()
+    return {
+        "brands":    list_profiles(PROJECT_ROOT),
+        "active_id": get_active_id(cfg),
+    }
+
+
+@app.get("/api/brands/active")
+async def brand_active_get():
+    """Return the active brand profile in full (or null if none)."""
+    from brand_profiles import get_active_id, get_profile
+    cfg = _load_config()
+    bid = get_active_id(cfg)
+    if not bid:
+        return {"brand": None}
+    return {"brand": get_profile(PROJECT_ROOT, bid)}
+
+
+@app.post("/api/brands")
+async def brands_create(req: dict):
+    """
+    Create a new brand. Body: { name, color?, snapshot_current?: bool }
+    snapshot_current=true (default) takes a snapshot of brand-scoped
+    keys from the live config.json so the new brand mirrors the user's
+    current setup.
+    """
+    from brand_profiles import create_profile
+    name = (req.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    color = (req.get("color") or "").strip() or "#FF8855"
+    snapshot_current = bool(req.get("snapshot_current", True))
+    cfg = _load_config()
+    prof = create_profile(
+        PROJECT_ROOT, name=name, color=color,
+        from_config=cfg if snapshot_current else None,
+    )
+    return {"brand": prof}
+
+
+@app.get("/api/brands/{brand_id}")
+async def brands_get(brand_id: str):
+    from brand_profiles import get_profile
+    prof = get_profile(PROJECT_ROOT, brand_id)
+    if not prof:
+        raise HTTPException(404, "Brand not found")
+    return {"brand": prof}
+
+
+@app.put("/api/brands/{brand_id}")
+async def brands_update(brand_id: str, req: dict):
+    """Edit name / color. Config edits go through PUT /api/config when
+    this brand is active (those auto-snapshot back here)."""
+    from brand_profiles import update_profile
+    prof = update_profile(
+        PROJECT_ROOT, brand_id,
+        name=req.get("name"),
+        color=req.get("color"),
+    )
+    if not prof:
+        raise HTTPException(404, "Brand not found")
+    return {"brand": prof}
+
+
+@app.delete("/api/brands/{brand_id}")
+async def brands_delete(brand_id: str):
+    """
+    Delete a brand profile. If it was the active one, the active id is
+    cleared (config.json values stay as-is — they become the next
+    brand's baseline if the user creates one).
+    """
+    from brand_profiles import delete_profile, get_active_id
+    cfg = _load_config()
+    if get_active_id(cfg) == brand_id:
+        cfg.pop("active_brand_id", None)
+        _save_config(cfg)
+    ok = delete_profile(PROJECT_ROOT, brand_id)
+    if not ok:
+        raise HTTPException(404, "Brand not found")
+    return {"deleted": True}
+
+
+@app.post("/api/brands/active")
+async def brands_set_active(req: dict):
+    """
+    Switch the active brand. Sequence:
+      1. Snapshot current brand-scoped config.json keys into the
+         PREVIOUSLY active brand (if any) — auto-save.
+      2. Apply the new brand's config_overrides onto config.json.
+      3. Set config.active_brand_id = new id.
+    Body: { id: <brand_id> }   (id="" → de-activate, no apply.)
+    """
+    from brand_profiles import (
+        get_profile, update_profile, snapshot_overrides_from_config,
+        apply_overrides_to_config, get_active_id,
+    )
+    new_id = (req.get("id") or "").strip()
+    cfg = _load_config()
+    prev_id = get_active_id(cfg)
+
+    if prev_id and prev_id != new_id:
+        # Auto-snapshot the values the user has been editing into the
+        # previously-active brand so nothing is lost on switch.
+        prev_overrides = snapshot_overrides_from_config(cfg)
+        update_profile(PROJECT_ROOT, prev_id, config_overrides=prev_overrides)
+
+    if not new_id:
+        cfg.pop("active_brand_id", None)
+        _save_config(cfg)
+        return {"active_id": None, "applied": False}
+
+    new_brand = get_profile(PROJECT_ROOT, new_id)
+    if not new_brand:
+        raise HTTPException(404, "Brand not found")
+    apply_overrides_to_config(cfg, new_brand.get("config_overrides") or {})
+    cfg["active_brand_id"] = new_id
+    _save_config(cfg)
+    _log(f"Brand switched: {prev_id} → {new_id} ({new_brand.get('name')})")
+    return {"active_id": new_id, "applied": True, "brand": new_brand}
+
+
+@app.post("/api/brands/{brand_id}/save-current")
+async def brands_save_current(brand_id: str):
+    """
+    Manually snapshot current config.json brand-scoped keys into this
+    brand's profile.json. Use case: "I just edited the captions, save
+    those edits to this brand."
+    """
+    from brand_profiles import update_profile, snapshot_overrides_from_config
+    cfg = _load_config()
+    overrides = snapshot_overrides_from_config(cfg)
+    prof = update_profile(PROJECT_ROOT, brand_id, config_overrides=overrides)
+    if not prof:
+        raise HTTPException(404, "Brand not found")
+    return {"brand": prof, "saved": True}
+
+
+@app.post("/api/brands/{brand_id}/profile-pic")
+async def brands_upload_pic(brand_id: str, file: UploadFile = File(...)):
+    """Upload / replace the brand avatar. Stored as profile_pic.png."""
+    from brand_profiles import get_profile
+    prof = get_profile(PROJECT_ROOT, brand_id)
+    if not prof:
+        raise HTTPException(404, "Brand not found")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "empty upload")
+    dest_dir = os.path.join(PROJECT_ROOT, "brands", brand_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    with open(os.path.join(dest_dir, "profile_pic.png"), "wb") as f:
+        f.write(content)
+    return {"saved": True}
+
+
+@app.get("/api/brands/{brand_id}/profile-pic")
+async def brands_get_pic(brand_id: str):
+    p = os.path.join(PROJECT_ROOT, "brands", brand_id, "profile_pic.png")
+    if not os.path.isfile(p):
+        raise HTTPException(404, "no profile pic")
+    return FileResponse(p, media_type="image/png")
+
+
+def _active_brand_summary() -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Helper for tagging videos_db rows. Returns (brand_id, brand_name, brand_color).
+    All None if no brand is active or the active id points at a deleted profile.
+    """
+    try:
+        from brand_profiles import get_active_id, get_profile
+        cfg = _load_config()
+        bid = get_active_id(cfg)
+        if not bid:
+            return None, None, None
+        prof = get_profile(PROJECT_ROOT, bid)
+        if not prof:
+            return None, None, None
+        return bid, prof.get("name"), prof.get("color")
+    except Exception:
+        return None, None, None
+
 
 async def _maybe_apply_broll(post_id: str, video_path: str, timeline: list, video_gen, config: dict) -> int:
     """

@@ -3,6 +3,7 @@
 End-to-end short-form content automation. What started as a Reddit-to-Reels pipeline has grown into a full suite for faceless-video operators:
 
 - **Reels** — Reddit posts or AI-generated scripts → vertical 1080×1920 video with TTS narration, word-level captions, optional auto B-roll overlay (Pexels-sourced topic-relevant footage), background music auto-picked by tone, and optional auto-publishing to YouTube Shorts / TikTok / Instagram Reels / Snapchat Spotlight.
+- **Brand Profiles** — saved snapshots of every "what this channel looks like" config key (title card, captions, watermark, default voice, BG selector, music tags, auto-broll style). Switch via a header pill before each render — every Generate dialog confirms which brand will style the output, every rendered video is tagged with its brand, and the Videos page filters by brand. Run a multi-channel operation from one install.
 - **Clip Maker** — long-form YouTube URL or uploaded mp4 → AI-picked Shorts-worthy clips. Event-driven mode detects in-game moments (gunshots, goals, HUD events) in footage without a transcript.
 - **Text Posts** — generate tweets, Reddit comments, YouTube / TikTok / Instagram community posts, LinkedIn updates; with brand-voice presets and batch variants.
 - **Custom Script** — paste your own narration text → runs through the same TTS + caption + render pipeline with no AI generation step. Single-shot or batch via the run queue.

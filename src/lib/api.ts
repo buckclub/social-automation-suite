@@ -93,6 +93,10 @@ export interface VideoRecord {
   has_thumbnails?: boolean;
   /** True when posts/<id>/social.json exists on disk. */
   has_social?: boolean;
+  /** Brand profile that was active when this render fired. Null on legacy rows. */
+  brand_id?: string | null;
+  brand_name?: string | null;
+  brand_color?: string | null;
 }
 
 export interface Stats {
@@ -165,6 +169,19 @@ export interface SocialCopy {
     view_count: number;
     video_id: string;
   }>;
+}
+
+// ── Brand profiles ─────────────────────────────────────────────────
+export interface BrandSummary {
+  id: string;
+  name: string;
+  color: string;
+  created_at?: string;
+  updated_at?: string;
+  has_pic?: boolean;
+}
+export interface BrandProfile extends BrandSummary {
+  config_overrides: Record<string, any>;
 }
 
 // Background queue for batch social-copy generation.
@@ -886,6 +903,50 @@ export const api = {
       { method: "POST", body: JSON.stringify(params) },
     ),
   carouselRenderUrl: () => `${API_BASE}/api/carousels/render`,
+
+  // ── Brand Profiles ───────────────────────────────────────────
+  listBrands: () =>
+    request<{ brands: BrandSummary[]; active_id: string | null }>("/api/brands"),
+  getActiveBrand: () =>
+    request<{ brand: BrandProfile | null }>("/api/brands/active"),
+  getBrand: (id: string) =>
+    request<{ brand: BrandProfile }>(`/api/brands/${encodeURIComponent(id)}`),
+  createBrand: (params: { name: string; color?: string; snapshot_current?: boolean }) =>
+    request<{ brand: BrandProfile }>("/api/brands", {
+      method: "POST", body: JSON.stringify(params),
+    }),
+  updateBrand: (id: string, body: { name?: string; color?: string }) =>
+    request<{ brand: BrandProfile }>(`/api/brands/${encodeURIComponent(id)}`, {
+      method: "PUT", body: JSON.stringify(body),
+    }),
+  deleteBrand: (id: string) =>
+    request<{ deleted: boolean }>(`/api/brands/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  setActiveBrand: (id: string | null) =>
+    request<{ active_id: string | null; applied?: boolean; brand?: BrandProfile }>("/api/brands/active", {
+      method: "POST", body: JSON.stringify({ id: id ?? "" }),
+    }),
+  saveCurrentToBrand: (id: string) =>
+    request<{ brand: BrandProfile; saved: boolean }>(
+      `/api/brands/${encodeURIComponent(id)}/save-current`, { method: "POST" },
+    ),
+  uploadBrandPic: (id: string, file: File) =>
+    new Promise<{ saved: boolean }>((resolve, reject) => {
+      const form = new FormData();
+      form.append("file", file);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/api/brands/${encodeURIComponent(id)}/profile-pic`);
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+          else reject(new Error(data.detail || data.error || xhr.statusText));
+        } catch (e) { reject(e); }
+      };
+      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.send(form);
+    }),
+  brandPicUrl: (id: string, bust?: string) =>
+    `${API_BASE}/api/brands/${encodeURIComponent(id)}/profile-pic${bust ? `?v=${encodeURIComponent(bust)}` : ""}`,
 
   // ── Performance Analytics ────────────────────────────────────
   getPerformanceAnalytics: (force = false) =>

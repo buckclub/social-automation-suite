@@ -2,8 +2,12 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   Play, Clock, CheckCircle2, XCircle, Loader2, Film, Trash2,
-  Download, Eye, HardDrive, Layers, RefreshCw, Share2, AlertTriangle, Youtube
+  Download, Eye, HardDrive, Layers, RefreshCw, Share2, AlertTriangle, Youtube, Tag,
 } from "lucide-react";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import { useBrand } from "@/contexts/BrandContext";
 import { useQueryClient } from "@tanstack/react-query";
 import { SocialCopyDialog } from "@/components/SocialCopyDialog";
 import { YouTubeUploadDialog } from "@/components/YouTubeUploadDialog";
@@ -168,6 +172,23 @@ function VideoCard({ video, index, onPreview, onDelete, selected, onSelectChange
                 title="Social copy already generated and saved to disk"
               >
                 ✨ Social
+              </Badge>
+            )}
+            {video.brand_name && (
+              <Badge
+                variant="outline"
+                className="text-[9px] px-1.5 py-0 gap-1"
+                style={{
+                  borderColor: video.brand_color ? `${video.brand_color}60` : undefined,
+                  color: video.brand_color || undefined,
+                }}
+                title={`Rendered with brand: ${video.brand_name}`}
+              >
+                <span
+                  className="h-1.5 w-1.5 rounded-full inline-block"
+                  style={{ backgroundColor: video.brand_color || "#888" }}
+                />
+                {video.brand_name}
               </Badge>
             )}
           </div>
@@ -381,6 +402,18 @@ export default function VideosPage() {
   const published = videos.filter((v) => v.status === "published").length;
   const failed = videos.filter((v) => v.status === "failed").length;
 
+  // ── Brand filter ──────────────────────────────────────────────
+  // "__all__" = no filter, "__none__" = legacy/untagged rows only,
+  // anything else = a brand_id. Persisted in component state only —
+  // intentionally not URL-shared so different tabs can filter separately.
+  const { brands } = useBrand();
+  const [brandFilter, setBrandFilter] = useState<string>("__all__");
+  const filteredVideos = videos.filter((v) => {
+    if (brandFilter === "__all__") return true;
+    if (brandFilter === "__none__") return !v.brand_id;
+    return v.brand_id === brandFilter;
+  });
+
   const handleDelete = (keepFiles: boolean) => {
     if (!deleteTarget) return;
     deleteMutation.mutate({ id: deleteTarget.id, keep_files: keepFiles }, {
@@ -403,19 +436,50 @@ export default function VideosPage() {
         <div>
           <h2 className="text-xl font-bold">Video History</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            {videos.length} videos total · {published} published · {failed} failed
+            {brandFilter === "__all__" ? videos.length : filteredVideos.length} {brandFilter !== "__all__" && `of ${videos.length}`} videos
+            {" · "}{published} published · {failed} failed
             {usedPosts.length > 0 && ` · ${usedPosts.length} posts used`}
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-8 gap-1.5 border-destructive/50 text-destructive hover:bg-destructive/10"
-          onClick={() => setClearOpen(true)}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-          Clear data…
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Brand filter — visible only when at least one brand exists.
+              Two pseudo-options bookend the real list: "All brands" and
+              "No brand (legacy)". */}
+          {brands.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <Tag className="h-3 w-3 text-muted-foreground" />
+              <Select value={brandFilter} onValueChange={setBrandFilter}>
+                <SelectTrigger className="h-8 text-xs bg-secondary border-border w-[180px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">All brands</SelectItem>
+                  <SelectItem value="__none__">No brand / legacy</SelectItem>
+                  {brands.map((b) => (
+                    <SelectItem key={b.id} value={b.id}>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span
+                          className="h-2 w-2 rounded-full inline-block"
+                          style={{ backgroundColor: b.color }}
+                        />
+                        {b.name}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5 border-destructive/50 text-destructive hover:bg-destructive/10"
+            onClick={() => setClearOpen(true)}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Clear data…
+          </Button>
+        </div>
       </div>
 
       {isLoading && (
@@ -435,7 +499,7 @@ export default function VideosPage() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {videos.map((video, i) => (
+        {filteredVideos.map((video, i) => (
           <VideoCard
             key={video.id} video={video} index={i}
             onPreview={(v, part) => setPreview({ video: v, part })}

@@ -18,6 +18,10 @@ import { useConfig, useTtsProviders } from "@/hooks/use-api";
 import { ELEVENLABS_LIBRARY } from "@/components/ElevenLabsLibraryPresets";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
+import { useBrand } from "@/contexts/BrandContext";
+import { api as _api } from "@/lib/api";
+import { Link } from "react-router-dom";
+import { Tag } from "lucide-react";
 
 const CONTENT_STYLES = [
   { id: "story", label: "Story", icon: BookOpen, desc: "First-person Reddit confessional", color: "text-blue-400" },
@@ -155,6 +159,7 @@ export function GenerateWithAIDialog() {
 
   const { toast } = useToast();
   const qc = useQueryClient();
+  const { active: activeBrand } = useBrand();
 
   // Live config + providers for the voice/background dropdowns
   const { data: config } = useConfig();
@@ -1359,6 +1364,38 @@ export function GenerateWithAIDialog() {
             ))}
           </div>
         )}
+        {/* Active-brand banner — confirms which brand profile will style
+            the rendered video before the user commits to the pipeline.
+            Persists across every step so it's never out of sight. */}
+        <div className={cn(
+          "flex items-center gap-2 rounded-md border px-2.5 py-1.5",
+          activeBrand
+            ? "border-primary/40 bg-primary/5"
+            : "border-amber-400/40 bg-amber-400/5",
+        )}>
+          {activeBrand && activeBrand.has_pic ? (
+            <img src={_api.brandPicUrl(activeBrand.id, activeBrand.id)} alt="" className="h-5 w-5 rounded-full object-cover shrink-0" />
+          ) : activeBrand ? (
+            <div
+              className="h-5 w-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0"
+              style={{ backgroundColor: activeBrand.color }}
+            >{(activeBrand.name || "?").charAt(0).toUpperCase()}</div>
+          ) : (
+            <Tag className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+          )}
+          <p className="text-[11px] flex-1 leading-snug">
+            {activeBrand
+              ? <>Rendering as <b>{activeBrand.name}</b> — captions, title card, voice, watermark</>
+              : <>No brand active — using whatever's in <code>config.json</code> directly</>}
+          </p>
+          <Link
+            to="/brands"
+            onClick={() => setOpen(false)}
+            className="text-[10px] text-primary hover:underline shrink-0"
+          >
+            change
+          </Link>
+        </div>
         <DialogErrorBoundary>
           {showPicker ? renderScriptReview() : renderStep()}
         </DialogErrorBoundary>
