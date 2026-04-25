@@ -47,7 +47,10 @@ async def analyze_hashtags(req: dict):
         g.get("openrouter_api_key") if provider == "openrouter" else
         g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
     )
-    model = g.get("model") or "gemini-2.0-flash"
+    # Per-feature override: hashtag analysis is a small, cheap task —
+    # users typically don't need the flagship model for it.
+    from api_server import pick_feature_model
+    model = pick_feature_model(config, "hashtag_analysis")
     ollama_url = g.get("ollama_url", "http://localhost:11434")
 
     existing = re.findall(r"#[\w_]+", caption)

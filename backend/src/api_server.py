@@ -205,6 +205,54 @@ def _save_config(config: dict):
     _atomic_write_json(CONFIG_PATH, config)
 
 
+# ── Per-feature AI model picker ────────────────────────────────────────
+# Each AI-driven feature can specify its own model — useful when the
+# user wants a flagship model for the final story but a cheap one for
+# scoring, captioning, hashtag analysis, etc. Saves real money on
+# multi-call workflows.
+#
+# Resolution order (highest priority first):
+#   1. config.gemini.feature_models[feature]   — the new generic field
+#   2. config.gemini.<feature>_model           — legacy per-feature fields
+#                                                (today only `scoring_model`
+#                                                exists; this preserves it)
+#   3. config.gemini.model                     — the global default
+#   4. "gemini-2.0-flash"                      — hardcoded last-resort
+#
+# Empty string at any step is treated as "not set" so blanking a UI
+# field falls through cleanly.
+KNOWN_AI_FEATURES = (
+    "story_generation",   # AIContentGenerator.generate (Generate-with-AI)
+    "scoring",            # variant scorer + Reddit-post viral scorer
+    "social_copy",        # /api/social/generate-copy
+    "hashtag_analysis",   # routes/hashtags.py
+    "comment_reply",      # comment_replier.draft_reply
+    "niche_finder",       # niche_finder.generate_niches
+    "dialogue",           # routes/dialogue.py
+    "news_roundup",       # /api/news/* AI summarisation
+    "thumbnail_text",     # gemini-generated thumbnail copy
+)
+
+
+def pick_feature_model(config: dict, feature: str) -> str:
+    """Return the AI model to use for `feature`. See KNOWN_AI_FEATURES.
+    Falls back to the global model and ultimately a sane default so
+    callers can use the result unconditionally."""
+    g = (config.get("gemini") or {}) if isinstance(config, dict) else {}
+    fm = g.get("feature_models") or {}
+    candidates = [
+        fm.get(feature) if isinstance(fm, dict) else "",
+        g.get(f"{feature}_model") or "",  # legacy compat
+        g.get("model") or "",
+        "gemini-2.0-flash",
+    ]
+    for c in candidates:
+        s = (c or "").strip()
+        if s:
+            return s
+    return "gemini-2.0-flash"
+
+
 def _get_video_file_info(post_id: str) -> dict:
     """Get file size and paths for a video entry."""
     posts_dir = os.path.join(PROJECT_ROOT, "posts", post_id)
@@ -2659,8 +2707,9 @@ async def _score_variants_batch(
         g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
     )
     # A scoring-specific model can be set in config (cheaper / faster
-    # than the main generation model). Fall back to the main model.
-    model = g.get("scoring_model") or g.get("model") or "gemini-2.0-flash"
+    # Honor any per-feature model override (config.gemini.feature_models.scoring),
+    # the legacy gemini.scoring_model field, or the global default.
+    model = pick_feature_model(config, "scoring")
     ollama_url = g.get("ollama_url", "http://localhost:11434")
 
     def _flatten(v: dict) -> str:
@@ -7067,7 +7116,9 @@ def _do_generate_social_copy(post_id: str) -> dict:
         g.get("openrouter_api_key") if provider == "openrouter" else
         g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
     )
-    model = g.get("model") or "gemini-2.0-flash"
+    # Honor per-feature model override (config.gemini.feature_models.social_copy)
+    # so users can run social-copy on a cheaper model than story generation.
+    model = pick_feature_model(config, "social_copy")
     ollama_url = g.get("ollama_url", "http://localhost:11434")
 
     # Fetch top-performing YouTube videos in the same niche as style references.
@@ -7793,7 +7844,10 @@ async def score_viral_batch(req: dict):
         g.get("openrouter_api_key") if provider == "openrouter" else
         g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
     )
-    model = g.get("model") or "gemini-2.0-flash"
+    # Reddit-post viral scoring uses the same `scoring` feature as
+    # the variant scorer — sharing the override means setting one
+    # cheap model covers both.
+    model = pick_feature_model(config, "scoring")
     ollama_url = g.get("ollama_url", "http://localhost:11434")
 
     from gemini_hooks import _call_ai  # type: ignore

@@ -344,6 +344,20 @@ export default function ConfigPage() {
   const [geminiModel, setGeminiModel] = useState("gemini-2.0-flash");
   const [geminiHook, setGeminiHook] = useState(true);
   const [geminiThumbnail, setGeminiThumbnail] = useState(true);
+
+  // Per-feature model overrides — empty string means "use the global
+  // model above." Lets users pay flagship rates only on the things
+  // that benefit (story generation) while running cheaper models on
+  // the supporting tasks (scoring, hashtags, social copy, etc.).
+  const [featureModels, setFeatureModels] = useState<Record<string, string>>({
+    story_generation: "",
+    scoring:          "",
+    social_copy:      "",
+    hashtag_analysis: "",
+    comment_reply:    "",
+    niche_finder:     "",
+    dialogue:         "",
+  });
   const [geminiModels, setGeminiModels] = useState<string[]>([
     "gemini-2.0-flash", "gemini-2.5-flash-preview-05-20",
     "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-lite",
@@ -560,6 +574,17 @@ export default function ConfigPage() {
     setNvidiaNimApiKey(g.nvidia_nim_api_key ?? "");
     if (g.nvidia_nim_models?.length) setNvidiaNimModels(g.nvidia_nim_models);
 
+    // Per-feature model overrides — only override fields that are
+    // non-empty in saved config so a missing block doesn't blank the
+    // local defaults. Legacy `scoring_model` key is migrated.
+    const fm = (g.feature_models ?? {}) as Record<string, string>;
+    setFeatureModels((prev) => ({
+      ...prev,
+      ...Object.fromEntries(Object.entries(fm).map(([k, v]) => [k, String(v ?? "")])),
+      // Migrate the legacy single-purpose field if present:
+      ...(g.scoring_model && !fm.scoring ? { scoring: String(g.scoring_model) } : {}),
+    }));
+
     const yt = (c as any).youtube ?? {};
     setYoutubeApiKey(yt.api_key ?? "");
 
@@ -603,6 +628,7 @@ export default function ConfigPage() {
     geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
     geminiModel, geminiHook, geminiThumbnail, geminiModels, openrouterModels,
     ollamaUrl, ollamaModels, nvidiaNimModels,
+    featureModels,
     youtubeApiKey,
     tnUsername, tnHideStats, tnProfilePicPath,
     tnCardBgColor, tnTextColor, tnUsernameColor, tnAccentColor,
@@ -633,7 +659,7 @@ export default function ConfigPage() {
       skipThumbnail, skipNotify,
       geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
       geminiModel, geminiHook, geminiThumbnail, geminiModels, openrouterModels,
-      ollamaUrl, ollamaModels, nvidiaNimModels, youtubeApiKey,
+      ollamaUrl, ollamaModels, nvidiaNimModels, featureModels, youtubeApiKey,
       capEnabled, capFontPath, capFontSize, capColor, capStrokeColor, capStrokeWidth,
       capBgEnabled, capBgColor, capBgOpacity, capPadding, capCornerRadius,
       capMaxWidthPct, capPosition, capPositionOffset, capWordsPerCaption,
@@ -792,6 +818,11 @@ export default function ConfigPage() {
           ollama_url: ollamaUrl,
           ollama_models: ollamaModels,
           nvidia_nim_models: nvidiaNimModels,
+          // Per-feature overrides — only persist non-empty values so
+          // we don't pollute the config with a flat object of "" keys.
+          feature_models: Object.fromEntries(
+            Object.entries(featureModels).filter(([, v]) => v && v.trim()),
+          ),
         },
         youtube: {
           api_key: youtubeApiKey,
@@ -2351,6 +2382,45 @@ export default function ConfigPage() {
               />
             </div>
           )}
+
+          {/* Per-feature model overrides — pay flagship rates only on
+              the things that benefit. Empty = use the global model
+              above. The picker above + these overrides cover every
+              AI call site in the app. */}
+          <div className="pt-3 mt-2 border-t border-border/40 space-y-2">
+            <div>
+              <Label className="text-xs">Per-feature model overrides</Label>
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Leave blank to use the global model. Most users override
+                <span className="font-mono"> scoring</span> and
+                <span className="font-mono"> hashtag_analysis</span> with a cheaper
+                model and keep the flagship for
+                <span className="font-mono"> story_generation</span>.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {[
+                { key: "story_generation", label: "Story generation",     hint: "Generate-with-AI dialog" },
+                { key: "scoring",          label: "Virality scoring",     hint: "Both variant + Reddit-post scorers" },
+                { key: "social_copy",      label: "Social copy",          hint: "Captions + hashtags for upload" },
+                { key: "hashtag_analysis", label: "Hashtag analysis",     hint: "Hashtag Lab page" },
+                { key: "comment_reply",    label: "Comment replies",      hint: "YouTube comment replier" },
+                { key: "niche_finder",     label: "Niche finder",         hint: "Channel-niche brainstorm" },
+                { key: "dialogue",         label: "Dialogue mode",        hint: "Two-character scripts" },
+              ].map(({ key, label, hint }) => (
+                <div key={key} className="space-y-0.5">
+                  <Label className="text-[10px] text-muted-foreground">{label}</Label>
+                  <Input
+                    value={featureModels[key] ?? ""}
+                    onChange={(e) => setFeatureModels((m) => ({ ...m, [key]: e.target.value }))}
+                    placeholder={`(default: ${geminiModel})`}
+                    className="h-7 text-[11px] font-mono bg-secondary border-border"
+                  />
+                  <p className="text-[9px] text-muted-foreground/70">{hint}</p>
+                </div>
+              ))}
+            </div>
+          </div>
         </Section>
 
         {/* YouTube Benchmarks (style references for Social Copy) */}
