@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppEvent } from "@/lib/eventBus";
 import { useNavigate } from "react-router-dom";
 import {
@@ -41,11 +41,15 @@ export default function CommentReplierPage() {
   const [editText, setEditText] = useState("");
   const [postingId, setPostingId] = useState<string | null>(null);
 
+  // Spinner only on initial load; SSE-driven refreshes shouldn't
+  // flash the loading state on top of an already-populated list.
+  const hasLoadedOnce = useRef(false);
   const refresh = useCallback(async () => {
-    setLoading(true);
+    if (!hasLoadedOnce.current) setLoading(true);
     try {
       const r = await api.listCommentDrafts();
       setDrafts(r.drafts || []);
+      hasLoadedOnce.current = true;
     } catch (e: any) {
       toast({ title: "Couldn't load drafts", description: e.message, variant: "destructive" });
     } finally {
@@ -79,6 +83,13 @@ export default function CommentReplierPage() {
       return true;
     });
   }, [drafts, statusFilter, brandFilter]);
+
+  // O(1) brand lookup. Was `brands.find()` inside the draft list
+  // render — O(N×M) on every paint with many drafts × many brands.
+  const brandsById = useMemo(
+    () => new Map(brands.map((b) => [b.id, b])),
+    [brands],
+  );
 
   const startEdit = (d: CommentDraft) => {
     setEditingId(d.id);
@@ -205,7 +216,7 @@ export default function CommentReplierPage() {
       ) : (
         <div className="space-y-2">
           {filtered.map((d) => {
-            const brand = brands.find((b) => b.id === d.brand_id);
+            const brand = d.brand_id ? brandsById.get(d.brand_id) : undefined;
             const replyText = d.edited_reply ?? d.draft_reply ?? "";
             const isEditing = editingId === d.id;
             return (
@@ -219,7 +230,7 @@ export default function CommentReplierPage() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5 mb-0.5">
                         <span className="text-[11px] font-medium">{d.comment_author || "anon"}</span>
-                        <Badge variant="outline" className={cn("text-[9px] px-1.5 py-0 capitalize", STATUS_TONE[d.status])}>
+                        <Badge variant="outline" className={cn("text-[9px] px-1.5 py-0 capitalize", STATUS_TONE[d.status] ?? "border-muted-foreground/30 text-muted-foreground")}>
                           {d.status}
                         </Badge>
                         {brand && (

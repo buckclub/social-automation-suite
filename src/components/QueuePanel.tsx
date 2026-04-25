@@ -218,6 +218,10 @@ function QueueRow({
       case "done":      return { icon: <CheckCircle2 className="h-3 w-3" />, cls: "text-success/90 border-success/30 bg-success/5" };
       case "failed":    return { icon: <XCircle className="h-3 w-3" />, cls: "text-destructive border-destructive/30 bg-destructive/5" };
       case "cancelled": return { icon: <XCircle className="h-3 w-3" />, cls: "text-muted-foreground border-border bg-background/40" };
+      // Fallback for any future server-side status the UI doesn't
+      // know about yet — render a neutral chip instead of crashing
+      // when iconAndColor.cls is destructured below.
+      default:          return { icon: <span className="font-mono text-[9px]">?</span>, cls: "text-muted-foreground border-border bg-secondary/20" };
     }
   })();
 

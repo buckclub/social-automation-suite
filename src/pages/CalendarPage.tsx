@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppEvent } from "@/lib/eventBus";
 import { useNavigate } from "react-router-dom";
 import {
@@ -58,11 +58,17 @@ export default function CalendarPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<CalendarSlot | null>(null);
 
+  // Distinguish initial load from subsequent refreshes. The spinner
+  // should only appear before we have any data — once `slots` is
+  // populated, SSE / interval refreshes silently swap in the new list
+  // (otherwise every push flashes a loading spinner over the calendar).
+  const hasLoadedOnce = useRef(false);
   const refresh = useCallback(async () => {
-    setLoading(true);
+    if (!hasLoadedOnce.current) setLoading(true);
     try {
       const r = await api.listCalendarSlots();
       setSlots(r.slots || []);
+      hasLoadedOnce.current = true;
     } catch (e: any) {
       toast({ title: "Couldn't load calendar", description: e.message, variant: "destructive" });
     } finally {
@@ -89,6 +95,14 @@ export default function CalendarPage() {
       arr.sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at));
     return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [slots]);
+
+  // O(1) brand lookup keyed by id. Was `brands.find()` inside a render
+  // loop — O(N×M) on every paint, noticeable when the calendar has
+  // many slots and the user has many brands.
+  const brandsById = useMemo(
+    () => new Map(brands.map((b) => [b.id, b])),
+    [brands],
+  );
 
   const onDelete = async (s: CalendarSlot) => {
     if (!confirm(`Delete scheduled slot "${s.title}"?`)) return;
@@ -151,7 +165,7 @@ export default function CalendarPage() {
                   </div>
                   {daySlots.map((s) => {
                     const t = new Date(s.scheduled_at);
-                    const brand = brands.find((b) => b.id === s.brand_id);
+                    const brand = s.brand_id ? brandsById.get(s.brand_id) : undefined;
                     return (
                       <div key={s.id} className="flex items-start gap-2 rounded border border-border/60 bg-secondary/30 p-2">
                         <div className="text-[11px] font-mono text-muted-foreground mt-0.5 shrink-0 w-12 text-right">
@@ -160,7 +174,7 @@ export default function CalendarPage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 mb-0.5">
                             <p className="text-xs font-medium truncate">{s.title || "(untitled)"}</p>
-                            <Badge variant="outline" className={cn("text-[9px] px-1.5 py-0", STATUS_TONE[s.status])}>
+                            <Badge variant="outline" className={cn("text-[9px] px-1.5 py-0", STATUS_TONE[s.status] ?? "border-muted-foreground/30 text-muted-foreground")}>
                               {s.status}
                             </Badge>
                             {brand && (

@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { HashRouter, Routes, Route, useLocation } from "react-router-dom";
 import { AppLayout } from "@/components/AppLayout";
 import { FirstRunGate } from "@/components/FirstRunGate";
+import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 
 // ── Eagerly loaded ────────────────────────────────────────────────
 // The Dashboard is the first paint for everyone — keep it in the
@@ -96,7 +97,14 @@ function AppRoutes() {
     </Suspense>
   );
 
-  return isSetup ? routes : <AppLayout>{routes}</AppLayout>;
+  // /setup renders fullscreen (no AppLayout, no sidebar) but still
+  // needs an error boundary — otherwise a crash in the wizard or a
+  // failed lazy-chunk load blanks the entire app with no recovery.
+  // AppLayout supplies its own RouteErrorBoundary for the main shell;
+  // we only need to add one here for the bare /setup route.
+  return isSetup
+    ? <RouteErrorBoundary>{routes}</RouteErrorBoundary>
+    : <AppLayout>{routes}</AppLayout>;
 }
 
 const App = () => (

@@ -61,6 +61,14 @@ const state = G.__appEventBus;
 function ensureConnected() {
   if (state.source && state.source.readyState !== EventSource.CLOSED) return;
 
+  // Explicitly close the prior source if it's in CLOSED state. The
+  // browser usually GCs it for us, but during transient errors it can
+  // sit around still holding listeners — and if we're going to drop
+  // the reference anyway, an explicit close() is cheap insurance.
+  if (state.source) {
+    try { state.source.close(); } catch { /* already closed */ }
+  }
+
   const es = new EventSource(`${API_BASE}/api/events`);
   state.source = es;
   state.open = false;

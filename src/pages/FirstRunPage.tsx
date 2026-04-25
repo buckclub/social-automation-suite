@@ -79,14 +79,32 @@ export default function FirstRunPage() {
   const [ytKey, setYtKey] = useState("");
 
   // Hydrate from current config so a partial setup can resume cleanly.
+  // We only run this ONCE per dialog session — re-running every time
+  // the user changes provider would clobber their typed key with a
+  // stored key for a different provider.
+  //
+  // Previously the effect read `aiProvider` from closure and gated
+  // the gemini branch on it — that branch always saw the *initial*
+  // "gemini" value, so when the user picked another provider and the
+  // hydration effect re-fired, it could overwrite their typed key
+  // with a stale gemini key. Now we read the saved provider directly
+  // off `g.provider` and choose the matching key field, with no
+  // closure dependency on local state.
+  const [didHydrate, setDidHydrate] = useState(false);
   useEffect(() => {
+    if (didHydrate) return;
     const c = cfg.data;
     if (!c) return;
     const g = (c.gemini ?? {}) as Record<string, string>;
-    if (g.provider) setAiProvider(g.provider as AiProvider);
-    if (aiProvider === "gemini" && g.api_key) setAiKey(g.api_key);
-    if (g.openrouter_api_key && (g.provider === "openrouter")) setAiKey(g.openrouter_api_key);
-    if (g.nvidia_nim_api_key && (g.provider === "nvidia_nim")) setAiKey(g.nvidia_nim_api_key);
+    const savedProvider = (g.provider as AiProvider) || "gemini";
+    setAiProvider(savedProvider);
+    // Pick the key field that matches the SAVED provider, not whatever
+    // local state currently holds.
+    const savedKey =
+      savedProvider === "gemini"     ? g.api_key :
+      savedProvider === "openrouter" ? g.openrouter_api_key :
+      savedProvider === "nvidia_nim" ? g.nvidia_nim_api_key : "";
+    if (savedKey) setAiKey(savedKey);
     if (g.ollama_url) setAiUrl(g.ollama_url);
     if (g.model) setAiModel(g.model);
 
@@ -96,8 +114,9 @@ export default function FirstRunPage() {
 
     const y = (c.youtube ?? {}) as Record<string, string>;
     if (y.api_key) setYtKey(y.api_key);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cfg.data]);
+
+    setDidHydrate(true);
+  }, [cfg.data, didHydrate]);
 
   const aiOpt = useMemo(() => AI_OPTIONS.find(o => o.value === aiProvider)!, [aiProvider]);
   const ttsOpt = useMemo(() => TTS_OPTIONS.find(o => o.value === ttsProvider)!, [ttsProvider]);
