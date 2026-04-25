@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import {
   Music, Loader2, Upload, Trash2, Play, Pause, Save, Check, X,
 } from "lucide-react";
@@ -27,7 +26,6 @@ type Track = { filename: string; name: string; moods: string[]; added_at: string
  */
 export default function MusicLibraryPage() {
   const { toast } = useToast();
-  const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [tracks, setTracks] = useState<Track[]>([]);

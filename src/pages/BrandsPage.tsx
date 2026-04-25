@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import {
   Tag, Plus, Loader2, Trash2, Check, Save, Upload,
   Camera, Pencil, X,
@@ -29,7 +29,6 @@ import { cn } from "@/lib/utils";
  */
 export default function BrandsPage() {
   const { toast } = useToast();
-  const navigate = useNavigate();
   const [params] = useSearchParams();
   const { brands, activeId, refresh, switchBrand, loading } = useBrand();
   const [creatingOpen, setCreatingOpen] = useState(false);

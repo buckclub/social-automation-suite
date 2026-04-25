@@ -17,6 +17,7 @@ import { GenerateWithAIDialog } from "@/components/GenerateWithAIDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { BrandProvider } from "@/contexts/BrandContext";
 import { BrandSwitcher } from "@/components/BrandSwitcher";
+import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator,
@@ -292,7 +293,12 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-screen-2xl px-4 lg:px-8 py-6">{children}</main>
+      <main className="mx-auto max-w-screen-2xl px-4 lg:px-8 py-6">
+        {/* Route-level boundary — keyed by pathname so navigation
+            resets it. Without this, a runtime crash on any page
+            blanks the whole app instead of showing the error inline. */}
+        <RouteErrorBoundary key={pathname}>{children}</RouteErrorBoundary>
+      </main>
       <div className="fixed bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent" />
     </div>
   );
