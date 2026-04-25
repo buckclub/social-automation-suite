@@ -50,10 +50,25 @@ from datetime import datetime, timezone
 from typing import Optional
 
 
-# Keys that travel with a brand. Top-level entries map to either a full
-# block (e.g. `captions`) or a tuple of sub-keys (e.g. only some fields
-# under `video` / `tts`). Anything not listed stays in the global
-# config.json (provider keys, subreddits, ai_scoring, etc).
+# Per-brand keys: full blocks vs sub-keys.
+#
+# BRAND_KEYS lists keys with EXPLICIT rules — either snapshot the full
+# block (`True`) or a specific subset of nested keys (a tuple). Every
+# entry here was hand-curated to avoid snapshotting credentials or
+# global settings.
+#
+# EXCLUDE_FROM_BRAND lists top-level config keys that are intentionally
+# global (provider keys, scraper settings, output paths, etc). Anything
+# in either set is handled per its rule.
+#
+# ANY OTHER top-level key — i.e. a config block that landed AFTER
+# brand_profiles was last updated and isn't on either list — is
+# auto-snapshotted as a FULL BLOCK on the assumption that "new feature
+# config probably wants to be per-brand." This means adding a feature
+# like `pipeline.disabled_steps` or a future `music_library_settings`
+# block automatically starts traveling with brand profiles without a
+# brand_profiles edit. If a new key shouldn't be per-brand, add it to
+# EXCLUDE_FROM_BRAND when you ship the feature.
 BRAND_KEYS: dict[str, object] = {
     "captions":      True,           # full block
     "clip_captions": True,
@@ -62,6 +77,40 @@ BRAND_KEYS: dict[str, object] = {
     "video":         ("branding", "outro_text", "background_selector", "broll"),
     "tts":           ("main_voice", "voice_presets", "use_multiple_voices",
                       "comment_voices", "background_music", "elevenlabs_subset"),
+}
+
+# Keys that intentionally stay GLOBAL — never travel with a brand. A
+# new config block doesn't need to be added here unless it's
+# specifically machine-level / user-level / credential-bearing (i.e.
+# the brand-scoped default would be wrong).
+EXCLUDE_FROM_BRAND: set[str] = {
+    # Provider credentials + AI infra
+    "gemini",                # api keys, provider choice, model defaults
+    "youtube",               # data-API key
+    # Reddit fetcher (global scraper settings)
+    "subreddits", "request_delay",
+    "min_upvotes", "min_comments", "max_comments",
+    "min_age_hours", "max_age_hours",
+    "allow_nsfw", "require_selftext",
+    "fetch_limit", "keep_per_subreddit", "max_pages",
+    # Pipeline-format defaults that aren't render-shape (those live in
+    # `video.*` and ARE per-brand via the explicit BRAND_KEYS rule).
+    "formatting",
+    # AI scoring cache configuration (TTL, cap) — global
+    "ai_scoring",
+    # AI generation presets / niche library — share across brands
+    "ai_content_generation",
+    # Output paths (where things land on disk)
+    "output",
+    # Discord webhook URL — typically one Discord server for all brands
+    "discord",
+    # Pipeline step skipping is shared globally (per-brand override
+    # would require deeper plumbing through the pipeline; user can
+    # still toggle in Config). Move to auto-included if/when we
+    # surface per-brand step toggles in the UI.
+    "pipeline",
+    # Meta / runtime / persisted-state — never per-brand.
+    "active_brand_id", "version", "_metadata",
 }
 
 # When extracting tts.elevenlabs we keep style/dials but DROP the api_key
@@ -122,8 +171,16 @@ def snapshot_overrides_from_config(config: dict) -> dict:
     Pull just the brand-scoped keys out of a full config dict. Strips
     any nested credentials (api keys etc) so they never leak to a
     profile.json that might be shared.
+
+    Three categories of keys:
+      1. Explicitly listed in BRAND_KEYS → use the rule (full block or
+         sub-key tuple).
+      2. Explicitly listed in EXCLUDE_FROM_BRAND → skip.
+      3. Anything else → auto-snapshot as a full block, on the
+         assumption that new config blocks default to per-brand.
     """
     out: dict = {}
+    # 1. Explicit rules.
     for top_key, sub in BRAND_KEYS.items():
         block = config.get(top_key)
         if block is None:
@@ -144,14 +201,31 @@ def snapshot_overrides_from_config(config: dict) -> dict:
                 sub_out[sk] = copy.deepcopy(block[sk])
         if sub_out:
             out[top_key] = sub_out
+    # 3. Auto-snapshot any top-level key that's neither explicit nor
+    # excluded. Future-proofs the brand system: a feature that ships
+    # a new top-level config block (like the Pipeline Steps panel
+    # ships `pipeline.disabled_steps`) automatically gets per-brand
+    # snapshots without anyone remembering to update this file.
+    for top_key, block in config.items():
+        if top_key in BRAND_KEYS or top_key in EXCLUDE_FROM_BRAND:
+            continue
+        if block is None:
+            continue
+        out[top_key] = copy.deepcopy(block)
     return out
 
 
 def apply_overrides_to_config(config: dict, overrides: dict) -> dict:
     """
     Merge a brand's config_overrides INTO the live config dict. Returns
-    the same dict (mutated). Top-level keys listed as full-block blow
-    away the corresponding key entirely; sub-key entries deep-merge.
+    the same dict (mutated).
+
+    Behavior per top-level key:
+      - Listed in BRAND_KEYS as `True` → full-block replacement.
+      - Listed in BRAND_KEYS as a tuple → deep-merge the named sub-keys.
+      - Anything else → full-block replacement (the auto-snapshot
+        path; we treat unknown keys symmetrically with the snapshot
+        side so round-trips are stable).
     """
     if not overrides:
         return config
@@ -177,6 +251,11 @@ def apply_overrides_to_config(config: dict, overrides: dict) -> dict:
                     continue
                 if sk in (value or {}):
                     target[sk] = copy.deepcopy(value[sk])
+        else:
+            # Auto-snapshot key — match snapshot semantics by doing a
+            # full-block replacement. If a brand profile doesn't have
+            # an entry for this key, the global value is preserved.
+            config[top_key] = copy.deepcopy(value)
     return config
 
 
