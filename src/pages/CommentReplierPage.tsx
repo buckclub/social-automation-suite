@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  MessageCircle, Loader2, ArrowLeft, RefreshCw, Send, Trash2, Check, X,
+  MessageCircle, Loader2, RefreshCw, Send, Trash2, Check, X,
   ExternalLink, AlertTriangle, Pencil, Filter,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -132,29 +133,17 @@ export default function CommentReplierPage() {
 
   return (
     <div className="space-y-4 max-w-4xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <MessageCircle className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Comment Replier</h1>
-            <p className="text-xs text-muted-foreground">
-              AI drafts replies to your YouTube comments in the active brand voice.
-              Approve, edit, post — engagement closes the algorithm loop.
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
+      <PageHeader
+        icon={MessageCircle}
+        title="Replies"
+        subtitle="AI drafts replies to your YouTube comments in the active brand voice. Approve, edit, post — engagement closes the algorithm loop."
+        actions={
           <Button size="sm" onClick={sync} disabled={syncing} className="gap-1">
             {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
             Sync
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-            <ArrowLeft className="h-3.5 w-3.5" /> Back
-          </Button>
-        </div>
-      </div>
+        }
+      />
 
       {/* Stat row + filters */}
       <Card className="border-border bg-card">

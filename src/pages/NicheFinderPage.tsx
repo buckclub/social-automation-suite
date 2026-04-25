@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Compass, Loader2, Sparkles, ArrowLeft, Globe, Users, Shield, ShieldAlert, ShieldOff,
+  Compass, Loader2, Sparkles, Globe, Users, Shield, ShieldAlert, ShieldOff,
   Tag, TrendingUp, Copy, Check, Plus, Youtube,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -108,23 +109,11 @@ export default function NicheFinderPage() {
 
   return (
     <div className="space-y-4 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Compass className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Niche Finder</h1>
-            <p className="text-xs text-muted-foreground">
-              Real YouTube trend data + your brief → ranked niche ideas with
-              channel names, descriptions, and first-video pitches.
-            </p>
-          </div>
-        </div>
-        <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back
-        </Button>
-      </div>
+      <PageHeader
+        icon={Compass}
+        title="Niche Finder"
+        subtitle="Real YouTube trend data + your brief → ranked niche ideas with channel names, descriptions, and first-video pitches."
+      />
 
       {/* Brief form */}
       <Card className="border-border bg-card">

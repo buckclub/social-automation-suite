@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Music, Loader2, ArrowLeft, Upload, Trash2, Play, Pause, Save, Check, X,
+  Music, Loader2, Upload, Trash2, Play, Pause, Save, Check, X,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -123,23 +124,11 @@ export default function MusicLibraryPage() {
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Music className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Music Library</h1>
-            <p className="text-xs text-muted-foreground">
-              Upload royalty-free tracks, tag them by mood, and the render pipeline will
-              auto-pick a matching track for each generated story.
-            </p>
-          </div>
-        </div>
-        <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back
-        </Button>
-      </div>
+      <PageHeader
+        icon={Music}
+        title="Music Library"
+        subtitle="Upload royalty-free tracks, tag them by mood, and the render pipeline auto-picks a matching track per generated story."
+      />
 
       {/* Upload bar */}
       <Card className="border-border bg-card">

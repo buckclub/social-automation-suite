@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Layers, Loader2, Sparkles, ArrowLeft, Plus, Trash2, ArrowUp, ArrowDown,
+  Layers, Loader2, Sparkles, Plus, Trash2, ArrowUp, ArrowDown,
   Download, Wand2, Image as ImageIcon, Square, RectangleVertical, RefreshCw,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -202,23 +203,11 @@ export default function CarouselPage() {
 
   return (
     <div className="space-y-4 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Layers className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Carousel Posts</h1>
-            <p className="text-xs text-muted-foreground">
-              Multi-slide IG / TikTok / LinkedIn carousels — paste a story,
-              AI splits it into slides, edit, download as a zip.
-            </p>
-          </div>
-        </div>
-        <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back
-        </Button>
-      </div>
+      <PageHeader
+        icon={Layers}
+        title="Carousel Posts"
+        subtitle="Multi-slide IG / TikTok / LinkedIn carousels — paste a story, AI splits it into slides, edit, download as a zip."
+      />
 
       {/* AI splitter */}
       <Card className="border-border bg-card">

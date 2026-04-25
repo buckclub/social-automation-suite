@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Users, Loader2, ArrowLeft, Sparkles, Send, ListPlus, Copy, Check,
+  Users, Loader2, Sparkles, Send, ListPlus, Copy, Check,
   Drama, Laugh, Heart, Zap, Frown,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -110,24 +111,11 @@ export default function DialoguePage() {
 
   return (
     <div className="space-y-4 max-w-4xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Users className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Dialogue Mode</h1>
-            <p className="text-xs text-muted-foreground">
-              Two-character back-and-forth scripts. AI writes the
-              exchange, the existing pipeline renders the video with
-              speaker labels baked into the captions.
-            </p>
-          </div>
-        </div>
-        <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back
-        </Button>
-      </div>
+      <PageHeader
+        icon={Users}
+        title="Dialogue Mode"
+        subtitle="Two-character back-and-forth scripts. AI writes the exchange, the existing pipeline renders with speaker labels in captions."
+      />
 
       <Card className="border-border bg-card">
         <CardContent className="p-4 space-y-3">

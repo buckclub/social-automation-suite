@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Calendar as CalendarIcon, Loader2, Plus, ArrowLeft, Trash2, Play,
+  Calendar as CalendarIcon, Loader2, Plus, Trash2, Play,
   CheckCircle2, XCircle, Clock, Tag, Pencil,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -108,28 +109,16 @@ export default function CalendarPage() {
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <CalendarIcon className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Content Calendar</h1>
-            <p className="text-xs text-muted-foreground">
-              Schedule Generate-with-AI runs for specific datetimes. The worker
-              fires each slot at its time, generates a story, and queues it for render.
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
+      <PageHeader
+        icon={CalendarIcon}
+        title="Content Calendar"
+        subtitle="Schedule Generate-with-AI runs for specific datetimes. The worker fires each slot at its time, generates a story, and queues it for render."
+        actions={
           <Button size="sm" onClick={() => { setEditing(null); setOpen(true); }} className="gap-1">
             <Plus className="h-3.5 w-3.5" /> Schedule run
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-            <ArrowLeft className="h-3.5 w-3.5" /> Back
-          </Button>
-        </div>
-      </div>
+        }
+      />
 
       {loading ? (
         <Card className="border-border bg-card"><CardContent className="py-10 text-center">

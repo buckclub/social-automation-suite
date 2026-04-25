@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import {
-  User, Loader2, ArrowLeft, Upload, Trash2, Check, Save,
+  User, Loader2, Upload, Trash2, Check, Save,
   AlertTriangle, Tag,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -176,23 +177,11 @@ export default function AvatarReelsPage() {
 
   return (
     <div className="space-y-4 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <User className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Avatar Reels</h1>
-            <p className="text-xs text-muted-foreground">
-              Animated PNG character (a.k.a. "PNG-tuber") that swaps expressions
-              while your script is narrated. One avatar per brand profile.
-            </p>
-          </div>
-        </div>
-        <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back
-        </Button>
-      </div>
+      <PageHeader
+        icon={User}
+        title="PNG-tuber"
+        subtitle="Animated PNG character that swaps expressions while your script is narrated. One avatar per brand profile."
+      />
 
       {noActiveBrand && (
         <Card className="border-amber-400/40 bg-amber-400/5">

@@ -1099,6 +1099,15 @@ export const api = {
   brandPicUrl: (id: string, bust?: string) =>
     `${API_BASE}/api/brands/${encodeURIComponent(id)}/profile-pic${bust ? `?v=${encodeURIComponent(bust)}` : ""}`,
 
+  // ── Activity strip (cross-worker snapshot for the status bar) ─
+  getActivity: () =>
+    request<{
+      render_queue:   { running: boolean; queued: number };
+      social_copy:    { running: number;  queued: number };
+      calendar:       { planned: number;  in_flight: number; next_at: string | null };
+      comment_drafts: { open: number;     failed: number };
+    }>("/api/activity"),
+
   // ── Performance Analytics ────────────────────────────────────
   getPerformanceRecommendations: () =>
     request<{

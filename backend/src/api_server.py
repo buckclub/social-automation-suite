@@ -5953,6 +5953,90 @@ async def dialogue_generate(req: dict):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Activity strip — single-call snapshot of every background worker so
+# the bottom status bar can show what's happening across the whole
+# suite without polling 4 separate endpoints.
+# ──────────────────────────────────────────────────────────────────────
+
+@app.get("/api/activity")
+async def activity_snapshot():
+    """
+    Compact view of every background system. Designed to be polled
+    every 5-10s by the StatusBar without being chatty about details.
+    """
+    # Render queue
+    render_running = bool(pipeline_state.get("is_running"))
+    render_queued = 0
+    try:
+        from run_queue import _path as _rq_path, _load as _rq_load
+        rq = _rq_load(_rq_path(PROJECT_ROOT))
+        render_queued = sum(1 for it in (rq.get("items") or []) if it.get("status") == "queued")
+    except Exception:
+        pass
+
+    # Social-copy queue
+    social_running = 0
+    social_queued = 0
+    try:
+        from social_queue import snapshot as _social_snap
+        sd = _social_snap(PROJECT_ROOT)
+        for it in (sd.get("items") or []):
+            if it.get("status") == "running": social_running += 1
+            elif it.get("status") == "queued": social_queued += 1
+    except Exception:
+        pass
+
+    # Calendar
+    cal_planned = 0
+    cal_next: Optional[str] = None
+    cal_in_flight = 0
+    try:
+        from content_calendar import list_slots
+        for s in list_slots(PROJECT_ROOT):
+            st = s.get("status")
+            if st == "planned":
+                cal_planned += 1
+                ts = s.get("scheduled_at") or ""
+                if ts and (cal_next is None or ts < cal_next):
+                    cal_next = ts
+            elif st in ("due", "generating"):
+                cal_in_flight += 1
+    except Exception:
+        pass
+
+    # Comment drafts
+    comment_drafts_open = 0
+    comment_failed = 0
+    try:
+        from comment_replier import list_drafts
+        for d in list_drafts(PROJECT_ROOT):
+            if d.get("status") == "draft": comment_drafts_open += 1
+            elif d.get("status") == "failed": comment_failed += 1
+    except Exception:
+        pass
+
+    return {
+        "render_queue":   {
+            "running": render_running,
+            "queued":  render_queued,
+        },
+        "social_copy":    {
+            "running": social_running,
+            "queued":  social_queued,
+        },
+        "calendar":       {
+            "planned":   cal_planned,
+            "in_flight": cal_in_flight,
+            "next_at":   cal_next,
+        },
+        "comment_drafts": {
+            "open":   comment_drafts_open,
+            "failed": comment_failed,
+        },
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Comment Replier — fetch top-level comments on the user's uploads, AI
 # drafts replies in the active brand voice, user approves and posts.
 # Read uses the YT API key (free); posting uses OAuth + the

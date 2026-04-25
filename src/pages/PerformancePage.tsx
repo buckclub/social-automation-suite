@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  TrendingUp, Loader2, ArrowLeft, RefreshCw, Eye, ThumbsUp,
+  TrendingUp, Loader2, RefreshCw, Eye, ThumbsUp,
   MessageCircle, ExternalLink, Trophy, Youtube, Sparkles, Lightbulb, AlertTriangle, Copy, Check,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -86,22 +87,16 @@ export default function PerformancePage() {
 
   return (
     <div className="space-y-4 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <TrendingUp className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Performance</h1>
-            <p className="text-xs text-muted-foreground">
-              Live YouTube stats for every video the suite has uploaded.
-              {data?.fetched_at && (
-                <> Fetched <span className="font-mono">{new Date(data.fetched_at).toLocaleTimeString()}</span>.</>
-              )}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
+      <PageHeader
+        icon={TrendingUp}
+        title="Performance"
+        subtitle={
+          <>Live YouTube stats for every video the suite has uploaded.
+          {data?.fetched_at && (
+            <> Fetched <span className="font-mono">{new Date(data.fetched_at).toLocaleTimeString()}</span>.</>
+          )}</>
+        }
+        actions={
           <Button
             size="sm" variant="outline"
             onClick={() => load(true)}
@@ -111,11 +106,8 @@ export default function PerformancePage() {
             {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
             Refresh
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-            <ArrowLeft className="h-3.5 w-3.5" /> Back
-          </Button>
-        </div>
-      </div>
+        }
+      />
 
       {loading && !data && (
         <Card className="border-border bg-card">

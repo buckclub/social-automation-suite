@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   PenLine, Loader2, Sparkles, Mic, MicOff, Images, Shuffle,
-  PlusCircle, ListPlus, ArrowLeft,
+  PlusCircle, ListPlus,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -115,23 +116,11 @@ export default function CustomScriptPage() {
 
   return (
     <div className="space-y-4 max-w-4xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <PenLine className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Custom Script</h1>
-            <p className="text-xs text-muted-foreground">
-              Paste your own narration — runs through TTS + captions + render with
-              no AI generation step.
-            </p>
-          </div>
-        </div>
-        <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back
-        </Button>
-      </div>
+      <PageHeader
+        icon={PenLine}
+        title="Custom Script"
+        subtitle="Paste your own narration — runs through TTS + captions + render with no AI generation step."
+      />
 
       {/* Script inputs */}
       <Card className="border-border bg-card">

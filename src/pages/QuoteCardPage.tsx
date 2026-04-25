@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Quote, Loader2, Sparkles, ArrowLeft, Download, Image as ImageIcon,
+  Quote, Loader2, Sparkles, Download, Image as ImageIcon,
   Square, RectangleVertical, Wand2, Film,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -134,23 +135,11 @@ export default function QuoteCardPage() {
 
   return (
     <div className="space-y-4 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Quote className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Quote Cards</h1>
-            <p className="text-xs text-muted-foreground">
-              Single-image quote posts for IG / X / Pinterest. Type a quote
-              or pull the most-quotable lines from any rendered video.
-            </p>
-          </div>
-        </div>
-        <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back
-        </Button>
-      </div>
+      <PageHeader
+        icon={Quote}
+        title="Quote Cards"
+        subtitle="Single-image quote posts for IG / X / Pinterest. Type a quote or pull the most-quotable lines from any rendered video."
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4">
         <div className="space-y-3">

@@ -3,8 +3,10 @@ import {
   Video, LayoutDashboard, Newspaper, Settings2, Film, Command,
   Images, Scissors, PenLine, Plus, ChevronDown,
   FileText, Layers, Hash, Globe, Quote, Music, TrendingUp, Compass, User as UserIcon,
-  Calendar as CalendarIcon, MessageCircle, Users as UsersIcon,
+  Calendar as CalendarIcon, MessageCircle, Users as UsersIcon, FolderOpen,
+  Sparkles as SparklesIcon, ListChecks, ImageIcon, Wrench, Tag,
 } from "lucide-react";
+import { type LucideIcon } from "lucide-react";
 import { useHealth } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
 import { CommandPaletteProvider, useCommandPalette } from "@/components/CommandPalette";
@@ -20,35 +22,84 @@ import {
   DropdownMenuLabel, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 
-// Single-link nav items — render as standalone <NavLink>s.
-// "Posts", "Text Posts", and "Clip Maker" are sources of new content;
-// they're grouped under a "Create" dropdown defined separately so the
-// header stays compact on narrower laptop widths.
-const topLevelItems = [
-  { to: "/",            label: "Dashboard",     icon: LayoutDashboard },
-  { to: "/videos",      label: "Videos",        icon: Film },
-  { to: "/calendar",    label: "Calendar",      icon: CalendarIcon },
-  { to: "/comments",    label: "Comments",      icon: MessageCircle },
-  { to: "/performance", label: "Performance",   icon: TrendingUp },
-  { to: "/backgrounds", label: "Backgrounds",   icon: Images },
-  { to: "/music",       label: "Music",         icon: Music },
-  { to: "/config",      label: "Configuration", icon: Settings2 },
+// Top-level single-page items.
+const topLevelItems: { to: string; label: string; icon: LucideIcon }[] = [
+  { to: "/",         label: "Dashboard", icon: LayoutDashboard },
+  { to: "/calendar", label: "Calendar",  icon: CalendarIcon },
 ];
-const createGroupItems = [
-  { to: "/niche-finder",  label: "Niche Finder",   icon: Compass,   desc: "What channel to start? Trend-driven niche ideas" },
-  { to: "/posts",         label: "Reddit Posts",   icon: Newspaper, desc: "Browse + queue Reddit content" },
-  { to: "/clips",         label: "Clip Maker",     icon: Scissors,  desc: "Long-form → Shorts" },
-  { to: "/text-posts",    label: "Text Posts",     icon: PenLine,   desc: "Tweets / comments / community posts" },
-  { to: "/custom-script", label: "Custom Script",  icon: FileText,  desc: "Paste your own narration → render" },
-  { to: "/avatar-reels",  label: "Avatar Reels",   icon: UserIcon,  desc: "PNG-tuber overlay with talk + emotion swaps" },
-  { to: "/dialogue",      label: "Dialogue Mode",  icon: UsersIcon, desc: "Two-character back-and-forth scripts" },
-  { to: "/carousels",     label: "Carousel Posts", icon: Layers,    desc: "Multi-slide IG / TikTok carousels" },
-  { to: "/quote-cards",   label: "Quote Cards",    icon: Quote,     desc: "Single-image quote post (extract from video)" },
-  { to: "/news",          label: "News Roundup",   icon: Globe,     desc: "RSS feeds → AI riff prompts" },
-  { to: "/hashtag-lab",   label: "Hashtag Lab",    icon: Hash,      desc: "Rank tags for a caption" },
+
+// Library group — places where saved assets live.
+const libraryGroupItems: { to: string; label: string; icon: LucideIcon; desc: string }[] = [
+  { to: "/videos",      label: "Videos",      icon: Film,    desc: "Every rendered video, filterable by brand" },
+  { to: "/brands",      label: "Brands",      icon: Tag,     desc: "Saved channel-look snapshots" },
+  { to: "/backgrounds", label: "Backgrounds", icon: Images,  desc: "Stock footage organised by folder" },
+  { to: "/music",       label: "Music",       icon: Music,   desc: "Royalty-free tracks tagged by mood" },
 ];
-// Combined list — used by the mobile nav so every page is reachable.
-const allNavItems = [...topLevelItems, ...createGroupItems];
+
+// Engage group — analytics + outbound engagement.
+const engageGroupItems: { to: string; label: string; icon: LucideIcon; desc: string }[] = [
+  { to: "/performance", label: "Performance", icon: TrendingUp,    desc: "Live YT stats + AI-driven diagnoses" },
+  { to: "/comments",    label: "Replies",     icon: MessageCircle, desc: "AI-drafted comment replies" },
+];
+
+// Create dropdown — grouped by output type so 10+ items stay scannable.
+const createGroups: {
+  label: string;
+  icon: LucideIcon;
+  items: { to: string; label: string; icon: LucideIcon; desc: string }[];
+}[] = [
+  {
+    label: "Plan",
+    icon: Compass,
+    items: [
+      { to: "/niche-finder", label: "Niche Finder", icon: Compass, desc: "Trend-driven channel-niche ideas" },
+    ],
+  },
+  {
+    label: "Video",
+    icon: Film,
+    items: [
+      { to: "/posts",         label: "Reddit Stories", icon: Newspaper, desc: "Browse + queue Reddit threads" },
+      { to: "/clips",         label: "Clip Maker",     icon: Scissors,  desc: "Long-form → Shorts" },
+      { to: "/custom-script", label: "Custom Script",  icon: FileText,  desc: "Paste your own narration" },
+      { to: "/avatar-reels",  label: "PNG-tuber",      icon: UserIcon,  desc: "Animated character overlay" },
+      { to: "/dialogue",      label: "Dialogue Mode",  icon: UsersIcon, desc: "Two-character back-and-forth" },
+    ],
+  },
+  {
+    label: "Image",
+    icon: ImageIcon,
+    items: [
+      { to: "/carousels",   label: "Carousel Posts", icon: Layers, desc: "Multi-slide IG / TikTok carousels" },
+      { to: "/quote-cards", label: "Quote Cards",    icon: Quote,  desc: "Single-image quote post" },
+    ],
+  },
+  {
+    label: "Text",
+    icon: PenLine,
+    items: [
+      { to: "/text-posts", label: "Text Posts", icon: PenLine, desc: "Tweets / comments / community posts" },
+    ],
+  },
+  {
+    label: "Utilities",
+    icon: Wrench,
+    items: [
+      { to: "/news",        label: "News Roundup", icon: Globe, desc: "RSS feeds → AI riff prompts" },
+      { to: "/hashtag-lab", label: "Hashtag Lab",  icon: Hash,  desc: "Rank tags for a caption" },
+    ],
+  },
+];
+
+// Flat list for the mobile nav and active-state checks.
+const allCreateItems = createGroups.flatMap((g) => g.items);
+const allNavItems = [
+  ...topLevelItems,
+  ...allCreateItems,
+  ...libraryGroupItems,
+  ...engageGroupItems,
+  { to: "/config", label: "Configuration", icon: Settings2 },
+];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -68,16 +119,16 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const isOnline = health?.status === "online";
   const { toggle: toggleCommand } = useCommandPalette();
   const { pathname } = useLocation();
-  // Highlight the "Create" trigger when we're on any of its destinations.
-  const isInCreate = createGroupItems.some((i) => pathname.startsWith(i.to));
+
+  const isInGroup = (group: { items: { to: string }[] }) =>
+    group.items.some((i) => pathname.startsWith(i.to));
+  const isInCreate = createGroups.some((g) => isInGroup(g));
+  const isInLibrary = libraryGroupItems.some((i) => pathname.startsWith(i.to));
+  const isInEngage = engageGroupItems.some((i) => pathname.startsWith(i.to));
 
   return (
     <div className="min-h-screen bg-background pb-8">
       <header className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-xl">
-        {/* Bumped from max-w-7xl (1280) to max-w-screen-2xl (1536) so the
-            wordmark, nav, and right-side actions all fit comfortably on
-            the same row at typical laptop widths. Main also widens below
-            so the content area lines up with the header. */}
         <div className="mx-auto flex h-14 max-w-screen-2xl items-center justify-between px-4 lg:px-8">
           <div className="flex items-center gap-6">
             <NavLink to="/" className="flex items-center gap-3">
@@ -90,10 +141,10 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
             </NavLink>
 
             <nav className="hidden md:flex items-center gap-1">
-              {/* Dashboard first */}
+              {/* Dashboard */}
               <NavItem item={topLevelItems[0]} />
 
-              {/* Create dropdown — Reddit Posts / Clip Maker / Text Posts */}
+              {/* Create dropdown — sectioned by output type */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
@@ -109,49 +160,78 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
                     <ChevronDown className="h-3 w-3 opacity-70" />
                   </button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-64">
-                  <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                    Sources of new content
-                  </DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {createGroupItems.map((item) => (
-                    <DropdownMenuItem key={item.to} asChild>
-                      <NavLink
-                        to={item.to}
-                        className={({ isActive }) =>
-                          cn(
-                            "flex items-start gap-2.5 cursor-pointer",
-                            isActive && "bg-primary/10 text-primary",
-                          )
-                        }
-                      >
-                        <item.icon className="h-4 w-4 mt-0.5 shrink-0" />
-                        <div className="min-w-0">
-                          <div className="text-xs font-medium leading-tight">{item.label}</div>
-                          <div className="text-[10px] text-muted-foreground leading-tight">
-                            {item.desc}
-                          </div>
-                        </div>
-                      </NavLink>
-                    </DropdownMenuItem>
+                <DropdownMenuContent align="start" className="w-72">
+                  {createGroups.map((group, gi) => (
+                    <div key={group.label}>
+                      {gi > 0 && <DropdownMenuSeparator />}
+                      <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                        <group.icon className="h-3 w-3" /> {group.label}
+                      </DropdownMenuLabel>
+                      {group.items.map((item) => (
+                        <DropdownMenuItem key={item.to} asChild>
+                          <NavLink
+                            to={item.to}
+                            className={({ isActive }) =>
+                              cn(
+                                "flex items-start gap-2.5 cursor-pointer",
+                                isActive && "bg-primary/10 text-primary",
+                              )
+                            }
+                          >
+                            <item.icon className="h-4 w-4 mt-0.5 shrink-0" />
+                            <div className="min-w-0">
+                              <div className="text-xs font-medium leading-tight">{item.label}</div>
+                              <div className="text-[10px] text-muted-foreground leading-tight">
+                                {item.desc}
+                              </div>
+                            </div>
+                          </NavLink>
+                        </DropdownMenuItem>
+                      ))}
+                    </div>
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              {/* Remaining top-level items */}
-              {topLevelItems.slice(1).map((item) => (
-                <NavItem key={item.to} item={item} />
-              ))}
+              {/* Calendar — single top-level item */}
+              <NavItem item={topLevelItems[1]} />
+
+              {/* Library dropdown — saved assets */}
+              <NavGroupDropdown
+                label="Library"
+                icon={FolderOpen}
+                items={libraryGroupItems}
+                isActive={isInLibrary}
+              />
+
+              {/* Engage dropdown — analytics + outreach */}
+              <NavGroupDropdown
+                label="Engage"
+                icon={SparklesIcon}
+                items={engageGroupItems}
+                isActive={isInEngage}
+              />
+
+              {/* Configuration — single top-level item, last */}
+              <NavLink
+                to="/config"
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                    isActive
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                  )
+                }
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+                Configuration
+              </NavLink>
             </nav>
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Active-brand switcher — every render uses this brand's
-                title-card / captions / watermark / voice settings. */}
             <BrandSwitcher />
-            {/* Primary "create" CTA — accessible from every page so the
-                user never has to navigate to the dashboard just to kick
-                off a generation run. */}
             <GenerateWithAIDialog />
             <ThemeToggle />
             <button
@@ -218,7 +298,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   );
 }
 
-function NavItem({ item }: { item: { to: string; label: string; icon: typeof Film } }) {
+function NavItem({ item }: { item: { to: string; label: string; icon: LucideIcon } }) {
   return (
     <NavLink
       to={item.to}
@@ -235,5 +315,53 @@ function NavItem({ item }: { item: { to: string; label: string; icon: typeof Fil
       <item.icon className="h-3.5 w-3.5" />
       {item.label}
     </NavLink>
+  );
+}
+
+function NavGroupDropdown({
+  label, icon: GroupIcon, items, isActive,
+}: {
+  label: string; icon: LucideIcon;
+  items: { to: string; label: string; icon: LucideIcon; desc: string }[];
+  isActive: boolean;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          className={cn(
+            "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors outline-none",
+            isActive
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:text-foreground hover:bg-secondary",
+          )}
+        >
+          <GroupIcon className="h-3.5 w-3.5" />
+          {label}
+          <ChevronDown className="h-3 w-3 opacity-70" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-64">
+        {items.map((item) => (
+          <DropdownMenuItem key={item.to} asChild>
+            <NavLink
+              to={item.to}
+              className={({ isActive }) =>
+                cn(
+                  "flex items-start gap-2.5 cursor-pointer",
+                  isActive && "bg-primary/10 text-primary",
+                )
+              }
+            >
+              <item.icon className="h-4 w-4 mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <div className="text-xs font-medium leading-tight">{item.label}</div>
+                <div className="text-[10px] text-muted-foreground leading-tight">{item.desc}</div>
+              </div>
+            </NavLink>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

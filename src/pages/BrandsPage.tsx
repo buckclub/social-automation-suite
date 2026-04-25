@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  Tag, Plus, Loader2, Trash2, Check, ArrowLeft, Save, Upload,
+  Tag, Plus, Loader2, Trash2, Check, Save, Upload,
   Camera, Pencil, X,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,30 +67,17 @@ export default function BrandsPage() {
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Tag className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Brands</h1>
-            <p className="text-xs text-muted-foreground">
-              Saved snapshots of every "what this channel looks like" config —
-              title card, captions, watermark, voice, BG selector, music tags.
-              Switch via the header pill before each render.
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
+      <PageHeader
+        icon={Tag}
+        title="Brands"
+        subtitle="Saved snapshots of every 'what this channel looks like' config — title card, captions, watermark, voice, BG selector, music tags. Switch via the header pill before each render."
+        actions={
           <Button size="sm" onClick={() => setCreatingOpen((v) => !v)} className="gap-1">
             {creatingOpen ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
             {creatingOpen ? "Cancel" : "New brand"}
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-            <ArrowLeft className="h-3.5 w-3.5" /> Back
-          </Button>
-        </div>
-      </div>
+        }
+      />
 
       {creatingOpen && (
         <Card className="border-primary/30 bg-primary/5">

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Newspaper, Loader2, ExternalLink, RefreshCw, Sparkles, Globe,
-  ArrowLeft, Plus,
+  Newspaper, Loader2, ExternalLink, RefreshCw, Sparkles, Globe, Plus,
 } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -112,23 +112,11 @@ export default function NewsRoundupPage() {
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Newspaper className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">News Roundup</h1>
-            <p className="text-xs text-muted-foreground">
-              Pull today's headlines, click one to seed an AI script.
-              Daily volume + daily algorithm refresh = compounding reach.
-            </p>
-          </div>
-        </div>
-        <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="gap-1">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back
-        </Button>
-      </div>
+      <PageHeader
+        icon={Newspaper}
+        title="News Roundup"
+        subtitle="Pull today's headlines, click one to seed an AI script. Daily volume + daily algorithm refresh = compounding reach."
+      />
 
       {/* Feed picker */}
       <Card className="border-border bg-card">

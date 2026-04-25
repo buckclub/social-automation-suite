@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   HardDrive, Youtube, CheckCircle2, Loader2, AlertCircle, Command,
+  Calendar as CalendarIcon, MessageCircle, Sparkles, Film,
 } from "lucide-react";
 import { usePipelineStatus, useHealth, useSystemStatus } from "@/hooks/use-api";
 import { api } from "@/lib/api";
@@ -32,6 +33,35 @@ export function StatusBar() {
     const t = setInterval(load, 30_000);
     return () => { cancelled = true; clearInterval(t); };
   }, []);
+
+  // Cross-worker activity snapshot — render queue + social copy + calendar
+  // + comment drafts in one poll. Only chips with non-zero counts render
+  // so the bar stays clean when the suite is idle.
+  const [activity, setActivity] = useState<Awaited<ReturnType<typeof api.getActivity>> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      api.getActivity()
+        .then((a) => { if (!cancelled) setActivity(a); })
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 8_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+
+  // Format "next at" relative to now, e.g. "in 14m" / "in 2h"
+  const fmtRel = (iso?: string | null): string => {
+    if (!iso) return "";
+    try {
+      const ms = new Date(iso).getTime() - Date.now();
+      if (ms < 0) return "due";
+      const mins = Math.round(ms / 60_000);
+      if (mins < 60) return `in ${mins}m`;
+      const hrs = Math.round(mins / 60);
+      if (hrs < 24) return `in ${hrs}h`;
+      return `in ${Math.round(hrs / 24)}d`;
+    } catch { return ""; }
+  };
 
   const running = pipeline?.is_running ?? false;
   const steps = pipeline?.steps ?? [];
@@ -75,6 +105,82 @@ export function StatusBar() {
         />
 
         <Divider />
+
+        {/* Cross-worker activity — only shows chips with non-zero state. */}
+        {activity?.render_queue.queued ? (
+          <button
+            onClick={() => nav("/")}
+            className="flex items-center gap-1 text-amber-400/90 hover:text-foreground transition-colors"
+            title={`${activity.render_queue.queued} item${activity.render_queue.queued === 1 ? "" : "s"} queued for render`}
+          >
+            <Film className="h-3 w-3" />
+            <span>{activity.render_queue.queued} queued</span>
+          </button>
+        ) : null}
+        {activity?.social_copy.running || activity?.social_copy.queued ? (
+          <button
+            onClick={() => nav("/videos")}
+            className={cn(
+              "flex items-center gap-1 transition-colors hover:text-foreground",
+              activity.social_copy.running ? "text-primary" : "text-muted-foreground",
+            )}
+            title="Social copy queue"
+          >
+            <Sparkles className={cn("h-3 w-3", activity.social_copy.running && "animate-pulse")} />
+            <span>
+              {activity.social_copy.running ? "social copy running" : `${activity.social_copy.queued} social copy`}
+            </span>
+          </button>
+        ) : null}
+        {activity?.calendar.planned || activity?.calendar.in_flight ? (
+          <button
+            onClick={() => nav("/calendar")}
+            className={cn(
+              "flex items-center gap-1 transition-colors hover:text-foreground",
+              activity.calendar.in_flight ? "text-primary" : "text-muted-foreground",
+            )}
+            title={
+              activity.calendar.in_flight
+                ? `${activity.calendar.in_flight} slot in flight`
+                : `${activity.calendar.planned} scheduled${activity.calendar.next_at ? `, next ${fmtRel(activity.calendar.next_at)}` : ""}`
+            }
+          >
+            <CalendarIcon className={cn("h-3 w-3", activity.calendar.in_flight && "animate-pulse")} />
+            <span>
+              {activity.calendar.in_flight
+                ? `${activity.calendar.in_flight} firing`
+                : <>{activity.calendar.planned} scheduled
+                  {activity.calendar.next_at && (
+                    <span className="text-muted-foreground/70 ml-1">· {fmtRel(activity.calendar.next_at)}</span>
+                  )}
+                </>}
+            </span>
+          </button>
+        ) : null}
+        {activity?.comment_drafts.open ? (
+          <button
+            onClick={() => nav("/comments")}
+            className={cn(
+              "flex items-center gap-1 transition-colors hover:text-foreground",
+              activity.comment_drafts.failed ? "text-destructive" : "text-muted-foreground",
+            )}
+            title={
+              activity.comment_drafts.failed
+                ? `${activity.comment_drafts.failed} reply failed`
+                : `${activity.comment_drafts.open} draft replies awaiting review`
+            }
+          >
+            <MessageCircle className="h-3 w-3" />
+            <span>{activity.comment_drafts.open} replies</span>
+            {activity.comment_drafts.failed > 0 && (
+              <span className="text-destructive">· {activity.comment_drafts.failed} failed</span>
+            )}
+          </button>
+        ) : null}
+        {(activity?.render_queue.queued || activity?.social_copy.running || activity?.social_copy.queued
+            || activity?.calendar.planned || activity?.calendar.in_flight || activity?.comment_drafts.open) ? (
+          <Divider />
+        ) : null}
 
         {/* YouTube quota chip */}
         {quota && (
