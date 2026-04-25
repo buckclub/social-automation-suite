@@ -4320,6 +4320,16 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                     else:
                         vp = await asyncio.to_thread(video_gen.generate_video, timeline, output_video, None, 0.0, branding, title, post_subreddit, post_score)
                     if vp:
+                        # Auto B-roll overlay (best-effort post-render step).
+                        # Only meaningful for the FFmpeg engine; the moviepy
+                        # path skips this since its output format may differ.
+                        if engine == "ffmpeg":
+                            try:
+                                n = await _maybe_apply_broll(post_id, vp, timeline, video_gen, config)
+                                if n:
+                                    _log(f"B-roll: overlaid {n} moment(s) onto {os.path.basename(vp)}")
+                            except Exception as e:
+                                _log(f"B-roll overlay error (non-fatal): {e}")
                         generated_video_paths.append(vp)
                         video_sub_steps[0]["status"] = "done"
                     else:
@@ -4954,6 +4964,77 @@ async def elevenlabs_voices():
 # `backgrounds/`: flat files plus a metadata JSON for per-track moods.
 # ──────────────────────────────────────────────────────────────────────
 
+async def _maybe_apply_broll(post_id: str, video_path: str, timeline: list, video_gen, config: dict) -> int:
+    """
+    If video.broll.enabled is on, run the LLM moment-tagger, download
+    Pexels clips, and overlay them onto the rendered video. Returns the
+    number of overlays applied. Best-effort — never raises.
+    """
+    broll_cfg = (config.get("video") or {}).get("broll") or {}
+    if not broll_cfg.get("enabled"):
+        return 0
+    pexels_key = (broll_cfg.get("pexels_api_key") or "").strip()
+    if not pexels_key:
+        _log("B-roll enabled but no Pexels API key — skipping. Set it in Config → Video → Auto B-roll.")
+        return 0
+
+    g = config.get("gemini") or {}
+    if not g.get("enabled"):
+        return 0
+    provider = g.get("provider", "gemini")
+    api_key = (
+        g.get("api_key") if provider == "gemini" else
+        g.get("openrouter_api_key") if provider == "openrouter" else
+        g.get("nvidia_nim_api_key") if provider == "nvidia_nim" else ""
+    )
+    model = g.get("model") or "gemini-2.0-flash"
+    ollama_url = g.get("ollama_url", "http://localhost:11434")
+
+    # Reconstruct narration text + total duration from the timeline.
+    script = " ".join((seg.get("text") or "").strip() for seg in (timeline or []) if seg.get("text"))
+    total_dur = 0.0
+    for seg in (timeline or []):
+        try: total_dur += float(seg.get("duration") or 0)
+        except (TypeError, ValueError): pass
+    if total_dur < 4.0 or len(script) < 60:
+        return 0
+
+    out_dir = os.path.join(PROJECT_ROOT, "posts", post_id, "broll")
+    try:
+        max_clips = int(broll_cfg.get("max_clips_per_minute") or 4)
+        max_clips = max(1, min(8, int((total_dur / 60) * max_clips) or 3))
+    except Exception:
+        max_clips = 3
+
+    try:
+        from broll import select_and_download
+        moments = await asyncio.to_thread(
+            select_and_download,
+            script=script, total_duration_s=total_dur,
+            out_dir=out_dir,
+            provider=provider, ai_api_key=api_key, model=model, ollama_url=ollama_url,
+            pexels_api_key=pexels_key,
+            max_clips=max_clips,
+        )
+    except Exception as e:
+        _log(f"B-roll selection failed: {e}")
+        return 0
+
+    if not moments:
+        _log("B-roll: no moments selected.")
+        return 0
+
+    # Persist for UI inspection ("which b-roll clips ended up in this render?").
+    try:
+        with open(os.path.join(PROJECT_ROOT, "posts", post_id, "broll.json"), "w", encoding="utf-8") as f:
+            json.dump({"moments": moments, "applied_to": video_path}, f, indent=2)
+    except Exception:
+        pass
+
+    ok = await asyncio.to_thread(video_gen.overlay_broll, video_path, moments)
+    return len(moments) if ok else 0
+
+
 def _resolve_background_music(post_id: str, config: dict) -> tuple[Optional[str], float]:
     """
     Look up the background music track to use for a render. Returns
@@ -4995,6 +5076,185 @@ def _resolve_background_music(post_id: str, config: dict) -> tuple[Optional[str]
         return pick_track_for_tone(PROJECT_ROOT, tone or None), vol_db
 
     return None, vol_db
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Performance Analytics — pull YouTube view/like/comment stats for every
+# upload tracked in the project registry, aggregate, and serve to the
+# dashboard. Uses the same YouTube Data API key that benchmarks/social
+# copy already uses (`config.youtube.api_key`).
+#
+# Cached for 10 minutes per fetch — `/videos` quota is 1 unit per
+# 50-video batch, so even with hundreds of uploads this is cheap, but
+# polling on every dashboard refresh would waste quota fast.
+# ──────────────────────────────────────────────────────────────────────
+
+_perf_analytics_cache: dict = {"fetched_at": 0.0, "data": None}
+_PERF_TTL_S = 600
+
+
+def _gather_yt_video_ids() -> list[dict]:
+    """Walk videos_db; collect every (video_id, post_id, post_title) that
+    has a YouTube upload row."""
+    out: list[dict] = []
+    for v in videos_db:
+        for up in (v.get("uploads") or []):
+            if up.get("platform") != "youtube":
+                continue
+            vid = up.get("video_id")
+            if not vid:
+                continue
+            out.append({
+                "yt_video_id":   vid,
+                "post_id":       v.get("id") or "",
+                "post_title":    v.get("title") or "",
+                "subreddit":     v.get("subreddit") or "",
+                "uploaded_at":   up.get("uploaded_at") or "",
+                "uploaded_title": up.get("title") or v.get("title") or "",
+                "privacy":       up.get("privacy") or "private",
+                "url":           up.get("url") or f"https://youtube.com/shorts/{vid}",
+            })
+    return out
+
+
+def _fetch_yt_stats(video_ids: list[str], api_key: str) -> dict[str, dict]:
+    """Batch-fetch stats from the YT v3 API. Returns {video_id: {...}}."""
+    import requests as _requests
+    out: dict[str, dict] = {}
+    BATCH = 50  # API hard cap
+    for i in range(0, len(video_ids), BATCH):
+        batch = video_ids[i:i + BATCH]
+        try:
+            r = _requests.get(
+                "https://www.googleapis.com/youtube/v3/videos",
+                params={
+                    "part": "statistics,snippet,status",
+                    "id":   ",".join(batch),
+                    "key":  api_key,
+                },
+                timeout=20,
+            )
+            if r.status_code != 200:
+                _log(f"YT analytics batch failed: {r.status_code} {r.text[:200]}")
+                continue
+            for item in r.json().get("items", []):
+                vid = item.get("id")
+                if not vid:
+                    continue
+                stats = item.get("statistics", {}) or {}
+                snip = item.get("snippet", {}) or {}
+                status = item.get("status", {}) or {}
+                out[vid] = {
+                    "views":        int(stats.get("viewCount", 0) or 0),
+                    "likes":        int(stats.get("likeCount", 0) or 0),
+                    "comments":     int(stats.get("commentCount", 0) or 0),
+                    "title":        snip.get("title", ""),
+                    "published_at": snip.get("publishedAt", ""),
+                    "thumbnail":    (((snip.get("thumbnails") or {}).get("medium")
+                                       or {}).get("url") or ""),
+                    "privacy_status": status.get("privacyStatus", ""),
+                }
+        except Exception as e:
+            _log(f"YT analytics batch exception: {e}")
+            continue
+    return out
+
+
+@app.get("/api/analytics/performance")
+async def performance_analytics(force: bool = False):
+    """
+    Aggregate stats across every YouTube upload tracked by the suite.
+    Returns:
+      {
+        "fetched_at": iso,
+        "videos":   [<per-video row sorted by views desc>],
+        "totals":   { videos, views, likes, comments, days_tracked },
+        "averages": { views, likes, comments },
+        "top": [<top 5 by views>],
+        "by_day":   [{ date, count, views, likes }],   # last 30 days
+      }
+    """
+    cfg = _load_config()
+    yt_cfg = cfg.get("youtube", {}) or {}
+    api_key = yt_cfg.get("api_key", "")
+    if not api_key:
+        raise HTTPException(400, "YouTube API key not configured (Config → Publishing).")
+
+    # Cache hit?
+    now = time.time()
+    if not force and _perf_analytics_cache["data"] is not None:
+        if now - _perf_analytics_cache["fetched_at"] < _PERF_TTL_S:
+            return _perf_analytics_cache["data"]
+
+    rows = _gather_yt_video_ids()
+    if not rows:
+        empty = {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "videos": [], "totals": {"videos": 0, "views": 0, "likes": 0, "comments": 0, "days_tracked": 0},
+            "averages": {"views": 0, "likes": 0, "comments": 0},
+            "top": [], "by_day": [],
+        }
+        return empty
+
+    stats_map = await asyncio.to_thread(_fetch_yt_stats, [r["yt_video_id"] for r in rows], api_key)
+
+    enriched = []
+    for r in rows:
+        s = stats_map.get(r["yt_video_id"])
+        if not s:
+            continue
+        enriched.append({**r, **s})
+    enriched.sort(key=lambda x: x.get("views", 0), reverse=True)
+
+    total_views    = sum(x.get("views", 0)    for x in enriched)
+    total_likes    = sum(x.get("likes", 0)    for x in enriched)
+    total_comments = sum(x.get("comments", 0) for x in enriched)
+    n = len(enriched) or 1
+
+    # Group views by published_at date for the trend sparkline.
+    from collections import defaultdict
+    by_day_map: dict[str, dict] = defaultdict(lambda: {"count": 0, "views": 0, "likes": 0})
+    earliest = ""
+    for x in enriched:
+        d = (x.get("published_at") or "")[:10]
+        if not d:
+            continue
+        if not earliest or d < earliest:
+            earliest = d
+        by_day_map[d]["count"] += 1
+        by_day_map[d]["views"] += x.get("views", 0)
+        by_day_map[d]["likes"] += x.get("likes", 0)
+    # Last 30 days only.
+    sorted_days = sorted(by_day_map.items())[-30:]
+    by_day = [{"date": d, **v} for d, v in sorted_days]
+
+    days_tracked = 0
+    if earliest:
+        try:
+            e = datetime.fromisoformat(earliest)
+            days_tracked = max(1, (datetime.now(timezone.utc).replace(tzinfo=None) - e.replace(tzinfo=None)).days)
+        except Exception:
+            days_tracked = 0
+
+    out = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "videos": enriched,
+        "totals": {
+            "videos": len(enriched), "views": total_views,
+            "likes": total_likes, "comments": total_comments,
+            "days_tracked": days_tracked,
+        },
+        "averages": {
+            "views":    int(total_views / n),
+            "likes":    int(total_likes / n),
+            "comments": int(total_comments / n),
+        },
+        "top":    enriched[:5],
+        "by_day": by_day,
+    }
+    _perf_analytics_cache["data"] = out
+    _perf_analytics_cache["fetched_at"] = now
+    return out
 
 
 @app.get("/api/music")

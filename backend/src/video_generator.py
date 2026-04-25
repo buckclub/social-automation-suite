@@ -2085,6 +2085,89 @@ class VideoGenerator:
             print(f"⚠️  Title card render failed: {e}")
         return None
 
+    def overlay_broll(self, video_path: str, broll_moments: list[dict]) -> bool:
+        """
+        Post-process a finished render by overlaying b-roll clips at the
+        timestamps the LLM picked. Each moment must already have a
+        `local_path` pointing at a downloaded mp4. The function uses
+        `-itsoffset` so the overlay starts from each b-roll's frame 0
+        at the requested timestamp, plus `enable='between(t,A,B)'` to
+        gate the overlay window.
+
+        Returns True on success (output replaced), False otherwise.
+        Best-effort: caller should handle False gracefully.
+        """
+        if not broll_moments:
+            return False
+        valid = [m for m in broll_moments if m.get("local_path") and os.path.isfile(m["local_path"])]
+        if not valid:
+            return False
+
+        ffmpeg_exe = self._ffmpeg_path()
+        out_dir = os.path.dirname(video_path)
+        tmp_out = os.path.join(out_dir, "broll_overlay.mp4")
+
+        cmd = [ffmpeg_exe, "-y", "-hide_banner", "-loglevel", "error", "-i", video_path]
+        # Add each b-roll input with -itsoffset so its frame 0 aligns
+        # with the moment's start_s. Stream index = i+1 (base is 0).
+        for m in valid:
+            cmd.extend(["-itsoffset", f"{float(m['start_s']):.3f}", "-i", m["local_path"]])
+
+        # Build filter_complex chain. Each b-roll is scaled to canvas,
+        # then overlaid with an enable gate. Daisy-chain through labels.
+        parts = []
+        for i, m in enumerate(valid, 1):
+            parts.append(
+                f"[{i}:v]scale={self.width}:{self.height}:"
+                f"force_original_aspect_ratio=increase,"
+                f"crop={self.width}:{self.height},setsar=1[b{i}]"
+            )
+        prev = "0:v"
+        for i, m in enumerate(valid, 1):
+            label_out = f"v{i}"
+            a = float(m["start_s"]); b = float(m["end_s"])
+            parts.append(
+                f"[{prev}][b{i}]overlay=enable='between(t,{a:.3f},{b:.3f})'"
+                f":eof_action=pass[{label_out}]"
+            )
+            prev = label_out
+        filter_complex = ";".join(parts)
+
+        cmd.extend([
+            "-filter_complex", filter_complex,
+            "-map", f"[{prev}]",
+            "-map", "0:a",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "copy",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            tmp_out,
+        ])
+
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"   ⚠️  b-roll overlay FFmpeg failed: {r.stderr[-400:]}")
+                try: os.remove(tmp_out)
+                except OSError: pass
+                return False
+            # Replace the original render.
+            os.replace(tmp_out, video_path)
+            print(f"   ✓ overlaid {len(valid)} b-roll moment(s)")
+            return True
+        except Exception as e:
+            print(f"   ⚠️  b-roll overlay raised: {e}")
+            try: os.remove(tmp_out)
+            except OSError: pass
+            return False
+
+    def _ffmpeg_path(self) -> str:
+        """Local helper so overlay_broll has the same FFmpeg resolution as the main path."""
+        try:
+            import imageio_ffmpeg
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            return "ffmpeg"
+
     def generate_video_ffmpeg(self, audio_segments: List[dict], output_path: str, tail_text: Optional[str] = None, tail_duration: float = 0.0, branding: str = "", post_title: str = "", post_subreddit: str = "", post_score: int = 0):
         """
         Generate video using direct FFmpeg commands (Beta Engine).

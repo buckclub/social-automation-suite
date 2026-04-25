@@ -145,6 +145,11 @@ export default function ConfigPage() {
   const [bgmAutoPickByTone, setBgmAutoPickByTone] = useState(true);
   const [bgmManualTrack, setBgmManualTrack] = useState("");
 
+  // Auto B-roll overlay — Video tab. Pexels free API key + max-per-minute.
+  const [brollEnabled, setBrollEnabled] = useState(false);
+  const [brollPexelsKey, setBrollPexelsKey] = useState("");
+  const [brollMaxPerMin, setBrollMaxPerMin] = useState(4);
+
   // ElevenLabs-specific
   const [elevenApiKey, setElevenApiKey] = useState("");
   const [elevenModel, setElevenModel] = useState("eleven_multilingual_v2");
@@ -465,6 +470,11 @@ export default function ConfigPage() {
     setOutroText(v.outro_text ?? "Follow for Part {next_part}");
     setBranding(v.branding ?? "");
 
+    const broll = ((v as any).broll as Record<string, unknown>) ?? {};
+    setBrollEnabled(Boolean(broll.enabled));
+    setBrollPexelsKey(typeof broll.pexels_api_key === "string" ? broll.pexels_api_key : "");
+    setBrollMaxPerMin(typeof broll.max_clips_per_minute === "number" ? broll.max_clips_per_minute : 4);
+
     const cap = c.captions ?? {} as NonNullable<FullConfig["captions"]>;
     setCapEnabled(cap.enabled ?? true);
     setCapFontPath(cap.font_path ?? "arial.ttf");
@@ -571,6 +581,7 @@ export default function ConfigPage() {
     ttsCommentVoices, ttsFormat, ttsSpeed, ttsPreNormalize, elevenApiKey,
     elevenModel, votePresets,
     bgmEnabled, bgmVolumeDb, bgmAutoPickByTone, bgmManualTrack,
+    brollEnabled, brollPexelsKey, brollMaxPerMin,
     postsDir, usedPostsFile,
     discordEnabled, webhookUrl, uploadMedia,
     geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
@@ -600,6 +611,7 @@ export default function ConfigPage() {
       ttsCommentVoices, ttsFormat, ttsSpeed, ttsPreNormalize, elevenApiKey,
       elevenModel, votePresets,
       bgmEnabled, bgmVolumeDb, bgmAutoPickByTone, bgmManualTrack,
+      brollEnabled, brollPexelsKey, brollMaxPerMin,
       postsDir, usedPostsFile,
       discordEnabled, webhookUrl, uploadMedia,
       geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
@@ -723,6 +735,11 @@ export default function ConfigPage() {
           outro_text: outroText,
           branding,
           background_selector: videoBgSelector,
+          broll: {
+            enabled: brollEnabled,
+            pexels_api_key: brollPexelsKey,
+            max_clips_per_minute: brollMaxPerMin,
+          },
         },
         captions: redditCapOut,
         clip_captions: clipCapOut,
@@ -1578,6 +1595,62 @@ export default function ConfigPage() {
               {hwAccel === "nvenc" ? "Requires NVIDIA GPU with NVENC support" : hwAccel === "amf" ? "Requires AMD GPU with AMF support (RX 400+)" : "Works on any system, no GPU required"}
             </p>
           </div>
+          {/* Auto B-roll overlay — Pexels-driven topic-relevant footage
+              picked by the LLM and stitched on top of the rendered video. */}
+          <Separator />
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="text-xs text-muted-foreground">Auto B-roll overlay</label>
+                <p className="text-[10px] text-muted-foreground mt-0.5 leading-snug">
+                  Single largest perceived-quality jump for any reels niche. The LLM
+                  picks 3-8 visual moments per render; the suite downloads matching
+                  Pexels footage and overlays it at those timestamps via FFmpeg.
+                </p>
+              </div>
+              <Switch checked={brollEnabled} onCheckedChange={setBrollEnabled} />
+            </div>
+            {brollEnabled && (
+              <div className="space-y-2 pl-3 border-l-2 border-primary/20">
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-muted-foreground">Pexels API key</Label>
+                  <SecretInput
+                    value={brollPexelsKey}
+                    onChange={(e) => setBrollPexelsKey(e.target.value)}
+                    placeholder="Free tier: 200 req/hr — get one at pexels.com/api"
+                    inputClassName="h-8 text-xs bg-secondary border-border font-mono"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Sign up free at <a href="https://www.pexels.com/api/" target="_blank" rel="noreferrer"
+                      className="text-primary hover:underline">pexels.com/api</a>. No payment, no rate limits in practice.
+                  </p>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-muted-foreground">
+                    Max clips per minute of narration ({brollMaxPerMin})
+                  </Label>
+                  <Slider
+                    value={[brollMaxPerMin]}
+                    onValueChange={([v]) => setBrollMaxPerMin(v)}
+                    min={1} max={8} step={1}
+                  />
+                  <p className="text-[10px] text-muted-foreground leading-snug">
+                    A 60s reel at <code>4</code>/min gets up to 4 b-roll moments,
+                    each typically 2-5s. Higher = more visual variety + longer
+                    download time.
+                  </p>
+                </div>
+                <p className="text-[10px] text-muted-foreground italic leading-snug">
+                  Failures (Pexels search returning nothing for a query, download
+                  timeout, FFmpeg overlay error) are silently skipped — your
+                  render always succeeds even if b-roll falls through.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <Separator />
+
           <div className="flex items-center justify-between">
             <label className="text-xs text-muted-foreground">Auto Cleanup</label>
             <Switch checked={autoCleanup} onCheckedChange={setAutoCleanup} />

@@ -25,6 +25,7 @@ import HashtagLabPage from "./pages/HashtagLabPage";
 import CarouselPage from "./pages/CarouselPage";
 import QuoteCardPage from "./pages/QuoteCardPage";
 import MusicLibraryPage from "./pages/MusicLibraryPage";
+import PerformancePage from "./pages/PerformancePage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -50,6 +51,7 @@ const App = () => (
             <Route path="/carousels" element={<CarouselPage />} />
             <Route path="/quote-cards" element={<QuoteCardPage />} />
             <Route path="/music" element={<MusicLibraryPage />} />
+            <Route path="/performance" element={<PerformancePage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

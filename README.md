@@ -2,10 +2,13 @@
 
 End-to-end short-form content automation. What started as a Reddit-to-Reels pipeline has grown into a full suite for faceless-video operators:
 
-- **Reels** — Reddit posts or AI-generated scripts → vertical 1080×1920 video with TTS narration, word-level captions, and optional auto-publishing to YouTube Shorts / TikTok / Instagram Reels / Snapchat Spotlight.
+- **Reels** — Reddit posts or AI-generated scripts → vertical 1080×1920 video with TTS narration, word-level captions, optional auto B-roll overlay (Pexels-sourced topic-relevant footage), background music auto-picked by tone, and optional auto-publishing to YouTube Shorts / TikTok / Instagram Reels / Snapchat Spotlight.
 - **Clip Maker** — long-form YouTube URL or uploaded mp4 → AI-picked Shorts-worthy clips. Event-driven mode detects in-game moments (gunshots, goals, HUD events) in footage without a transcript.
 - **Text Posts** — generate tweets, Reddit comments, YouTube / TikTok / Instagram community posts, LinkedIn updates; with brand-voice presets and batch variants.
 - **Custom Script** — paste your own narration text → runs through the same TTS + caption + render pipeline with no AI generation step. Single-shot or batch via the run queue.
+- **Quote Cards** — single-image quote post for IG / X / Pinterest. Type your own quote OR paste any rendered post's id and the LLM extracts the 5 most-quotable lines for one-click reuse.
+- **Performance Analytics** (`/performance`) — pulls live YouTube view / like / comment stats for every upload tracked in the suite. Aggregated totals, top performer, 30-day daily-views sparkline, per-video table.
+- **Music Library** (`/music`) — upload royalty-free tracks, tag each with the same tone vocabulary as Generate-with-AI (dramatic / funny / heartfelt / shocking / cringe). Pipeline auto-picks a matching track per render and mixes it under the narration; voice stays at unity, music attenuates per the configured dB.
 - **Carousel Posts** — multi-slide square or 4:5 portrait images for IG / TikTok / LinkedIn carousels. Paste a long story, AI splits it into hook + beat slides + CTA, edit per-slide, live-preview at exact output resolution, download all slides as a zip.
 - **News Roundup** — pull RSS / Atom feeds (curated picks for tech / news / sports / entertainment / Reddit + custom URL), copy any headline + summary as a one-click prompt for Generate-with-AI.
 - **Hashtag Lab** — paste any caption, get 12-20 ranked tag suggestions cross-referenced against top-performing videos in your niche (when a YouTube API key is set). Pick + copy a curated set in one click.

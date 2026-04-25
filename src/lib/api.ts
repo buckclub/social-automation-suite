@@ -887,6 +887,30 @@ export const api = {
     ),
   carouselRenderUrl: () => `${API_BASE}/api/carousels/render`,
 
+  // ── Performance Analytics ────────────────────────────────────
+  getPerformanceAnalytics: (force = false) =>
+    request<{
+      fetched_at: string;
+      videos: Array<{
+        yt_video_id: string;
+        post_id: string;
+        post_title: string;
+        subreddit: string;
+        url: string;
+        title: string;
+        published_at: string;
+        thumbnail: string;
+        views: number;
+        likes: number;
+        comments: number;
+        privacy_status: string;
+      }>;
+      totals: { videos: number; views: number; likes: number; comments: number; days_tracked: number };
+      averages: { views: number; likes: number; comments: number };
+      top: Array<{ yt_video_id: string; title: string; views: number; thumbnail: string; url: string }>;
+      by_day: Array<{ date: string; count: number; views: number; likes: number }>;
+    }>(`/api/analytics/performance${force ? "?force=true" : ""}`),
+
   // ── Background Music Library ─────────────────────────────────
   listMusicTracks: () =>
     request<{ tracks: { filename: string; name: string; moods: string[]; added_at: string; size_bytes: number }[] }>(
