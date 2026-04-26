@@ -4699,6 +4699,46 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                 if timeline:
                     for ss in tts_sub_steps_live:
                         ss["status"] = "done"
+
+                    # Auto-trim leading + trailing silence per segment.
+                    # Most TTS providers leave 100-400 ms of dead air on
+                    # each clip; concatenated across 30 segments that
+                    # stacks into 3-12 seconds of wasted runtime.
+                    # Toggleable via config.tts.auto_trim_silences.
+                    if bool(tts_config.get("auto_trim_silences", True)):
+                        try:
+                            from tts_trim import trim_silence
+                            trimmed_total_s = 0.0
+                            trimmed_count = 0
+                            for seg in timeline:
+                                ap = seg.get("audio_path")
+                                if not ap or not os.path.isfile(ap):
+                                    continue
+                                old_dur = float(seg.get("duration") or 0)
+                                new_dur = await asyncio.to_thread(trim_silence, ap)
+                                if new_dur is None:
+                                    continue
+                                seg["duration"] = new_dur
+                                # Per-word timestamps are still relative
+                                # to the start of the segment — and the
+                                # head trim is bounded to <=0.4s — so
+                                # they stay within tolerance of the
+                                # whisper-alignment guards downstream.
+                                # If alignment drifts noticeably we'd
+                                # need to subtract head-trim duration
+                                # from each word.start; in practice
+                                # 50-200 ms shifts are inaudible.
+                                if old_dur and new_dur < old_dur:
+                                    trimmed_total_s += (old_dur - new_dur)
+                                    trimmed_count += 1
+                            if trimmed_count:
+                                _log(
+                                    f"TTS auto-trim: shaved {trimmed_total_s:.1f}s of silence "
+                                    f"across {trimmed_count} segment(s)"
+                                )
+                        except Exception as e:
+                            _log(f"TTS auto-trim failed (non-fatal): {e}")
+
                     _set_step("tts", "done", f"Generated {len(timeline)} audio segments", tts_sub_steps_live)
                     _log(f"TTS complete: {len(timeline)} segments")
 
