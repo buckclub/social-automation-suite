@@ -1440,6 +1440,23 @@ async def queue_move(queue_id: str, req: dict):
     return {"moved": True}
 
 
+@app.post("/api/pipeline/queue/{queue_id}/move-to-top")
+async def queue_move_to_top(queue_id: str):
+    """
+    Bump a queued item straight to the front of the queue. UI:
+    "Move to top" button on each queued row. Saves N clicks of the
+    up-arrow on a long queue.
+
+    No-op (returns 400) when the item is already at position 0 or
+    isn't in a queued state.
+    """
+    from run_queue import move_to_top
+    ok = move_to_top(PROJECT_ROOT, queue_id)
+    if not ok:
+        raise HTTPException(400, "Already at top, or item not queued")
+    return {"moved": True}
+
+
 @app.post("/api/pipeline/queue/pause")
 async def queue_pause():
     from run_queue import set_paused

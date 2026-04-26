@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ListOrdered, Play, Pause, Loader2, CheckCircle2, XCircle,
-  ChevronUp, ChevronDown, Trash2, RotateCw, History,
+  ChevronUp, ChevronDown, Trash2, RotateCw, History, ArrowUpToLine,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -75,6 +75,10 @@ export function QueuePanel() {
 
   const move = async (q: QueueItem, dir: -1 | 1) => {
     try { await api.queueMove(q.queue_id, dir); refresh(); }
+    catch (e: any) { toast({ title: "Move failed", description: e.message, variant: "destructive" }); }
+  };
+  const moveToTop = async (q: QueueItem) => {
+    try { await api.queueMoveToTop(q.queue_id); refresh(); }
     catch (e: any) { toast({ title: "Move failed", description: e.message, variant: "destructive" }); }
   };
 
@@ -161,7 +165,7 @@ export function QueuePanel() {
                 key={q.queue_id}
                 item={q}
                 variant="running"
-                onMove={move} onRemove={remove} onRetry={retry}
+                onMove={move} onMoveToTop={moveToTop} onRemove={remove} onRetry={retry}
                 canMoveUp={false} canMoveDown={false}
               />
             ))}
@@ -175,7 +179,7 @@ export function QueuePanel() {
                 item={q}
                 variant="queued"
                 index={i + 1}
-                onMove={move} onRemove={remove} onRetry={retry}
+                onMove={move} onMoveToTop={moveToTop} onRemove={remove} onRetry={retry}
                 canMoveUp={i > 0}
                 canMoveDown={i < queued.length - 1}
               />
@@ -207,7 +211,7 @@ export function QueuePanel() {
                     key={q.queue_id}
                     item={q}
                     variant="history"
-                    onMove={move} onRemove={remove} onRetry={retry}
+                    onMove={move} onMoveToTop={moveToTop} onRemove={remove} onRetry={retry}
                     canMoveUp={false} canMoveDown={false}
                   />
                 ))}
@@ -222,13 +226,14 @@ export function QueuePanel() {
 // ── One row in the queue ──────────────────────────────────────────────
 function QueueRow({
   item, variant, index,
-  onMove, onRemove, onRetry,
+  onMove, onMoveToTop, onRemove, onRetry,
   canMoveUp, canMoveDown,
 }: {
   item: QueueItem;
   variant: "running" | "queued" | "history";
   index?: number;
   onMove: (q: QueueItem, dir: -1 | 1) => void;
+  onMoveToTop?: (q: QueueItem) => void;
   onRemove: (q: QueueItem) => void;
   onRetry: (q: QueueItem) => void;
   canMoveUp: boolean;
@@ -285,6 +290,16 @@ function QueueRow({
 
       {variant === "queued" && (
         <>
+          {/* Move to top — only meaningful when there's actually
+              something above this row. Saves repeated up-arrow clicks
+              on a long queue when one render is suddenly urgent. */}
+          {canMoveUp && onMoveToTop && (
+            <button
+              className="h-5 w-5 flex items-center justify-center rounded hover:bg-primary/15 text-muted-foreground hover:text-primary"
+              onClick={() => onMoveToTop(item)}
+              title="Move to top of queue"
+            ><ArrowUpToLine className="h-3 w-3" /></button>
+          )}
           <button
             className="h-5 w-5 flex items-center justify-center rounded hover:bg-secondary/60 disabled:opacity-30"
             disabled={!canMoveUp}

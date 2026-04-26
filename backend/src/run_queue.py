@@ -146,6 +146,44 @@ def reorder(project_root: str, queue_id: str, direction: int) -> bool:
         return True
 
 
+def move_to_top(project_root: str, queue_id: str) -> bool:
+    """
+    Bump a queued item to the front of the queued list. Used by the
+    'Move to top' button in the UI when the user wants to prioritise
+    a render without clicking the up-arrow N times.
+
+    Operates on the queued slice only — running items keep their
+    position. Returns False when the id isn't found OR is already at
+    position 0 (no-op).
+    """
+    with _ledger(project_root).mutate() as data:
+        items = data.get("items", [])
+        # Find target row and the index of the FIRST queued row.
+        target_idx = next(
+            (i for i, it in enumerate(items)
+             if it.get("queue_id") == queue_id and it.get("status") == "queued"),
+            None,
+        )
+        if target_idx is None:
+            return False
+        first_queued = next(
+            (i for i, it in enumerate(items) if it.get("status") == "queued"),
+            None,
+        )
+        if first_queued is None or first_queued == target_idx:
+            return False  # already at the top, or no queued at all
+        # Pop and re-insert at the first-queued position so we don't
+        # disturb running rows (which sort before any queued row).
+        item = items.pop(target_idx)
+        # Recompute first_queued in case the pop shifted it.
+        first_queued = next(
+            (i for i, it in enumerate(items) if it.get("status") == "queued"),
+            len(items),
+        )
+        items.insert(first_queued, item)
+        return True
+
+
 def mark_running(project_root: str, queue_id: str) -> Optional[dict]:
     with _ledger(project_root).mutate() as data:
         for item in data.get("items", []):

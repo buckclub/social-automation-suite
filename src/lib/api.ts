@@ -910,6 +910,14 @@ export const api = {
   clearAIDraft: () =>
     request<{ cleared: boolean }>("/api/ai/drafts", { method: "DELETE" }),
 
+  // Bump a queued item to the front of the queue. Used by the
+  // "Move to top" button on QueuePanel rows.
+  queueMoveToTop: (queue_id: string) =>
+    request<{ moved: boolean }>(
+      `/api/pipeline/queue/${encodeURIComponent(queue_id)}/move-to-top`,
+      { method: "POST" },
+    ),
+
   // Voice preview — synthesize a short cached sample for a given
   // voice so the user can audition before kicking off a full render.
   // Backend caches the mp3 per (provider, voice_id) so flipping
