@@ -39,6 +39,7 @@ export function CostTrackerPanel() {
   }, []);
 
   const month = cost?.month ?? {};
+  const today = cost?.today ?? {};
   const el = (month.elevenlabs?.chars as number) || 0;
 
   // Aggregate AI totals across providers (in/out chars, calls).
@@ -49,7 +50,37 @@ export function CostTrackerPanel() {
   const totalAiCalls = aiRows.reduce((s, r) => s + ((r as any).calls || 0), 0);
   const totalAiChars = aiRows.reduce((s, r) => s + ((r as any).in_chars || 0) + ((r as any).out_chars || 0), 0);
 
+  // Today's stats — same shape as month, just one day's slice.
+  const todayChars =
+    ((today.elevenlabs?.chars as number) || 0) +
+    aiProviders.reduce((s, p) => s + ((today[p]?.in_chars as number) || 0) + ((today[p]?.out_chars as number) || 0), 0);
+  const todayCalls = aiProviders.reduce((s, p) => s + ((today[p]?.calls as number) || 0), 0);
+
   const fmt = (n: number) => n.toLocaleString();
+
+  // Rough month-to-date $ estimate. Uses public list rates as of late
+  // 2025; real billing depends on the user's plan + which model
+  // variant they pick. We deliberately under-promise on precision —
+  // this is a "watch the trend" gauge, not an invoice.
+  //
+  // ElevenLabs:  $0.18 / 1K chars (typical Starter plan effective rate)
+  // Gemini:      $0.10 / 1M input + $0.40 / 1M output (Flash 2.0)
+  // NVIDIA NIM / OpenRouter / Ollama: skipped — vary too widely or are free.
+  const estCost = (() => {
+    const elCost = (el / 1000) * 0.18;
+    const gemini = month.gemini || {};
+    const gIn  = ((gemini.in_chars as number)  || 0) / 4;  // chars→tokens
+    const gOut = ((gemini.out_chars as number) || 0) / 4;
+    const gemCost = (gIn / 1_000_000) * 0.10 + (gOut / 1_000_000) * 0.40;
+    return elCost + gemCost;
+  })();
+
+  // Days-into-month projection, only meaningful after a few days of data.
+  const now = new Date();
+  const dayOfMonth = now.getUTCDate();
+  const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+  const showProjection = dayOfMonth >= 3 && estCost > 0.10;
+  const projectedMonthEnd = showProjection ? estCost * (daysInMonth / dayOfMonth) : null;
 
   // ElevenLabs balance bar
   const elPct = balance?.available && balance.character_limit
@@ -74,6 +105,34 @@ export function CostTrackerPanel() {
         </CardHeader>
 
         <CardContent className="space-y-3 text-xs">
+          {/* Top-of-panel summary: $ estimate + today's activity. The
+              detail blocks below break this down per provider; this
+              tile is the "is anything running away from me?" glance.
+              List-rate $ math is in the component above — clearly
+              labeled as approximate. */}
+          <div className="flex items-stretch gap-2">
+            <div className="flex-1 rounded-md border border-border bg-secondary/30 p-2.5">
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Est. spend MTD</div>
+              <div className="text-base font-semibold mt-0.5">
+                ${estCost.toFixed(2)}
+              </div>
+              <div className="text-[10px] text-muted-foreground mt-0.5">
+                {projectedMonthEnd != null
+                  ? <>Projected month-end: <strong>${projectedMonthEnd.toFixed(2)}</strong></>
+                  : "Approx — varies by plan / model"}
+              </div>
+            </div>
+            <div className="flex-1 rounded-md border border-border bg-secondary/30 p-2.5">
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Today</div>
+              <div className="text-base font-semibold mt-0.5">
+                {fmt(todayCalls)} <span className="text-[10px] font-normal text-muted-foreground">AI calls</span>
+              </div>
+              <div className="text-[10px] text-muted-foreground mt-0.5">
+                {fmt(todayChars)} chars across all providers
+              </div>
+            </div>
+          </div>
+
           {/* ElevenLabs live balance */}
           <div className="rounded-md border border-border bg-secondary/30 p-2.5 space-y-1.5">
             <div className="flex items-center gap-1.5">
