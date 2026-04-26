@@ -381,7 +381,8 @@ class VideoGenerator:
     
     def __init__(self, mode: str = 'reel', use_gpu: bool = False, threads: int = 0, hw_accel: str = 'none',
                  captions_config: Optional[dict] = None,
-                 thumbnail_config: Optional[dict] = None):
+                 thumbnail_config: Optional[dict] = None,
+                 watermark_config: Optional[dict] = None):
         """
         Initialize video generator.
         mode: 'reel' (9:16) or 'full' (16:9)
@@ -391,7 +392,11 @@ class VideoGenerator:
         captions_config: Caption appearance/timing config (see _caption_params).
         thumbnail_config: Title-card customization — profile pic, username,
             whether to draw the fake hearts/share stats bar.
+        watermark_config: Position / opacity / font_size for the branding
+            watermark overlay. Schema: { x_pct, y_pct, opacity, font_size,
+            bg_box }. Missing → bottom-right legacy defaults preserved.
         """
+        self.watermark_config = watermark_config or {}
         self.mode = mode.lower()
         self.hw_accel = hw_accel if hw_accel in ('none', 'nvenc', 'amf') else ('nvenc' if use_gpu else 'none')
         self.use_gpu = self.hw_accel != 'none'
@@ -1862,20 +1867,57 @@ class VideoGenerator:
                 except: pass
 
             # Branding watermark (every chunk, since it's persistent).
+            # Position + opacity + font_size are read from config.video.
+            # watermark when present, falling back to the historical
+            # bottom-right defaults so existing setups don't visually
+            # change. Schema:
+            #   x_pct / y_pct: 0-100, anchor of the LEFT-TOP corner of
+            #                  the watermark box (so 0/0 puts it at
+            #                  top-left, 100/100 nudges it past the
+            #                  bottom-right corner; we clamp).
+            #   opacity:       0-100 — applied to the entire composite.
+            #   font_size:     px (default 30).
+            #   bg_box:        bool, draw a translucent black pill
+            #                  behind the text for legibility (default
+            #                  true).
             if include_brand:
+                wm = (
+                    (getattr(self, "watermark_config", None) or {})
+                    if hasattr(self, "watermark_config") else {}
+                )
+                fs = int(wm.get("font_size") or 30)
+                op = max(0, min(100, int(wm.get("opacity") if wm.get("opacity") is not None else 100)))
+                use_bg = bool(wm.get("bg_box") if wm.get("bg_box") is not None else True)
                 brand_path = self.create_text_image(
                     branding.strip(),
-                    fontsize=30,
+                    fontsize=fs,
                     color='white',
                     max_width=int(self.width * 0.4),
-                    use_bg_box=True,
+                    use_bg_box=use_bg,
                     bg_color='black',
                     bg_opacity=120,
                     padding=12,
                 )
                 brand_img = Image.open(brand_path).convert("RGBA")
                 bw, bh = brand_img.size
-                canvas.alpha_composite(brand_img, (self.width - bw - 20, self.height - bh - 20))
+                # Compute paste position. Default = bottom-right with
+                # 20 px margin (legacy behavior). x_pct / y_pct override.
+                if "x_pct" in wm or "y_pct" in wm:
+                    x_pct = float(wm.get("x_pct") if wm.get("x_pct") is not None else 100)
+                    y_pct = float(wm.get("y_pct") if wm.get("y_pct") is not None else 100)
+                    # Paste position is the LEFT-TOP corner of the watermark
+                    # box. Convert percentages, clamp so the box stays
+                    # fully on-canvas at the extremes.
+                    x = max(0, min(self.width - bw, int(x_pct * (self.width - bw) / 100)))
+                    y = max(0, min(self.height - bh, int(y_pct * (self.height - bh) / 100)))
+                else:
+                    x = self.width - bw - 20
+                    y = self.height - bh - 20
+                if op < 100:
+                    # Apply uniform opacity across the watermark RGBA image.
+                    a = brand_img.split()[3].point(lambda v: int(v * op / 100))
+                    brand_img.putalpha(a)
+                canvas.alpha_composite(brand_img, (x, y))
                 try: os.remove(brand_path)
                 except: pass
 

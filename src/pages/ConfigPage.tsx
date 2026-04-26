@@ -169,6 +169,15 @@ export default function ConfigPage() {
   const [splitDuration, setSplitDuration] = useState(30);
   const [outroText, setOutroText] = useState("Follow for Part {next_part}");
   const [branding, setBranding] = useState("");
+  // Watermark position + style (config.video.watermark). Sliders feed
+  // straight into config; the live preview below mirrors the same
+  // x_pct / y_pct math the backend renderer uses so what the user
+  // sees in the panel matches what gets composited at render time.
+  const [wmXPct, setWmXPct] = useState(100);
+  const [wmYPct, setWmYPct] = useState(100);
+  const [wmOpacity, setWmOpacity] = useState(100);
+  const [wmFontSize, setWmFontSize] = useState(30);
+  const [wmBgBox, setWmBgBox] = useState(true);
 
   // Captions
   const [capEnabled, setCapEnabled] = useState(true);
@@ -493,6 +502,12 @@ export default function ConfigPage() {
     setSplitDuration(v.split_duration ?? 30);
     setOutroText(v.outro_text ?? "Follow for Part {next_part}");
     setBranding(v.branding ?? "");
+    const wm = (v as any).watermark ?? {};
+    setWmXPct(typeof wm.x_pct === "number" ? wm.x_pct : 100);
+    setWmYPct(typeof wm.y_pct === "number" ? wm.y_pct : 100);
+    setWmOpacity(typeof wm.opacity === "number" ? wm.opacity : 100);
+    setWmFontSize(typeof wm.font_size === "number" ? wm.font_size : 30);
+    setWmBgBox(wm.bg_box === undefined ? true : Boolean(wm.bg_box));
 
     const broll = ((v as any).broll as Record<string, unknown>) ?? {};
     setBrollEnabled(Boolean(broll.enabled));
@@ -642,7 +657,8 @@ export default function ConfigPage() {
     capHighlightWord, capHighlightColor, capHighlightScale, capHighlightStrokeColor, capSingleLine,
     capShadowEnabled, capShadowColor, capShadowOpacity, capShadowOffsetX, capShadowOffsetY, capShadowBlur,
     videoMode, hwAccel, engine, splitDuration, outroText,
-    branding, threads, autoCleanup,
+    branding, wmXPct, wmYPct, wmOpacity, wmFontSize, wmBgBox,
+    threads, autoCleanup,
   }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
@@ -668,7 +684,8 @@ export default function ConfigPage() {
       capHighlightWord, capHighlightColor, capHighlightScale, capHighlightStrokeColor, capSingleLine,
       capShadowEnabled, capShadowColor, capShadowOpacity, capShadowOffsetX, capShadowOffsetY, capShadowBlur,
       videoMode, hwAccel, engine, splitDuration, outroText,
-      branding, threads, autoCleanup,
+      branding, wmXPct, wmYPct, wmOpacity, wmFontSize, wmBgBox,
+    threads, autoCleanup,
     ]
   );
   // Seed the saved snapshot on the first load (after the loader effect ran).
@@ -777,6 +794,13 @@ export default function ConfigPage() {
           split_duration: splitDuration,
           outro_text: outroText,
           branding,
+          watermark: {
+            x_pct:     wmXPct,
+            y_pct:     wmYPct,
+            opacity:   wmOpacity,
+            font_size: wmFontSize,
+            bg_box:    wmBgBox,
+          },
           background_selector: videoBgSelector,
           broll: {
             enabled: brollEnabled,
@@ -1755,8 +1779,130 @@ export default function ConfigPage() {
           <div className="space-y-1">
             <Label className="text-xs text-muted-foreground">Branding Watermark</Label>
             <Input value={branding} onChange={(e) => setBranding(e.target.value)} placeholder="e.g. @yourhandle or YourChannel" className="h-8 text-xs bg-secondary border-border" />
-            <p className="text-[10px] text-muted-foreground">Shown on thumbnails to prevent uncredited copying. Leave blank to disable.</p>
+            <p className="text-[10px] text-muted-foreground">Persistent overlay on every rendered video. Leave blank to disable.</p>
           </div>
+
+          {/* Watermark editor — position / opacity / font size with a
+              live mock preview. Slider math mirrors the backend's
+              x_pct / y_pct → pixel calc so what the user sees here
+              matches what gets composited at render time. */}
+          {branding.trim() && (
+            <div className="space-y-2 rounded-md border border-border bg-secondary/20 p-3">
+              <p className="text-[11px] font-medium">Watermark position + style</p>
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_140px] gap-3">
+                {/* Sliders */}
+                <div className="space-y-2">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <Label>Horizontal position</Label>
+                      <span className="text-muted-foreground font-mono">
+                        {wmXPct === 0 ? "left" : wmXPct === 100 ? "right" : `${wmXPct}%`}
+                      </span>
+                    </div>
+                    <input
+                      type="range" min={0} max={100} step={5}
+                      value={wmXPct}
+                      onChange={(e) => setWmXPct(parseInt(e.target.value, 10))}
+                      className="w-full h-1.5 bg-secondary rounded-full appearance-none cursor-pointer accent-primary"
+                    />
+                  </div>
+                  <div className="space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <Label>Vertical position</Label>
+                      <span className="text-muted-foreground font-mono">
+                        {wmYPct === 0 ? "top" : wmYPct === 100 ? "bottom" : `${wmYPct}%`}
+                      </span>
+                    </div>
+                    <input
+                      type="range" min={0} max={100} step={5}
+                      value={wmYPct}
+                      onChange={(e) => setWmYPct(parseInt(e.target.value, 10))}
+                      className="w-full h-1.5 bg-secondary rounded-full appearance-none cursor-pointer accent-primary"
+                    />
+                  </div>
+                  <div className="space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <Label>Opacity</Label>
+                      <span className="text-muted-foreground font-mono">{wmOpacity}%</span>
+                    </div>
+                    <input
+                      type="range" min={20} max={100} step={5}
+                      value={wmOpacity}
+                      onChange={(e) => setWmOpacity(parseInt(e.target.value, 10))}
+                      className="w-full h-1.5 bg-secondary rounded-full appearance-none cursor-pointer accent-primary"
+                    />
+                  </div>
+                  <div className="space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <Label>Font size</Label>
+                      <span className="text-muted-foreground font-mono">{wmFontSize}px</span>
+                    </div>
+                    <input
+                      type="range" min={16} max={72} step={2}
+                      value={wmFontSize}
+                      onChange={(e) => setWmFontSize(parseInt(e.target.value, 10))}
+                      className="w-full h-1.5 bg-secondary rounded-full appearance-none cursor-pointer accent-primary"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between pt-1">
+                    <Label className="text-[10px]">Background pill</Label>
+                    <Switch checked={wmBgBox} onCheckedChange={setWmBgBox} />
+                  </div>
+                  {/* Quick preset pills for the four corners — saves
+                      dragging two sliders to common positions. */}
+                  <div className="flex gap-1 pt-1">
+                    {[
+                      { l: "TL", x: 0,   y: 0   },
+                      { l: "TR", x: 100, y: 0   },
+                      { l: "BL", x: 0,   y: 100 },
+                      { l: "BR", x: 100, y: 100 },
+                    ].map(({ l, x, y }) => (
+                      <Button
+                        key={l}
+                        size="sm" variant="outline"
+                        onClick={() => { setWmXPct(x); setWmYPct(y); }}
+                        className="h-6 px-2 text-[10px]"
+                      >
+                        {l}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                {/* 9:16 mock preview. Aspect ratio matches the actual
+                    render output. The watermark text is positioned
+                    using the same percentage math the backend uses. */}
+                <div
+                  className="rounded border border-border overflow-hidden bg-gradient-to-br from-secondary to-secondary/40 relative"
+                  style={{ aspectRatio: "9/16" }}
+                  title="Live preview — same position math as the renderer"
+                >
+                  <div
+                    className="absolute pointer-events-none whitespace-nowrap"
+                    style={{
+                      // Replicate the backend's clamp: paste position
+                      // is the LEFT-TOP corner of the watermark; we
+                      // approximate using transform with anchor.
+                      left:    `${wmXPct}%`,
+                      top:     `${wmYPct}%`,
+                      transform: `translate(${-wmXPct}%, ${-wmYPct}%)`,
+                      opacity: wmOpacity / 100,
+                    }}
+                  >
+                    <div
+                      className={cn(
+                        "rounded text-white font-semibold",
+                        wmBgBox ? "bg-black/50 px-1.5 py-0.5" : "",
+                      )}
+                      style={{ fontSize: `${Math.max(8, wmFontSize / 4)}px` }}
+                    >
+                      {branding}
+                    </div>
+                  </div>
+                  <p className="absolute bottom-1 left-1 text-[8px] text-muted-foreground/60 font-mono">9:16 preview</p>
+                </div>
+              </div>
+            </div>
+          )}
         </Section>
 
         <Section title="Title Card" icon={<Type className="h-4 w-4 text-accent" />}>

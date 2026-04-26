@@ -4030,7 +4030,7 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
         _log("Rendering video (resumed)...")
 
         from video_generator import VideoGenerator
-        video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
+        video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}), watermark_config=(config.get("video", {}) or {}).get("watermark", {}))
         # Resume path has no per-run override — follow whatever the config
         # currently says for the default background selector.
         video_gen.set_background_selector((config.get("video", {}) or {}).get("background_selector", ""))
@@ -4907,7 +4907,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
         else:
             try:
                 from video_generator import VideoGenerator
-                video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
+                video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}), watermark_config=(config.get("video", {}) or {}).get("watermark", {}))
                 video_gen.set_background_selector(background_override if background_override is not None else (config.get("video", {}) or {}).get("background_selector", ""))
                 _bgm_path, _bgm_db = _resolve_background_music(post_id, config)
                 video_gen.background_music_path = _bgm_path
@@ -5141,7 +5141,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
             try:
                 from video_generator import VideoGenerator
                 if 'video_gen' not in dir():
-                    video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}))
+                    video_gen = VideoGenerator(mode=video_mode, use_gpu=use_gpu, threads=threads, hw_accel=hw_accel, captions_config=config.get("captions", {}), thumbnail_config=config.get("thumbnail", {}), watermark_config=(config.get("video", {}) or {}).get("watermark", {}))
                 video_gen.set_background_selector(background_override if background_override is not None else (config.get("video", {}) or {}).get("background_selector", ""))
                 branding = config.get("video", {}).get("branding", "")
                 # Thumbnails use display_title (the original "(32M)"
