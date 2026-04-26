@@ -910,6 +910,29 @@ export const api = {
   clearAIDraft: () =>
     request<{ cleared: boolean }>("/api/ai/drafts", { method: "DELETE" }),
 
+  // Daily content-idea feed for a given niche. Returns 3-8 specific
+  // story prompts (title + premise + suggested style/tone). Cached
+  // backend-side for 6 hours so refreshes are cheap.
+  generateDailyIdeas: (params: {
+    niche: string;
+    content_filter?: "safe" | "normal" | "edgy";
+    count?: number;
+    force?: boolean;
+  }) =>
+    request<{
+      fetched_at: string;
+      from_cache: boolean;
+      niche: string;
+      content_filter: string;
+      ideas: {
+        title: string;
+        premise: string;
+        content_style: "story" | "qa" | "interactive" | "hot_take";
+        tone: "dramatic" | "funny" | "heartfelt" | "shocking" | "cringe";
+        why: string;
+      }[];
+    }>("/api/ideas/daily", { method: "POST", body: JSON.stringify(params) }),
+
   // Bump a queued item to the front of the queue. Used by the
   // "Move to top" button on QueuePanel rows.
   queueMoveToTop: (queue_id: string) =>

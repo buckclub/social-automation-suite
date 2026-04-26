@@ -906,12 +906,14 @@ from routes.hashtags  import router as _hashtags_router
 from routes.calendar  import router as _calendar_router
 from routes.social    import router as _social_router
 from routes.analytics import router as _analytics_router
+from routes.ideas     import router as _ideas_router
 app.include_router(_dialogue_router)
 app.include_router(_niche_router)
 app.include_router(_hashtags_router)
 app.include_router(_calendar_router)
 app.include_router(_social_router)
 app.include_router(_analytics_router)
+app.include_router(_ideas_router)
 
 
 # ── Server-Sent Events ────────────────────────────────────────────────

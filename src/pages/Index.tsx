@@ -4,6 +4,7 @@ import { RecentVideos } from "@/components/RecentVideos";
 import { ResumePanel } from "@/components/ResumePanel";
 import { RenderHistoryChart } from "@/components/RenderHistoryChart";
 import { CostTrackerPanel } from "@/components/CostTrackerPanel";
+import { DailyIdeasPanel } from "@/components/DailyIdeasPanel";
 import { QueuePanel } from "@/components/QueuePanel";
 
 export default function Index() {
@@ -28,6 +29,9 @@ export default function Index() {
         </div>
         <div className="lg:col-span-4 space-y-5">
           <RecentVideos />
+          {/* Daily ideas — auto-hides if no AI provider or no niche set,
+              so it doesn't show empty on a fresh install. */}
+          <DailyIdeasPanel />
           <CostTrackerPanel />
         </div>
       </div>
