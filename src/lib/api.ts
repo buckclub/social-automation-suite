@@ -910,6 +910,15 @@ export const api = {
   clearAIDraft: () =>
     request<{ cleared: boolean }>("/api/ai/drafts", { method: "DELETE" }),
 
+  // Set per-video approval state. Three states: pending / approved /
+  // rejected. Advisory by default — publish flow isn't gated. Used
+  // for "render in batch, review in batch" workflows.
+  setVideoApproval: (id: string, status: "pending" | "approved" | "rejected") =>
+    request<{ id: string; approval: string }>(
+      `/api/videos/${encodeURIComponent(id)}/approval`,
+      { method: "POST", body: JSON.stringify({ status }) },
+    ),
+
   // Daily content-idea feed for a given niche. Returns 3-8 specific
   // story prompts (title + premise + suggested style/tone). Cached
   // backend-side for 6 hours so refreshes are cheap.

@@ -41,13 +41,15 @@ function formatFileSize(bytes?: number) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-function VideoCard({ video, index, onPreview, onDelete, selected, onSelectChange }: {
+function VideoCard({ video, index, onPreview, onDelete, onSetApproval, selected, onSelectChange }: {
   video: VideoRecord; index: number;
   onPreview: (video: VideoRecord, part: number) => void;
   onDelete: (video: VideoRecord) => void;
+  onSetApproval?: (id: string, status: "pending" | "approved" | "rejected") => void;
   selected?: boolean;
   onSelectChange?: (checked: boolean) => void;
 }) {
+  const approval = ((video as any).approval || "pending") as "pending" | "approved" | "rejected";
   const partCount = video.part_files?.length || (video.parts ?? (video.has_video ? 1 : 0));
   const resumeMutation = useResumeVideo();
   const { toast } = useToast();
@@ -127,6 +129,23 @@ function VideoCard({ video, index, onPreview, onDelete, selected, onSelectChange
             {video.status === "published" ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
             {video.status}
           </Badge>
+
+          {/* Approval badge — left-aligned, below the select checkbox.
+              Color-coded: amber=pending, green=approved, red=rejected. */}
+          {video.has_video && (
+            <Badge
+              variant="outline"
+              className={`absolute top-2 left-9 text-[9px] gap-1 ${
+                approval === "approved" ? "border-success/50 text-success bg-success/10" :
+                approval === "rejected" ? "border-destructive/50 text-destructive bg-destructive/10" :
+                "border-warning/50 text-warning bg-warning/10"
+              }`}
+              title={`Approval: ${approval}`}
+            >
+              {approval === "approved" ? "✓ Approved" :
+               approval === "rejected" ? "✗ Rejected" : "Pending review"}
+            </Badge>
+          )}
           {video.render_time_s && (
             <span className="absolute bottom-2 right-2 rounded bg-background/80 px-1.5 py-0.5 text-[10px] font-mono">
               {video.render_time_s}s render
@@ -291,6 +310,31 @@ function VideoCard({ video, index, onPreview, onDelete, selected, onSelectChange
                 </Button>
               )}
             </div>
+            {/* Approval buttons — only useful when there's a video
+                to approve. The current state's button is hidden so
+                clicking can only TOGGLE or move forward. */}
+            {video.has_video && onSetApproval && (
+              <div className="flex items-center gap-1 ml-1">
+                {approval !== "approved" && (
+                  <Button
+                    size="sm" variant="ghost" className="h-7 px-2 text-success hover:text-success hover:bg-success/10"
+                    title="Approve for publish"
+                    onClick={() => onSetApproval(video.id, "approved")}
+                  >
+                    <CheckCircle2 className="h-3 w-3" />
+                  </Button>
+                )}
+                {approval !== "rejected" && (
+                  <Button
+                    size="sm" variant="ghost" className="h-7 px-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                    title="Reject (hide from default view)"
+                    onClick={() => onSetApproval(video.id, "rejected")}
+                  >
+                    <XCircle className="h-3 w-3" />
+                  </Button>
+                )}
+              </div>
+            )}
             <Button size="sm" variant="ghost" className="h-7 px-2 text-destructive hover:text-destructive"
               onClick={() => onDelete(video)}>
               <Trash2 className="h-3 w-3" />
@@ -408,11 +452,46 @@ export default function VideosPage() {
   // intentionally not URL-shared so different tabs can filter separately.
   const { brands } = useBrand();
   const [brandFilter, setBrandFilter] = useState<string>("__all__");
+  // Approval filter: review-mode workflow. "pending" surfaces only
+  // videos that haven't been reviewed yet — useful for batch review
+  // after an overnight render run.
+  const [approvalFilter, setApprovalFilter] = useState<"all" | "pending" | "approved" | "rejected">("all");
   const filteredVideos = videos.filter((v) => {
-    if (brandFilter === "__all__") return true;
-    if (brandFilter === "__none__") return !v.brand_id;
-    return v.brand_id === brandFilter;
+    if (brandFilter === "__none__" && v.brand_id) return false;
+    if (brandFilter !== "__all__" && brandFilter !== "__none__" && v.brand_id !== brandFilter) return false;
+    if (approvalFilter !== "all") {
+      const a = (v as any).approval || "pending";
+      if (a !== approvalFilter) return false;
+    }
+    return true;
   });
+
+  const setApproval = async (id: string, status: "pending" | "approved" | "rejected") => {
+    try {
+      await api.setVideoApproval(id, status);
+      // Optimistic update on the cached query data — videos are owned
+      // by React Query, not local component state.
+      qc.setQueryData(["videos"], (old: any) => {
+        if (!old?.videos) return old;
+        return {
+          ...old,
+          videos: old.videos.map((v: any) =>
+            v.id === id ? { ...v, approval: status, approval_at: new Date().toISOString() } : v,
+          ),
+        };
+      });
+      toast({
+        title: status === "approved" ? "Approved ✓" : status === "rejected" ? "Rejected" : "Marked pending",
+        description: status === "approved"
+          ? "Ready to publish."
+          : status === "rejected"
+            ? "Hidden from default view."
+            : undefined,
+      });
+    } catch (e: any) {
+      toast({ title: "Couldn't update approval", description: e?.message, variant: "destructive" });
+    }
+  };
 
   const handleDelete = (keepFiles: boolean) => {
     if (!deleteTarget) return;
@@ -445,6 +524,18 @@ export default function VideosPage() {
           {/* Brand filter — visible only when at least one brand exists.
               Two pseudo-options bookend the real list: "All brands" and
               "No brand (legacy)". */}
+          {/* Approval filter — surfaces pending-review backlog. */}
+          <Select value={approvalFilter} onValueChange={(v) => setApprovalFilter(v as typeof approvalFilter)}>
+            <SelectTrigger className="h-8 text-xs bg-secondary border-border w-[150px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All approvals</SelectItem>
+              <SelectItem value="pending">Pending review</SelectItem>
+              <SelectItem value="approved">Approved</SelectItem>
+              <SelectItem value="rejected">Rejected</SelectItem>
+            </SelectContent>
+          </Select>
           {brands.length > 0 && (
             <div className="flex items-center gap-1.5">
               <Tag className="h-3 w-3 text-muted-foreground" />
@@ -504,6 +595,7 @@ export default function VideosPage() {
             key={video.id} video={video} index={i}
             onPreview={(v, part) => setPreview({ video: v, part })}
             onDelete={setDeleteTarget}
+            onSetApproval={setApproval}
             selected={selectedIds.has(video.id)}
             onSelectChange={(checked) => toggleSelection(video.id, checked)}
           />

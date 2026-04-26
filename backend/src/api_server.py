@@ -4188,6 +4188,14 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
         stats["total_render_time_s"] += elapsed
 
         total_size = sum(os.path.getsize(p) for p in generated_video_paths if os.path.exists(p))
+        # Preserve the prior approval state BEFORE the filter strips
+        # the old row. Resume replaces the bytes; the user has already
+        # reviewed this video so we shouldn't reset its status to
+        # 'pending'. Brand-new rows fall back to 'pending'.
+        prior_approval = next(
+            (v.get("approval", "pending") for v in videos_db if v.get("id") == post_id),
+            "pending",
+        )
         # Replace any existing entry for this id (resume updates the row).
         videos_db = [v for v in videos_db if v["id"] != post_id]
         videos_db.insert(0, {
@@ -4201,6 +4209,8 @@ async def _resume_video_async(post_id: str, title: str, timeline: list):
             "parts": len(generated_video_paths) if len(generated_video_paths) > 1 else None,
             "file_size_bytes": total_size or None,
             "video_paths": list(generated_video_paths),
+            "approval":    prior_approval,
+            "approval_at": None,
         })
         _persist_videos_db()
         try:
@@ -5267,6 +5277,12 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
             "brand_id":   _b_id,
             "brand_name": _b_name,
             "brand_color": _b_color,
+            # Fresh renders default to 'pending' so a 'review my batch
+            # before publishing' workflow actually has a state to filter
+            # on. Approval is advisory — the publish button is not
+            # gated by it.
+            "approval":    "pending",
+            "approval_at": None,
         })
         _persist_videos_db()
         try:
@@ -5565,6 +5581,34 @@ async def download_video(video_id: str, part: int = 0):
     path = all_files[part]
     filename = os.path.basename(path)
     return FileResponse(path, media_type="video/mp4", filename=filename)
+
+
+@app.post("/api/videos/{video_id}/approval")
+async def set_video_approval(video_id: str, req: dict):
+    """
+    Set the approval status on a rendered video. Three states:
+      - "pending"  (default for fresh renders) — needs review
+      - "approved" — green-lit; safe to publish
+      - "rejected" — flagged as not for use; soft-archived
+
+    The state is advisory by default (the publish button isn't
+    gated). It exists so creators can do a "render in batch, review
+    in batch" workflow — render 10 stories overnight, walk in the
+    next morning, click through the queue and approve / reject.
+    Filter on the Videos page exposes 'pending' so reviewing the
+    backlog doesn't require remembering which ones are unseen.
+    """
+    status = (req.get("status") or "").strip().lower()
+    if status not in ("pending", "approved", "rejected"):
+        raise HTTPException(400, "status must be 'pending' / 'approved' / 'rejected'")
+    entry = next((v for v in videos_db if v["id"] == video_id), None)
+    if not entry:
+        raise HTTPException(404, f"Video '{video_id}' not found")
+    entry["approval"] = status
+    entry["approval_at"] = datetime.now(timezone.utc).isoformat()
+    _persist_videos_db()
+    _log(f"Approval: {video_id} → {status}")
+    return {"id": video_id, "approval": status}
 
 
 @app.delete("/api/videos/{video_id}")
