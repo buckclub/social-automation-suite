@@ -5606,6 +5606,107 @@ async def get_stats():
 
 # ── TTS Provider Management ─────────────────────────────────────────
 
+@app.post("/api/tts/preview")
+async def tts_preview(req: dict):
+    """
+    Synthesize a short sample clip for a given (provider, voice_id) so
+    the user can hear what a voice sounds like before committing to a
+    full render. Cached per (provider, voice_id) at
+    .cache/voice_previews/<provider>__<safe_voice>.mp3 so flipping
+    through 20 voices doesn't burn 20× the chars.
+
+    Body:
+      { "provider": "elevenlabs"|"streamlabs_polly"|"vibevoice"|"qwen3tts",
+        "voice_id": str,
+        "text":     str (optional; default sample sentence) }
+
+    Returns: { "url": "/api/tts/preview/file/<filename>", "cached": bool }
+    """
+    provider = (req.get("provider") or "").strip().lower()
+    voice_id = (req.get("voice_id") or "").strip()
+    sample_text = (req.get("text") or "").strip() or (
+        "Quick test of this voice — about a sentence and a half so you can "
+        "judge tone, pace, and clarity before kicking off a full render."
+    )
+    if not provider or not voice_id:
+        raise HTTPException(400, "provider and voice_id are required")
+
+    # Cache key. Use provider + slugified voice_id so a paid char budget
+    # only gets spent once per voice. The text is fixed by design — the
+    # whole point is "what does THIS voice sound like," not "what does
+    # this voice sound like reading my specific script."
+    safe_v = re.sub(r"[^A-Za-z0-9._-]", "_", voice_id)[:80]
+    cache_dir = os.path.join(PROJECT_ROOT, ".cache", "voice_previews")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_name = f"{provider}__{safe_v}.mp3"
+    cache_path = os.path.join(cache_dir, cache_name)
+
+    if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 200:
+        return {"url": f"/api/tts/preview/file/{cache_name}", "cached": True}
+
+    cfg = _load_config()
+    tts_cfg = cfg.get("tts", {}) or {}
+
+    def _synth_to(path: str) -> bool:
+        """Pick the right TTS class per provider, write to `path`,
+        return True on success. Each provider needs slightly different
+        wiring; kept inline here to avoid touching tts_engine.py."""
+        try:
+            if provider == "elevenlabs":
+                el_cfg = tts_cfg.get("elevenlabs", {}) if isinstance(tts_cfg.get("elevenlabs"), dict) else {}
+                api_key = tts_cfg.get("elevenlabs_api_key") or el_cfg.get("api_key") or ""
+                if not api_key:
+                    raise HTTPException(400, "ElevenLabs API key not configured.")
+                from tts_engine import ElevenLabsTTS
+                eng = ElevenLabsTTS(
+                    api_key=api_key, voice=voice_id,
+                    model_id=tts_cfg.get("elevenlabs_model_id", "eleven_turbo_v2_5"),
+                    output_dir=cache_dir,
+                )
+                tmp = eng.synthesize(sample_text, output_filename=cache_name)
+                return bool(tmp and os.path.isfile(tmp))
+            elif provider == "streamlabs_polly":
+                from tts_engine import StreamlabsTTS
+                eng = StreamlabsTTS(voice=voice_id, output_dir=cache_dir)
+                tmp = eng.synthesize(sample_text, output_filename=cache_name)
+                return bool(tmp and os.path.isfile(tmp))
+            else:
+                # Local engines (vibevoice, qwen3tts) need their model
+                # files; preview path may not have those installed.
+                # Surface a clean error rather than synthesizing
+                # silence.
+                raise HTTPException(
+                    400,
+                    f"Voice preview isn't wired for provider '{provider}' "
+                    f"yet — its model loading takes too long to be useful "
+                    f"as a preview. Render a short test instead."
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            _log(f"Voice preview failed ({provider}/{voice_id}): {e}")
+            raise HTTPException(502, f"Preview synthesis failed: {str(e)[:160]}")
+
+    ok = await asyncio.to_thread(_synth_to, cache_path)
+    if not ok:
+        raise HTTPException(502, "Preview synthesis returned no audio.")
+    return {"url": f"/api/tts/preview/file/{cache_name}", "cached": False}
+
+
+@app.get("/api/tts/preview/file/{filename}")
+async def tts_preview_file(filename: str):
+    """Serve a cached voice-preview mp3. Path-traversal-safe: only the
+    bare filename is accepted, no separators, and the file must live
+    in the .cache/voice_previews directory."""
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(400, "Bad filename")
+    cache_dir = os.path.join(PROJECT_ROOT, ".cache", "voice_previews")
+    path = os.path.join(cache_dir, filename)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Preview not found — synthesize first.")
+    return FileResponse(path, media_type="audio/mpeg")
+
+
 @app.get("/api/tts/elevenlabs/voices")
 async def elevenlabs_voices():
     """

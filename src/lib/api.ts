@@ -910,6 +910,16 @@ export const api = {
   clearAIDraft: () =>
     request<{ cleared: boolean }>("/api/ai/drafts", { method: "DELETE" }),
 
+  // Voice preview — synthesize a short cached sample for a given
+  // voice so the user can audition before kicking off a full render.
+  // Backend caches the mp3 per (provider, voice_id) so flipping
+  // through 20 voices doesn't burn 20× the TTS chars.
+  ttsPreview: (params: { provider: string; voice_id: string; text?: string }) =>
+    request<{ url: string; cached: boolean }>("/api/tts/preview", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+
   // List the available content niches — built-in plus any custom ones
   // the user added in config.ai_content_generation.custom_niches.
   // Drives the niche picker in GenerateWithAIDialog.

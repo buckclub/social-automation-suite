@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { useConfig, useTtsProviders } from "@/hooks/use-api";
 import { ELEVENLABS_LIBRARY } from "@/components/ElevenLabsLibraryPresets";
+import { VoicePreviewButton } from "@/components/VoicePreviewButton";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { useBrand } from "@/contexts/BrandContext";
@@ -1368,19 +1369,30 @@ export function GenerateWithAIDialog() {
 
               <div className="space-y-1">
                 <Label className="text-[11px] text-muted-foreground">Voice (optional override)</Label>
-                <Select value={voiceOverride} onValueChange={setVoiceOverride}>
-                  <SelectTrigger className="h-8 text-xs bg-secondary border-border"><SelectValue /></SelectTrigger>
-                  <SelectContent className="max-h-[280px]">
-                    <SelectItem value="__config__">
-                      Use config default {mainVoice && <span className="text-muted-foreground">({mainVoice})</span>}
-                    </SelectItem>
-                    {voiceOptions.map((v) => (
-                      <SelectItem key={v.id} value={v.id}>{v.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex gap-2">
+                  <Select value={voiceOverride} onValueChange={setVoiceOverride}>
+                    <SelectTrigger className="h-8 text-xs bg-secondary border-border flex-1"><SelectValue /></SelectTrigger>
+                    <SelectContent className="max-h-[280px]">
+                      <SelectItem value="__config__">
+                        Use config default {mainVoice && <span className="text-muted-foreground">({mainVoice})</span>}
+                      </SelectItem>
+                      {voiceOptions.map((v) => (
+                        <SelectItem key={v.id} value={v.id}>{v.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {/* Audition the picked voice with a cached sample so
+                      the user can hear tone/pace before kicking off
+                      the full render. Disabled on __config__ since we
+                      don't know which voice config picked. */}
+                  <VoicePreviewButton
+                    provider={ttsProvider}
+                    voiceId={voiceOverride === "__config__" ? mainVoice : voiceOverride}
+                    className="h-8 px-2"
+                  />
+                </div>
                 <p className="text-[10px] text-muted-foreground leading-snug">
-                  Provider: <code>{ttsProvider}</code>. Change provider in Config → TTS.
+                  Provider: <code>{ttsProvider}</code>. Change provider in Config → TTS. Press play to hear a 1-line sample (cached).
                 </p>
               </div>
             </>
