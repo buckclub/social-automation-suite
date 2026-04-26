@@ -131,15 +131,26 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-background pb-8">
       <header className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-xl">
         <div className="mx-auto flex h-14 max-w-screen-2xl items-center justify-between px-4 lg:px-8">
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4 lg:gap-6">
             <NavLink to="/" className="flex items-center gap-3">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 glow-primary">
                 <Video className="h-4 w-4 text-primary" />
               </div>
-              <h1 className="text-lg font-bold tracking-tight text-gradient whitespace-nowrap">
+              {/* Hide the wordmark below xl so the left side has room
+                  for the brand switcher + nav at typical laptop widths.
+                  The logo glyph remains as the home affordance. */}
+              <h1 className="hidden xl:block text-lg font-bold tracking-tight text-gradient whitespace-nowrap">
                 Social Automation Suite
               </h1>
             </NavLink>
+
+            {/* Brand switcher lives next to the logo — both are
+                "what context am I in" indicators. Used to be on the
+                right, which made the right cluster feel packed and
+                separated context (brand) from action (generate). */}
+            <div className="hidden md:block">
+              <BrandSwitcher />
+            </div>
 
             <nav className="hidden md:flex items-center gap-1">
               {/* Dashboard */}
@@ -212,60 +223,61 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
                 items={engageGroupItems}
                 isActive={isInEngage}
               />
-
-              {/* Configuration — single top-level item, last */}
-              <NavLink
-                to="/config"
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                    isActive
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:text-foreground hover:bg-secondary"
-                  )
-                }
-              >
-                <Settings2 className="h-3.5 w-3.5" />
-                Configuration
-              </NavLink>
+              {/* Configuration moved to the right-side icon cluster —
+                  it's a settings action, not a navigation destination. */}
             </nav>
           </div>
 
-          <div className="flex items-center gap-2">
-            <BrandSwitcher />
+          {/* Right side: actions + utility icons. All single-icon tap
+              targets (Generate's a labelled button by design). The
+              previous layout had two wide pills (Jump to…, Online)
+              and the brand switcher here too — which felt cluttered
+              at typical laptop widths. */}
+          <div className="flex items-center gap-1.5">
             <GenerateWithAIDialog />
             <ThemeToggle />
+
+            {/* Command palette — icon-only, the kbd shortcut is the
+                actual learning surface; the "Jump to…" wording was
+                only useful for first-time discovery. */}
             <button
               onClick={toggleCommand}
-              title="Command palette (⌘K / Ctrl+K)"
-              className="hidden lg:flex items-center gap-1.5 rounded-md border border-border bg-secondary/60 hover:bg-secondary px-2.5 py-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              title="Jump to… (⌘K / Ctrl+K)"
+              className="hidden lg:flex h-8 w-8 items-center justify-center rounded-md border border-border bg-secondary/60 hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
             >
-              <Command className="h-3 w-3" />
-              <span>Jump to…</span>
-              <kbd className="ml-1 rounded bg-background/60 border border-border px-1 font-mono text-[9px]">⌘K</kbd>
+              <Command className="h-3.5 w-3.5" />
             </button>
+
+            {/* Settings gear — used to be 'Configuration' text in the
+                left nav, but it's a utility action not a route group. */}
+            <NavLink
+              to="/config"
+              title="Configuration"
+              className={({ isActive }) =>
+                cn(
+                  "flex h-8 w-8 items-center justify-center rounded-md border border-border bg-secondary/60 hover:bg-secondary transition-colors",
+                  isActive ? "text-primary border-primary/40" : "text-muted-foreground hover:text-foreground",
+                )
+              }
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+            </NavLink>
+
+            {/* Online/Offline → glanceable colored dot. Tooltip carries
+                the word for accessibility / screen readers. */}
             <div
+              title={isOnline ? "Backend online" : "Backend offline"}
               className={cn(
-                "flex items-center gap-1.5 rounded-full border px-3 py-1",
-                isOnline
-                  ? "border-success/30 bg-success/10"
-                  : "border-destructive/30 bg-destructive/10"
+                "flex h-8 w-8 items-center justify-center rounded-md",
               )}
             >
-              <div
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  isOnline ? "bg-success animate-pulse" : "bg-destructive"
-                )}
-              />
               <span
                 className={cn(
-                  "text-xs font-medium hidden sm:inline",
-                  isOnline ? "text-success" : "text-destructive"
+                  "h-2 w-2 rounded-full",
+                  isOnline ? "bg-success animate-pulse shadow-[0_0_8px] shadow-success/60" : "bg-destructive",
                 )}
-              >
-                {isOnline ? "Online" : "Offline"}
-              </span>
+              />
+              <span className="sr-only">{isOnline ? "Backend online" : "Backend offline"}</span>
             </div>
           </div>
         </div>
