@@ -796,6 +796,7 @@ async def _queue_worker():
                     narrator_gender=params.get("narrator_gender"),
                     voice_override=params.get("voice_override"),
                     background_override=params.get("background_override"),
+                    auto_retry=bool(params.get("auto_retry")),
                 )
                 err_out = pipeline_state.get("error")
 
@@ -4248,7 +4249,13 @@ def _check_cancelled():
         raise Exception("Pipeline cancelled by user")
 
 
-async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_comments: Optional[List[int]] = None, max_comment_chars: int = 0, narrator_gender: Optional[str] = None, voice_override: Optional[str] = None, background_override: Optional[str] = None, captions_preset: Optional[str] = None):
+async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_comments: Optional[List[int]] = None, max_comment_chars: int = 0, narrator_gender: Optional[str] = None, voice_override: Optional[str] = None, background_override: Optional[str] = None, captions_preset: Optional[str] = None, auto_retry: bool = False):
+    # `auto_retry` is set when the queue worker pulls a row that we
+    # ourselves enqueued after a transient failure. Captured into a
+    # local at the top so the failure handler below can see it via
+    # `locals().get("auto_retry_seen")` and refuse to schedule a
+    # second retry — one auto-resume per failed render is the cap.
+    auto_retry_seen = bool(auto_retry)
     """Execute the full pipeline matching main.py run_pipeline() flow."""
     global _cancel_requested, videos_db
     _cancel_requested = False
@@ -5321,6 +5328,45 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                                  success=False, error=str(e), diagnostic=diag)
         except Exception:
             pass
+
+        # ── Auto-resume on transient failure ─────────────────────────
+        # When the diagnostic flags the failure as recoverable
+        # (network blip, 5xx, temporary timeout) AND we have a
+        # preserved timeline + audio cached, auto-enqueue ONE resume
+        # attempt. Saves the user from babysitting overnight batch
+        # renders that hit a transient hiccup. Capped at one auto-
+        # retry per render — if it fails again, manual intervention
+        # is the right next step (probably API quota / disk full /
+        # something the user has to fix).
+        try:
+            current = pipeline_state.get("current_post") or {}
+            pid = current.get("id") or ""
+            preserved_timeline = locals().get("preserved_timeline")
+            already_retried = bool(locals().get("auto_retry_seen"))
+            if (
+                pid
+                and diag.get("recoverable")
+                and preserved_timeline
+                and os.path.isfile(preserved_timeline)
+                and not already_retried
+            ):
+                from run_queue import enqueue
+                enqueue(
+                    PROJECT_ROOT, post_id=pid,
+                    title=current.get("title", "") or pid,
+                    subreddit=current.get("subreddit", "") or "",
+                    params={
+                        "kind": "post",
+                        "auto_retry": True,  # marker so we never re-retry the retry
+                    },
+                )
+                _log(
+                    f"Auto-resume scheduled for {pid} after transient failure "
+                    f"({diag.get('category','generic')}). Will retry once."
+                )
+        except Exception as _e:
+            _log(f"Auto-resume scheduling failed (non-fatal): {_e}")
+
         import traceback
         traceback.print_exc()
     finally:
