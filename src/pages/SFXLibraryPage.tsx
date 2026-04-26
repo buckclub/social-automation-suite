@@ -24,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { MyinstantsBrowser } from "@/components/MyinstantsBrowser";
 
 type Clip = { filename: string; name: string; tags: string[]; added_at: string; size: number };
 
@@ -147,6 +148,12 @@ export default function SFXLibraryPage() {
           </>
         }
       />
+
+      {/* Myinstants browse + import — embedded above the local
+          library so users see it as the first option for "where do
+          I get sounds." Refreshing the local list when an import
+          completes keeps the two views in sync. */}
+      <MyinstantsBrowser vocab={vocab} onImported={refresh} />
 
       {loading ? (
         <Card className="border-border bg-card">

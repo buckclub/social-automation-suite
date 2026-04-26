@@ -7183,6 +7183,75 @@ async def sfx_delete(filename: str):
     return {"deleted": True}
 
 
+# ── Myinstants browse + import ────────────────────────────────────────
+# Browse trending / search results from myinstants.com and one-click
+# import a sound into the local SFX library. Cached server-side for
+# an hour so flipping pages is cheap.
+#
+# Why myinstants: it's the de-facto meme-sound library — the trending
+# list tracks what's actually being used in viral content. Many
+# sounds are clips from copyrighted media, so the import flow surfaces
+# a one-line disclaimer near the controls. This endpoint doesn't
+# enforce copyright; that's on the user to handle.
+
+@app.get("/api/sfx/myinstants/trending")
+async def sfx_myinstants_trending(region: str = "us", limit: int = 24):
+    """Regional trending list from myinstants. region = 2-letter ISO."""
+    from myinstants_browser import trending
+    rows = await asyncio.to_thread(trending, region, limit)
+    return {"sounds": rows, "region": region}
+
+
+@app.get("/api/sfx/myinstants/search")
+async def sfx_myinstants_search(q: str = "", limit: int = 24):
+    """Search myinstants by name. Returns list with mp3_url + page_url."""
+    from myinstants_browser import search
+    rows = await asyncio.to_thread(search, q, limit)
+    return {"sounds": rows, "query": q}
+
+
+@app.post("/api/sfx/myinstants/import")
+async def sfx_myinstants_import(req: dict):
+    """
+    Body: { mp3_url: str, name?: str, tags?: [str] }
+
+    Downloads the mp3 from myinstants into <project_root>/sfx/ and
+    registers it via sfx_library.add_clip with the supplied tags.
+    Filename is derived from the user-provided name (slug-safe) or
+    from the URL stem when name is empty. Returns the new clip row.
+    """
+    from myinstants_browser import download_mp3, slug_from_title
+    from sfx_library import sfx_dir, add_clip, ALLOWED_EXTS
+    mp3_url = (req.get("mp3_url") or "").strip()
+    name    = (req.get("name") or "").strip()
+    tags_in = req.get("tags") or []
+    if not mp3_url:
+        raise HTTPException(400, "mp3_url is required")
+    if not isinstance(tags_in, list):
+        raise HTTPException(400, "tags must be a list of strings")
+    # Build the destination filename. Always use .mp3 since
+    # myinstants serves mp3 exclusively. Append a short timestamp
+    # suffix on collision so re-imports don't silently overwrite.
+    stem = slug_from_title(name or mp3_url.rsplit("/", 1)[-1] or "sound")
+    fname = f"{stem}.mp3"
+    dest_dir = sfx_dir(PROJECT_ROOT)
+    dest_path = os.path.join(dest_dir, fname)
+    if os.path.isfile(dest_path):
+        suffix = datetime.now(timezone.utc).strftime("%y%m%d_%H%M%S")
+        fname = f"{stem}_{suffix}.mp3"
+        dest_path = os.path.join(dest_dir, fname)
+    ok = await asyncio.to_thread(download_mp3, mp3_url, dest_path)
+    if not ok:
+        raise HTTPException(502, "Download failed — check the URL or try again later.")
+    # Sanitize tag list against the SFX_VOCAB (the add_clip helper
+    # already does this, but doing it here surfaces the rejected ones
+    # in the response.)
+    safe_tags = [str(t).strip().lower() for t in tags_in if str(t).strip()]
+    row = add_clip(PROJECT_ROOT, fname, name=name or stem.replace("_", " "), tags=safe_tags)
+    _log(f"Imported myinstants clip → {fname} (tags={safe_tags})")
+    return {"clip": row}
+
+
 @app.get("/api/sfx/preview/{filename}")
 async def sfx_preview(filename: str):
     """Stream the audio file for in-browser preview."""

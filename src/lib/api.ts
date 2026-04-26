@@ -942,6 +942,22 @@ export const api = {
   sfxPreviewUrl: (filename: string) =>
     `${API_BASE}/api/sfx/preview/${encodeURIComponent(filename)}`,
 
+  // Myinstants browse + import. Backend caches results for 1h so
+  // flipping between trending/search calls is cheap.
+  myinstantsTrending: (region = "us", limit = 24) =>
+    request<{ sounds: { title: string; mp3_url: string; page_url: string }[]; region: string }>(
+      `/api/sfx/myinstants/trending?region=${encodeURIComponent(region)}&limit=${limit}`,
+    ),
+  myinstantsSearch: (query: string, limit = 24) =>
+    request<{ sounds: { title: string; mp3_url: string; page_url: string }[]; query: string }>(
+      `/api/sfx/myinstants/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+    ),
+  myinstantsImport: (params: { mp3_url: string; name?: string; tags?: string[] }) =>
+    request<{ clip: { filename: string; name: string; tags: string[] } }>(
+      "/api/sfx/myinstants/import",
+      { method: "POST", body: JSON.stringify(params) },
+    ),
+
   // Set per-video approval state. Three states: pending / approved /
   // rejected. Advisory by default — publish flow isn't gated. Used
   // for "render in batch, review in batch" workflows.
