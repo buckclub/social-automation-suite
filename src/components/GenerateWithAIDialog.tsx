@@ -5,7 +5,7 @@ import {
   Gamepad2, Flame, HandMetal, HelpCircle, Star, Brain, Images, User, Shuffle,
   Users,
   Bookmark, BookmarkPlus, Trash2, Check,
-  Tag,
+  Tag, Pencil,
   // Section-header icon for the Content Filter group. Note: this is
   // ALSO used by the imported CONTENT_FILTERS option icons, but those
   // come pre-bound from @/components/run-settings — `Shield` here is
@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { useConfig, useTtsProviders } from "@/hooks/use-api";
@@ -307,6 +308,28 @@ export function GenerateWithAIDialog() {
   const [variants, setVariants] = useState<Array<Record<string, unknown>>>([]);
   const [approvedSet, setApprovedSet] = useState<Set<number>>(new Set());
   const [expandedSet, setExpandedSet] = useState<Set<number>>(new Set());
+  // Story-edit mode per variant. When active, the title and body
+  // become editable Inputs/Textareas; mutations write back into
+  // `variants` so the eventual preselected_content flowing into the
+  // pipeline carries the user's tweaks. Edit state is opt-in per card
+  // so a misclick doesn't lose generation work.
+  const [editingSet, setEditingSet] = useState<Set<number>>(new Set());
+  const toggleEdit = (idx: number) => setEditingSet((s) => {
+    const next = new Set(s);
+    if (next.has(idx)) next.delete(idx); else { next.add(idx); }
+    return next;
+  });
+  const updateVariantField = (idx: number, field: "title" | "body", value: string) => {
+    setVariants((cur) => {
+      const next = cur.map((v, i) =>
+        i === idx ? { ...v, [field]: value } : v,
+      );
+      // Re-persist the draft so an accidental dialog-close doesn't
+      // lose the user's edits. Same path as auto-save on generate.
+      persistDraft(next);
+      return next;
+    });
+  };
   const [regeneratingIdx, setRegeneratingIdx] = useState<number | null>(null);
   const [regeneratingAll, setRegeneratingAll] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
@@ -936,7 +959,13 @@ export function GenerateWithAIDialog() {
               {variants.map((v, i) => {
                 const approved = approvedSet.has(i);
                 const expanded = expandedSet.has(i);
+                const editing = editingSet.has(i);
                 const regenThis = regeneratingIdx === i;
+                // Title + body are the editable surfaces. Story / hot-
+                // take have a body; QA + interactive have list-shaped
+                // fields where free-text edit is fragile, so the edit
+                // affordance is title-only for those.
+                const supportsBodyEdit = contentStyle === "story" || contentStyle === "hot_take";
                 return (
                   <div
                     key={i}
@@ -961,11 +990,40 @@ export function GenerateWithAIDialog() {
                       </button>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-2 mb-1">
-                          <p className="text-[11px] font-semibold leading-snug line-clamp-2 flex-1">
-                            {(v.title as string) || `Variant ${i + 1}`}
-                          </p>
+                          {editing ? (
+                            <Input
+                              value={(v.title as string) || ""}
+                              onChange={(e) => updateVariantField(i, "title", e.target.value)}
+                              className="flex-1 h-7 text-[11px] font-semibold bg-secondary/60 border-border"
+                              placeholder="Title"
+                            />
+                          ) : (
+                            <p className="text-[11px] font-semibold leading-snug line-clamp-2 flex-1">
+                              {(v.title as string) || `Variant ${i + 1}`}
+                            </p>
+                          )}
                           <div className="flex items-center gap-1 shrink-0">
                             <ScoreBadge score={v.score as ScoreShape | null | undefined} minScore={minScore} />
+                            {/* Edit toggle — pencil while reading, check
+                                while editing (clicking it 'finishes'
+                                edit mode without saving anything new
+                                because edits are persisted on every
+                                keystroke). */}
+                            <Button
+                              size="sm" variant="ghost"
+                              className="h-6 w-6 p-0"
+                              onClick={() => {
+                                toggleEdit(i);
+                                // Auto-expand on edit so the body
+                                // surface is visible immediately.
+                                if (!editing && supportsBodyEdit) {
+                                  setExpandedSet((s) => new Set(s).add(i));
+                                }
+                              }}
+                              title={editing ? "Done editing" : "Edit script before render"}
+                            >
+                              {editing ? <Check className="h-3 w-3" /> : <Pencil className="h-3 w-3" />}
+                            </Button>
                             <Button
                               size="sm" variant="ghost"
                               className="h-6 w-6 p-0"
@@ -979,20 +1037,37 @@ export function GenerateWithAIDialog() {
                             </Button>
                           </div>
                         </div>
-                        <p
-                          className={cn(
-                            "text-[10px] leading-snug whitespace-pre-wrap",
-                            expanded ? "text-foreground" : "text-muted-foreground line-clamp-4",
-                          )}
-                        >
-                          {expanded ? formatFullScript(v) : summarizeVariant(v)}
-                        </p>
-                        <button
-                          onClick={() => toggleExpand(i)}
-                          className="mt-1 text-[9px] text-primary hover:underline"
-                        >
-                          {expanded ? "Collapse" : "Read full script"}
-                        </button>
+                        {editing && supportsBodyEdit ? (
+                          <Textarea
+                            value={(v.body as string) || ""}
+                            onChange={(e) => updateVariantField(i, "body", e.target.value)}
+                            className="text-[10px] leading-snug bg-secondary/60 border-border font-mono"
+                            rows={Math.max(8, ((v.body as string) || "").split("\n").length + 1)}
+                            placeholder="Body (will be narrated verbatim)"
+                          />
+                        ) : (
+                          <>
+                            <p
+                              className={cn(
+                                "text-[10px] leading-snug whitespace-pre-wrap",
+                                expanded ? "text-foreground" : "text-muted-foreground line-clamp-4",
+                              )}
+                            >
+                              {expanded ? formatFullScript(v) : summarizeVariant(v)}
+                            </p>
+                            <button
+                              onClick={() => toggleExpand(i)}
+                              className="mt-1 text-[9px] text-primary hover:underline"
+                            >
+                              {expanded ? "Collapse" : "Read full script"}
+                            </button>
+                          </>
+                        )}
+                        {editing && !supportsBodyEdit && (
+                          <p className="text-[10px] text-muted-foreground italic mt-1">
+                            Body is multi-field for {contentStyle} mode — only the title is editable here. Regenerate to swap the rest.
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>
