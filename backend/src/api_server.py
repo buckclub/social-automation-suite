@@ -5110,8 +5110,65 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                         except Exception as e:
                             _log(f"Cleanup warning: {e}")
                 else:
-                    _set_step("video", "error", "Video generation produced no output")
-                    _log("Video generation failed — no output files")
+                    # ── Inline retry against the full timeline ──────
+                    # `generate_video_ffmpeg` swallows ffmpeg exceptions
+                    # and returns None — the original pipeline left
+                    # the user with an audio_only row and required a
+                    # manual click on Resume to finish. Resume just
+                    # re-runs the same render against the same audio,
+                    # so we can do the same here automatically.
+                    #
+                    # We retry as a SINGLE-video render even when the
+                    # original was short_reel multi-part. The split
+                    # logic is the most common failure source (one
+                    # tiny part with sub-second audio confuses the
+                    # concat path); single-render bypasses it entirely.
+                    # User loses the auto-part-split for this one
+                    # render; that's acceptable given the alternative
+                    # is no video at all + a manual Resume click.
+                    _set_step("video", "running", "First render produced no output — retrying as single video…", video_sub_steps if 'video_sub_steps' in locals() else None)
+                    _log("Video step retry: first attempt produced no output, retrying as single render against full timeline.")
+                    try:
+                        retry_out = os.path.join(output_base, "video.mp4")
+                        retry_branding = config.get("video", {}).get("branding", "")
+                        # Fresh VideoGenerator instance — state from the
+                        # failed multi-part run (cached title-card path,
+                        # selector cursor, etc.) is jettisoned.
+                        retry_gen = VideoGenerator(
+                            mode=video_mode,
+                            use_gpu=use_gpu, threads=threads, hw_accel=hw_accel,
+                            captions_config=config.get("captions", {}),
+                            thumbnail_config=config.get("thumbnail", {}),
+                            watermark_config=(config.get("video", {}) or {}).get("watermark", {}),
+                        )
+                        retry_gen.set_background_selector(
+                            background_override if background_override is not None
+                            else (config.get("video", {}) or {}).get("background_selector", "")
+                        )
+                        retry_gen.background_music_path = _bgm_path
+                        retry_gen.background_music_db = _bgm_db
+                        if engine == "ffmpeg":
+                            retry_vp = await asyncio.to_thread(
+                                retry_gen.generate_video_ffmpeg,
+                                timeline, retry_out, None, 0.0, retry_branding,
+                                display_title, post_subreddit, post_score,
+                            )
+                        else:
+                            retry_vp = await asyncio.to_thread(
+                                retry_gen.generate_video,
+                                timeline, retry_out, None, 0.0, retry_branding,
+                                display_title, post_subreddit, post_score,
+                            )
+                        if retry_vp:
+                            generated_video_paths = [retry_vp]
+                            _set_step("video", "done", "Single-render retry succeeded")
+                            _log("Video retry succeeded as single render — recovering from initial empty output.")
+                        else:
+                            _set_step("video", "error", "Video generation produced no output (retry also failed)")
+                            _log("Video generation failed — both attempts produced no output")
+                    except Exception as _re:
+                        _set_step("video", "error", f"Render failed: {str(_re)[:80]} (retry)")
+                        _log(f"Video retry exception: {_re}")
 
             except ImportError as e:
                 _set_step("video", "done", f"Video module not available — skipped ({e})")
