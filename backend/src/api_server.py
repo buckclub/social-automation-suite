@@ -7063,6 +7063,90 @@ async def music_preview(filename: str):
     return FileResponse(p, media_type=media)
 
 
+# ── Sound effects library ─────────────────────────────────────────────
+# Mirror of the music API but stored under sfx/ with shape-based tags
+# (whoosh / ding / boom / etc) instead of mood tags. Pipeline-level
+# auto-placement of SFX at climax / scene cuts is a future feature;
+# this just stores + tags + serves the raw clips.
+
+@app.get("/api/sfx")
+async def sfx_list():
+    """Every SFX clip with metadata + size + tags."""
+    from sfx_library import list_clips
+    return {"clips": list_clips(PROJECT_ROOT), "vocab": list((__import__("sfx_library").SFX_VOCAB))}
+
+
+@app.post("/api/sfx/upload")
+async def sfx_upload(file: UploadFile = File(...), name: str = "", tags: str = ""):
+    """Upload a clip. `tags` is a comma-separated list (subset of SFX_VOCAB)."""
+    from sfx_library import sfx_dir, add_clip, ALLOWED_EXTS
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "empty upload")
+    fname = (file.filename or "clip.mp3").strip()
+    # Strip path separators — uploaded filenames must stay flat in the
+    # sfx/ dir. Fall back to a safe default if the filename is empty
+    # after sanitization.
+    fname = os.path.basename(fname).replace("\\", "_") or "clip.mp3"
+    if not fname.lower().endswith(ALLOWED_EXTS):
+        raise HTTPException(400, f"unsupported extension; allowed: {ALLOWED_EXTS}")
+    out_path = os.path.join(sfx_dir(PROJECT_ROOT), fname)
+    # Don't silently overwrite — append a timestamp suffix instead.
+    if os.path.isfile(out_path):
+        stem, ext = os.path.splitext(fname)
+        fname = f"{stem}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}{ext}"
+        out_path = os.path.join(sfx_dir(PROJECT_ROOT), fname)
+    with open(out_path, "wb") as f:
+        f.write(content)
+    tags_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
+    row = add_clip(PROJECT_ROOT, fname, name=name, tags=tags_list)
+    return {"clip": row}
+
+
+@app.put("/api/sfx/{filename}")
+async def sfx_update(filename: str, req: dict):
+    """Body: { name?, tags?: [..] }."""
+    from sfx_library import update_tags
+    row = update_tags(
+        PROJECT_ROOT, filename,
+        tags=req.get("tags") or [],
+        name=req.get("name"),
+    )
+    if row is None:
+        raise HTTPException(404, "clip not found")
+    return {"clip": row}
+
+
+@app.delete("/api/sfx/{filename}")
+async def sfx_delete(filename: str):
+    from sfx_library import delete_clip
+    ok = delete_clip(PROJECT_ROOT, filename)
+    if not ok:
+        raise HTTPException(404, "clip not found")
+    return {"deleted": True}
+
+
+@app.get("/api/sfx/preview/{filename}")
+async def sfx_preview(filename: str):
+    """Stream the audio file for in-browser preview."""
+    from sfx_library import sfx_dir
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(400, "Bad filename")
+    p = os.path.join(sfx_dir(PROJECT_ROOT), filename)
+    if not os.path.isfile(p):
+        raise HTTPException(404, "clip not found")
+    ext = os.path.splitext(filename)[1].lower()
+    media = {
+        ".mp3":  "audio/mpeg",
+        ".wav":  "audio/wav",
+        ".m4a":  "audio/mp4",
+        ".aac":  "audio/aac",
+        ".flac": "audio/flac",
+        ".ogg":  "audio/ogg",
+    }.get(ext, "application/octet-stream")
+    return FileResponse(p, media_type=media)
+
+
 @app.post("/api/tts/elevenlabs/clone-voice")
 async def elevenlabs_clone_voice(
     name: str = "",

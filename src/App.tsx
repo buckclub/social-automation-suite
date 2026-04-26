@@ -38,6 +38,7 @@ const HashtagLabPage     = lazy(() => import("./pages/HashtagLabPage"));
 const CarouselPage       = lazy(() => import("./pages/CarouselPage"));
 const QuoteCardPage      = lazy(() => import("./pages/QuoteCardPage"));
 const MusicLibraryPage   = lazy(() => import("./pages/MusicLibraryPage"));
+const SFXLibraryPage     = lazy(() => import("./pages/SFXLibraryPage"));
 const PerformancePage    = lazy(() => import("./pages/PerformancePage"));
 const BrandsPage         = lazy(() => import("./pages/BrandsPage"));
 const NicheFinderPage    = lazy(() => import("./pages/NicheFinderPage"));
@@ -84,6 +85,7 @@ function AppRoutes() {
         <Route path="/carousels" element={<CarouselPage />} />
         <Route path="/quote-cards" element={<QuoteCardPage />} />
         <Route path="/music" element={<MusicLibraryPage />} />
+        <Route path="/sfx" element={<SFXLibraryPage />} />
         <Route path="/performance" element={<PerformancePage />} />
         <Route path="/brands" element={<BrandsPage />} />
         <Route path="/niche-finder" element={<NicheFinderPage />} />

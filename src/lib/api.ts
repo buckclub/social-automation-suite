@@ -910,6 +910,38 @@ export const api = {
   clearAIDraft: () =>
     request<{ cleared: boolean }>("/api/ai/drafts", { method: "DELETE" }),
 
+  // ── Sound effects library ─────────────────────────────────────
+  // Mirrors music API but with shape-based tags (whoosh / ding /
+  // boom / etc). Pipeline-level auto-placement is a future feature;
+  // this just stores + tags + serves the raw clips for now.
+  listSfxClips: () =>
+    request<{ clips: { filename: string; name: string; tags: string[]; added_at: string; size: number }[]; vocab: string[] }>(
+      "/api/sfx",
+    ),
+  uploadSfxClip: (file: File, name: string, tags: string[]) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("name", name);
+    fd.append("tags", tags.join(","));
+    return fetch(`${API_BASE}/api/sfx/upload`, { method: "POST", body: fd })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+        return r.json() as Promise<{ clip: { filename: string; name: string; tags: string[] } }>;
+      });
+  },
+  updateSfxClip: (filename: string, body: { name?: string; tags?: string[] }) =>
+    request<{ clip: { filename: string; name: string; tags: string[] } }>(
+      `/api/sfx/${encodeURIComponent(filename)}`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  deleteSfxClip: (filename: string) =>
+    request<{ deleted: boolean }>(
+      `/api/sfx/${encodeURIComponent(filename)}`,
+      { method: "DELETE" },
+    ),
+  sfxPreviewUrl: (filename: string) =>
+    `${API_BASE}/api/sfx/preview/${encodeURIComponent(filename)}`,
+
   // Set per-video approval state. Three states: pending / approved /
   // rejected. Advisory by default — publish flow isn't gated. Used
   // for "render in batch, review in batch" workflows.

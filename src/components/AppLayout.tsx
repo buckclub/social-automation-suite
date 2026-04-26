@@ -2,7 +2,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Video, LayoutDashboard, Newspaper, Settings2, Film, Command,
   Images, Scissors, PenLine, Plus, ChevronDown,
-  FileText, Layers, Hash, Globe, Quote, Music, TrendingUp, Compass, User as UserIcon,
+  FileText, Layers, Hash, Globe, Quote, Music, Volume2, TrendingUp, Compass, User as UserIcon,
   Calendar as CalendarIcon, MessageCircle, Users as UsersIcon, FolderOpen,
   Sparkles as SparklesIcon, ListChecks, ImageIcon, Wrench, Tag,
 } from "lucide-react";
@@ -35,6 +35,7 @@ const libraryGroupItems: { to: string; label: string; icon: LucideIcon; desc: st
   { to: "/brands",      label: "Brands",      icon: Tag,     desc: "Saved channel-look snapshots" },
   { to: "/backgrounds", label: "Backgrounds", icon: Images,  desc: "Stock footage organised by folder" },
   { to: "/music",       label: "Music",       icon: Music,   desc: "Royalty-free tracks tagged by mood" },
+  { to: "/sfx",         label: "Sound effects", icon: Volume2, desc: "Stingers + punctuation clips" },
 ];
 
 // Engage group — analytics + outbound engagement.
