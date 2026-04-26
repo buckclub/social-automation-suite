@@ -205,6 +205,85 @@ async def performance_analytics(force: bool = False):
     return out
 
 
+@router.get("/tiktok/performance")
+async def tiktok_performance():
+    """
+    Aggregate TikTok upload analytics. Same shape as
+    /api/analytics/performance for YouTube so the frontend can switch
+    tabs without re-shaping data.
+
+    Real wiring requires the TikTok Business API + analytics scope
+    approval (typically 2-4 weeks of platform review). Until the
+    user supplies credentials and the OAuth flow lands, returns
+    {available: false} with a clear reason. The endpoint exists
+    today so the UI structure is in place — flipping the
+    `available` flag to true after OAuth is the only frontend
+    change needed.
+    """
+    from api_server import _load_config
+    cfg = _load_config()
+    pub = (cfg.get("publishing") or {}).get("tiktok") or {}
+    if not pub.get("access_token"):
+        return {
+            "available": False,
+            "reason": (
+                "TikTok analytics requires a Business API access token. "
+                "Apply for the 'data.research' or 'video.list' scope at "
+                "developers.tiktok.com → My Apps → analytics. After approval, "
+                "paste the token into Config → Publishing → TikTok."
+            ),
+            "videos": [], "totals": {"videos": 0, "views": 0, "likes": 0, "comments": 0, "days_tracked": 0},
+            "averages": {"views": 0, "likes": 0, "comments": 0},
+            "top": [], "by_day": [],
+        }
+    # When the user has wired OAuth, this branch will fetch from the
+    # TikTok Business API. Stubbed for now — kept here so the future
+    # wiring lands in one place.
+    return {
+        "available": False,
+        "reason": "TikTok analytics fetcher not yet implemented (token detected — wiring pending).",
+        "videos": [], "totals": {"videos": 0, "views": 0, "likes": 0, "comments": 0, "days_tracked": 0},
+        "averages": {"views": 0, "likes": 0, "comments": 0},
+        "top": [], "by_day": [],
+    }
+
+
+@router.get("/instagram/performance")
+async def instagram_performance():
+    """
+    Aggregate Instagram Reels upload analytics. Same shape as YouTube
+    + TikTok endpoints.
+
+    Requires Facebook Business Manager + an Instagram Business
+    Account + the `instagram_basic` and `instagram_manage_insights`
+    Graph API permissions (Meta App Review). Until configured,
+    returns {available: false}.
+    """
+    from api_server import _load_config
+    cfg = _load_config()
+    pub = (cfg.get("publishing") or {}).get("instagram") or {}
+    if not pub.get("access_token") or not pub.get("ig_user_id"):
+        return {
+            "available": False,
+            "reason": (
+                "Instagram analytics requires a Graph API access token + IG "
+                "Business Account ID with the instagram_manage_insights "
+                "permission. Set both in Config → Publishing → Instagram "
+                "after Meta App Review approves the scope."
+            ),
+            "videos": [], "totals": {"videos": 0, "views": 0, "likes": 0, "comments": 0, "days_tracked": 0},
+            "averages": {"views": 0, "likes": 0, "comments": 0},
+            "top": [], "by_day": [],
+        }
+    return {
+        "available": False,
+        "reason": "Instagram analytics fetcher not yet implemented (credentials detected — wiring pending).",
+        "videos": [], "totals": {"videos": 0, "views": 0, "likes": 0, "comments": 0, "days_tracked": 0},
+        "averages": {"views": 0, "likes": 0, "comments": 0},
+        "top": [], "by_day": [],
+    }
+
+
 @router.post("/recommendations")
 async def performance_recommendations():
     """

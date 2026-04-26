@@ -85,14 +85,34 @@ export default function PerformancePage() {
     }).join(" ");
   }, [data]);
 
+  // Platform tabs. YouTube renders the full analytics block we always
+  // had. TikTok / Instagram tabs hit endpoints that return
+  // {available: false, reason} until the user wires the platform's
+  // OAuth + analytics scope — then the same UI structure flips on
+  // automatically because the response shape is identical.
+  const [platform, setPlatform] = useState<"youtube" | "tiktok" | "instagram">("youtube");
+  const [tikTokData, setTikTokData] = useState<Awaited<ReturnType<typeof api.getTikTokAnalytics>> | null>(null);
+  const [igData, setIgData] = useState<Awaited<ReturnType<typeof api.getInstagramAnalytics>> | null>(null);
+  const [otherLoading, setOtherLoading] = useState(false);
+  useEffect(() => {
+    if (platform === "tiktok" && !tikTokData) {
+      setOtherLoading(true);
+      api.getTikTokAnalytics().then(setTikTokData).finally(() => setOtherLoading(false));
+    }
+    if (platform === "instagram" && !igData) {
+      setOtherLoading(true);
+      api.getInstagramAnalytics().then(setIgData).finally(() => setOtherLoading(false));
+    }
+  }, [platform, tikTokData, igData]);
+
   return (
     <div className="space-y-4 max-w-6xl mx-auto">
       <PageHeader
         icon={TrendingUp}
         title="Performance"
         subtitle={
-          <>Live YouTube stats for every video the suite has uploaded.
-          {data?.fetched_at && (
+          <>Live stats for every video the suite has uploaded.
+          {platform === "youtube" && data?.fetched_at && (
             <> Fetched <span className="font-mono">{new Date(data.fetched_at).toLocaleTimeString()}</span>.</>
           )}</>
         }
@@ -100,8 +120,9 @@ export default function PerformancePage() {
           <Button
             size="sm" variant="outline"
             onClick={() => load(true)}
-            disabled={refreshing || loading}
+            disabled={refreshing || loading || platform !== "youtube"}
             className="gap-1"
+            title={platform === "youtube" ? "Refresh" : "Refresh only available on YouTube tab for now"}
           >
             {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
             Refresh
@@ -109,7 +130,71 @@ export default function PerformancePage() {
         }
       />
 
-      {loading && !data && (
+      {/* Platform tabs */}
+      <div className="flex items-center gap-1 border-b border-border">
+        {([
+          { id: "youtube",   label: "YouTube",   color: "text-[#ff0000]" },
+          { id: "tiktok",    label: "TikTok",    color: "text-foreground" },
+          { id: "instagram", label: "Instagram", color: "text-[#E1306C]" },
+        ] as const).map((p) => (
+          <button
+            key={p.id}
+            onClick={() => setPlatform(p.id)}
+            className={cn(
+              "px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors",
+              platform === p.id
+                ? `border-primary ${p.color}`
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* TikTok / Instagram tabs render the "configure access" CTA
+          when their endpoint returns available:false. Same data
+          shape lets us swap to the full YouTube-style render once
+          OAuth is wired and the endpoint returns real numbers. */}
+      {platform !== "youtube" && (() => {
+        const d = platform === "tiktok" ? tikTokData : igData;
+        if (otherLoading) {
+          return (
+            <Card className="border-border bg-card">
+              <CardContent className="py-10 text-center text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin mx-auto" />
+              </CardContent>
+            </Card>
+          );
+        }
+        if (!d) return null;
+        if (!d.available) {
+          return (
+            <Card className="border-warning/40 bg-warning/5">
+              <CardContent className="p-4 space-y-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-warning" />
+                  <p className="font-semibold">{platform === "tiktok" ? "TikTok" : "Instagram"} analytics not yet configured</p>
+                </div>
+                <p className="text-muted-foreground leading-relaxed">{d.reason}</p>
+                <p className="text-[11px] text-muted-foreground italic">
+                  Once configured, this tab will mirror the YouTube view above — same totals, top performers, and 30-day chart.
+                </p>
+              </CardContent>
+            </Card>
+          );
+        }
+        // Future: when wired, render the same totals/charts as YouTube.
+        return (
+          <Card className="border-border bg-card">
+            <CardContent className="p-4 text-xs text-muted-foreground">
+              Connected — analytics fetcher is being built. Check back soon.
+            </CardContent>
+          </Card>
+        );
+      })()}
+
+      {platform === "youtube" && loading && !data && (
         <Card className="border-border bg-card">
           <CardContent className="py-10 text-center text-muted-foreground">
             <Loader2 className="h-6 w-6 animate-spin mx-auto" />
@@ -117,7 +202,7 @@ export default function PerformancePage() {
         </Card>
       )}
 
-      {error && !data && (
+      {platform === "youtube" && error && !data && (
         <Card className="border-destructive/40 bg-destructive/5">
           <CardContent className="p-3 text-xs text-destructive space-y-1">
             <p>{error}</p>
@@ -130,7 +215,7 @@ export default function PerformancePage() {
         </Card>
       )}
 
-      {data && data.totals.videos === 0 && (
+      {platform === "youtube" && data && data.totals.videos === 0 && (
         <Card className="border-dashed border-border">
           <CardContent className="py-10 text-center text-xs text-muted-foreground space-y-1">
             <Trophy className="h-6 w-6 mx-auto mb-1 opacity-40" />
@@ -142,7 +227,7 @@ export default function PerformancePage() {
         </Card>
       )}
 
-      {data && data.totals.videos > 0 && (
+      {platform === "youtube" && data && data.totals.videos > 0 && (
         <>
           {/* Totals row */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

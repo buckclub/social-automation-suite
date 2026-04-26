@@ -1284,6 +1284,33 @@ export const api = {
       by_day: Array<{ date: string; count: number; views: number; likes: number }>;
     }>(`/api/analytics/performance${force ? "?force=true" : ""}`),
 
+  // TikTok / Instagram analytics. Same shape as YouTube but with an
+  // `available` flag — returns false + a reason string until the
+  // user wires the platform's OAuth + analytics scope (TikTok
+  // Business API + IG Graph API insights). UI uses the reason text
+  // to render a "Configure access" CTA instead of an empty chart.
+  getTikTokAnalytics: () =>
+    request<{
+      available: boolean;
+      reason?: string;
+      videos: any[];
+      totals: { videos: number; views: number; likes: number; comments: number; days_tracked: number };
+      averages: { views: number; likes: number; comments: number };
+      top: any[];
+      by_day: any[];
+    }>("/api/analytics/tiktok/performance"),
+
+  getInstagramAnalytics: () =>
+    request<{
+      available: boolean;
+      reason?: string;
+      videos: any[];
+      totals: { videos: number; views: number; likes: number; comments: number; days_tracked: number };
+      averages: { views: number; likes: number; comments: number };
+      top: any[];
+      by_day: any[];
+    }>("/api/analytics/instagram/performance"),
+
   // ── Background Music Library ─────────────────────────────────
   listMusicTracks: () =>
     request<{ tracks: { filename: string; name: string; moods: string[]; added_at: string; size_bytes: number }[] }>(
