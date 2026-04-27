@@ -196,7 +196,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
                             <item.icon className="h-4 w-4 mt-0.5 shrink-0" />
                             <div className="min-w-0">
                               <div className="text-xs font-medium leading-tight">{item.label}</div>
-                              <div className="text-[10px] text-muted-foreground leading-tight">
+                              <div className="text-[10px] opacity-70 leading-tight">
                                 {item.desc}
                               </div>
                             </div>
@@ -392,7 +392,13 @@ function NavGroupDropdown({
               <item.icon className="h-4 w-4 mt-0.5 shrink-0" />
               <div className="min-w-0">
                 <div className="text-xs font-medium leading-tight">{item.label}</div>
-                <div className="text-[10px] text-muted-foreground leading-tight">{item.desc}</div>
+                {/* opacity-70 instead of text-muted-foreground so the desc
+                    inherits the parent's current text color — stays
+                    readable when the row flips to bg-accent/text-accent-
+                    foreground on hover or to text-primary when active.
+                    Hardcoded muted color stayed gray on saturated bgs
+                    and was barely legible. */}
+                <div className="text-[10px] opacity-70 leading-tight">{item.desc}</div>
               </div>
             </NavLink>
           </DropdownMenuItem>
