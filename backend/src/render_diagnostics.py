@@ -53,6 +53,18 @@ _RULES: list[tuple[str, str, str, bool, re.Pattern[str]]] = [
      False,
      re.compile(r"\bcancel(led|ed)\b|asyncio\.cancellederror", re.I)),
 
+    # Silent video-render failure: ffmpeg produced no output and
+    # the inline retry also returned None. Recoverable because
+    # the audio + timeline are still cached on disk and a Resume
+    # against them frequently succeeds (different ffmpeg process,
+    # avoids whatever transient state caused the first attempt).
+    # The pipeline auto-resume path uses this classification.
+    ("video_silent_failure", "Video render produced no output",
+     "Both render attempts returned no video file. Cached audio + "
+     "timeline are intact, auto-retrying as a Resume.",
+     True,
+     re.compile(r"video.*render.*produced no output|render.*returned.*no video", re.I)),
+
     ("ffmpeg_oom", "Out of memory",
      "ffmpeg ran out of RAM. Try shorter clips, lower resolution "
      "(720p instead of 1080p), or close other apps before rendering.",

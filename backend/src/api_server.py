@@ -782,6 +782,56 @@ async def _queue_worker():
                     err_out = pipeline_state.get("error")
                 except Exception as e:
                     err_out = str(e)
+            elif kind == "resume":
+                # Resume render against cached audio + timeline. Used
+                # by the auto-resume path when a fresh-render attempt
+                # finished with no video output. Re-runs the video
+                # step ONLY (no TTS, no token spend) — much faster
+                # and avoids whatever caused the first render to
+                # silently fail.
+                try:
+                    post_dir = os.path.join(PROJECT_ROOT, "posts", pid)
+                    summary_path = os.path.join(post_dir, "summary.json")
+                    timeline_path = os.path.join(post_dir, "timeline.json")
+                    # Fall back to preserved-project paths if posts/ was cleaned.
+                    if not os.path.isfile(timeline_path):
+                        try:
+                            from projects_db import find as _reg_find
+                            proj = _reg_find(PROJECT_ROOT, pid)
+                        except Exception:
+                            proj = None
+                        if proj and proj.get("timeline_path") and os.path.isfile(proj["timeline_path"]):
+                            timeline_path = proj["timeline_path"]
+                    if not os.path.isfile(timeline_path):
+                        err_out = "Auto-resume: no timeline.json found for post."
+                    else:
+                        with open(timeline_path, "r", encoding="utf-8") as _f:
+                            tl = json.load(_f)
+                        title_for_resume = pid
+                        if os.path.isfile(summary_path):
+                            try:
+                                with open(summary_path, "r", encoding="utf-8") as _sf:
+                                    title_for_resume = json.load(_sf).get("title", pid)
+                            except Exception:
+                                pass
+                        # Reset state minimally so the resume render
+                        # has clean step indicators.
+                        for step in pipeline_state["steps"]:
+                            step["status"] = "idle"
+                            step["detail"] = ""
+                            step.pop("sub_steps", None)
+                        _set_step("ai_generate", "done", "Auto-resume — skipped")
+                        _set_step("fetch", "done", f"Auto-resume: {title_for_resume[:60]}")
+                        _set_step("format", "done", "Using existing formatted text")
+                        _set_step("tts", "done", f"Using {len(tl)} cached audio segments")
+                        pipeline_state["is_running"] = True
+                        pipeline_state["error"] = None
+                        pipeline_state["started_at"] = datetime.now(timezone.utc).isoformat()
+                        pipeline_state["completed_at"] = None
+                        await _resume_video_async(pid, title_for_resume, tl)
+                        err_out = pipeline_state.get("error")
+                except Exception as e:
+                    err_out = f"Auto-resume failed: {e}"
             else:
                 # Legacy Reddit post pipeline. Also handles batch-run-ai
                 # items, since those write a synthetic post to disk and
@@ -5181,6 +5231,69 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
 
         _check_cancelled()
 
+        # ── Silent-failure detection ──────────────────────────────────
+        # If the video step finished with NO exception but ALSO
+        # produced no video file (ffmpeg returned None twice — once
+        # in the primary path, once in the inline retry), the
+        # pipeline used to fall through silently and end with a
+        # videos_db row at status="audio_only". The user then had to
+        # manually click Resume which almost always succeeded against
+        # the same cached audio + timeline.
+        #
+        # Convert that silent-success-with-no-video into a real raised
+        # error so the existing auto-resume-on-transient-failure path
+        # picks it up. We:
+        #   1. Preserve the timeline + audio dir to videos/proj_<id>/
+        #      so Resume has somewhere to find them.
+        #   2. Raise an exception whose message matches the new
+        #      "video_silent_failure" rule in render_diagnostics
+        #      (recoverable=True), which makes the failure handler
+        #      auto-enqueue a Resume.
+        if timeline and not generated_video_paths and not auto_retry_seen:
+            _log("Video step finished with no output — preserving audio + timeline for auto-resume.")
+            # `preserved_timeline` is the local name the outer failure
+            # handler reads via locals().get() to decide whether to
+            # auto-enqueue a Resume. Setting it BEFORE we raise lets
+            # that path see we have something to resume against.
+            preserved_audio_dir: Optional[str] = None
+            preserved_timeline: Optional[str] = None
+            try:
+                preserve_root = os.path.join(PROJECT_ROOT, "videos", f"proj_{post_id}")
+                os.makedirs(preserve_root, exist_ok=True)
+                src_audio = os.path.join(PROJECT_ROOT, "posts", post_id, "audio")
+                if os.path.isdir(src_audio):
+                    dest_audio = os.path.join(preserve_root, "audio")
+                    if os.path.isdir(dest_audio):
+                        shutil.rmtree(dest_audio)
+                    shutil.copytree(src_audio, dest_audio)
+                    preserved_audio_dir = dest_audio
+                # Write the in-memory timeline (post-trim durations)
+                # rather than copying from disk, since auto-trim may
+                # have updated durations beyond what posts/<id>/
+                # timeline.json captured.
+                dest_tl = os.path.join(preserve_root, "timeline.json")
+                # Rewrite audio paths inside the in-memory timeline
+                # to point at the preserved audio so Resume resolves
+                # them after a posts/ cleanup.
+                if preserved_audio_dir:
+                    for _seg in timeline:
+                        ap = _seg.get("audio_path") or ""
+                        if ap:
+                            _seg["audio_path"] = os.path.join(
+                                preserved_audio_dir, os.path.basename(ap),
+                            )
+                with open(dest_tl, "w", encoding="utf-8") as _tlf:
+                    json.dump(timeline, _tlf, indent=2, ensure_ascii=False)
+                preserved_timeline = dest_tl
+            except Exception as _e:
+                _log(f"Could not preserve audio/timeline for auto-resume: {_e}")
+            # Raise — outer handler will classify() this message as
+            # recoverable (matches the video_silent_failure rule),
+            # see preserved_timeline above, and auto-enqueue a Resume.
+            raise RuntimeError(
+                "Video render produced no output (both render attempts returned None)."
+            )
+
         # ── Step 5: Thumbnails ───────────────────────────────────────
         # Skippable via config.pipeline.disabled_steps. Users with no
         # YouTube upload flow often don't need thumbnails — saving the
@@ -5408,18 +5521,25 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                 and not already_retried
             ):
                 from run_queue import enqueue
+                # Use kind="resume" so the queue worker runs the
+                # video step ONLY against cached audio + timeline.
+                # Was kind="post" — that re-ran the whole pipeline
+                # including TTS, which (a) wasted tokens and (b)
+                # frequently failed the same way the first attempt
+                # did. The resume path mirrors what the user does
+                # manually when this happens.
                 enqueue(
                     PROJECT_ROOT, post_id=pid,
                     title=current.get("title", "") or pid,
                     subreddit=current.get("subreddit", "") or "",
                     params={
-                        "kind": "post",
+                        "kind": "resume",
                         "auto_retry": True,  # marker so we never re-retry the retry
                     },
                 )
                 _log(
-                    f"Auto-resume scheduled for {pid} after transient failure "
-                    f"({diag.get('category','generic')}). Will retry once."
+                    f"Auto-resume scheduled for {pid} after {diag.get('category','generic')} "
+                    f"failure. Re-running video step against cached audio."
                 )
         except Exception as _e:
             _log(f"Auto-resume scheduling failed (non-fatal): {_e}")
