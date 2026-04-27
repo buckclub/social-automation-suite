@@ -5,7 +5,7 @@
  * LinkedIn: https://www.linkedin.com/in/faheem-alvi
  * License: CC BY-NC 4.0
  */
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
@@ -15,6 +15,40 @@ import { HashRouter, Routes, Route, useLocation } from "react-router-dom";
 import { AppLayout } from "@/components/AppLayout";
 import { FirstRunGate } from "@/components/FirstRunGate";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
+
+
+/**
+ * Vite emits a `vite:preloadError` event on `window` when a lazy
+ * chunk's `<link rel="modulepreload">` 404s — typically because a
+ * deploy invalidated the chunk filenames the current tab knows
+ * about. We listen at the app root so a stale tab triggers a
+ * one-time auto-reload before the user even tries to navigate.
+ *
+ * This catches the proactive case (chunk failed to PRELOAD).
+ * RouteErrorBoundary still handles the reactive case (user
+ * navigated, chunk fetch failed at import time) so both paths
+ * get a friendly recovery instead of a silent blank page.
+ *
+ * The reload is one-shot per session via sessionStorage so an
+ * actual broken deploy doesn't put the user in a refresh loop.
+ */
+function ChunkRecoverEffect() {
+  useEffect(() => {
+    const handler = (e: Event) => {
+      // Avoid loops: only reload once per session.
+      if (sessionStorage.getItem("__chunk_reload__")) return;
+      sessionStorage.setItem("__chunk_reload__", "1");
+      console.warn(
+        "[ChunkRecover] vite:preloadError — reloading once to pick up new chunk hashes",
+        e,
+      );
+      window.location.reload();
+    };
+    window.addEventListener("vite:preloadError", handler);
+    return () => window.removeEventListener("vite:preloadError", handler);
+  }, []);
+  return null;
+}
 
 // ── Eagerly loaded ────────────────────────────────────────────────
 // The Dashboard is the first paint for everyone — keep it in the
@@ -114,6 +148,7 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
+      <ChunkRecoverEffect />
       <HashRouter>
         <FirstRunGate>
           <AppRoutes />
