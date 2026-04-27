@@ -5,6 +5,10 @@
 # Web server (FastAPI backend + dashboard)
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
+# Required by FastAPI's UploadFile / Form() — used by /api/branding/profile-pic.
+# FastAPI raises a runtime error at app-construction time if it's missing,
+# so a fresh install can't start the server without it.
+python-multipart>=0.0.9
 
 # HTTP client (Reddit fetching, AI providers, TTS, publishers)
 requests>=2.31.0
