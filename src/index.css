@@ -4,101 +4,131 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
+/*
+ * Theme variables — tuned for readable contrast on both modes.
+ *
+ * Audit done 2026-04-26 found:
+ *   Dark mode  — card 9% L vs bg 6% L = 3% diff (cards invisible),
+ *                border 16% L on bg 6% L ≈ 1.26:1 contrast (outlines
+ *                ghost-faint). Bumped card/popover to 11%, border/
+ *                input to 24% L (≈ 1.55:1, still subtle but visible),
+ *                muted-foreground 50→58% L for body-text legibility.
+ *   Light mode — card 99% L vs bg 100% L = 1% diff (cards literally
+ *                invisible). Inverted: bg dropped to 98%, card kept
+ *                pure white so cards now read as "raised." Border
+ *                88→80% L for visible outlines. muted-foreground
+ *                40→34% L for cleaner secondary text.
+ *
+ * Ranges chosen so every element layer has a clear lightness
+ * relationship with its neighbors:
+ *   Dark:  bg 6 → secondary 16 → card/popover 11 → border 24
+ *   Light: bg 98 → card 100 → secondary 92 → border 80
+ */
 @layer base {
   :root {
     --background: 240 10% 6%;
-    --foreground: 220 20% 92%;
+    --foreground: 220 20% 94%;
 
-    --card: 240 8% 9%;
-    --card-foreground: 220 20% 92%;
+    /* Cards now sit ~5% L brighter than the page so the edges are
+       visible without a heavy border. */
+    --card: 240 8% 11%;
+    --card-foreground: 220 20% 94%;
 
-    --popover: 240 8% 9%;
-    --popover-foreground: 220 20% 92%;
+    --popover: 240 8% 11%;
+    --popover-foreground: 220 20% 94%;
 
-    --primary: 16 85% 55%;
+    --primary: 16 85% 58%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 240 6% 14%;
-    --secondary-foreground: 220 15% 75%;
+    --secondary: 240 6% 16%;
+    --secondary-foreground: 220 15% 80%;
 
-    --muted: 240 6% 14%;
-    --muted-foreground: 220 10% 50%;
+    --muted: 240 6% 16%;
+    --muted-foreground: 220 12% 60%;
 
-    --accent: 270 60% 55%;
+    --accent: 270 65% 62%;
     --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 72% 51%;
+    --destructive: 0 75% 56%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 240 6% 16%;
-    --input: 240 6% 16%;
-    --ring: 16 85% 55%;
+    /* Border + input lifted to 24% L — visible against both the 6%
+       page and 11% cards without screaming. The previous 16% L was
+       only ~10% off the bg and disappeared on bigger displays. */
+    --border: 240 6% 24%;
+    --input: 240 6% 24%;
+    --ring: 16 85% 58%;
 
     --radius: 0.75rem;
 
     --sidebar-background: 240 10% 5%;
-    --sidebar-foreground: 220 15% 75%;
-    --sidebar-primary: 16 85% 55%;
+    --sidebar-foreground: 220 15% 80%;
+    --sidebar-primary: 16 85% 58%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 6% 12%;
-    --sidebar-accent-foreground: 220 20% 92%;
-    --sidebar-border: 240 6% 14%;
-    --sidebar-ring: 16 85% 55%;
+    --sidebar-accent: 240 6% 14%;
+    --sidebar-accent-foreground: 220 20% 94%;
+    --sidebar-border: 240 6% 22%;
+    --sidebar-ring: 16 85% 58%;
 
-    --success: 142 70% 45%;
+    --success: 142 65% 50%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
+    --warning: 38 95% 56%;
     --warning-foreground: 0 0% 0%;
-    --glow-primary: 16 85% 55%;
-    --glow-accent: 270 60% 55%;
+    --glow-primary: 16 85% 58%;
+    --glow-accent: 270 65% 62%;
   }
 
   /* Light theme override — applied via the `light` class on <html>.
      Default (no class) stays dark for backward compat. */
   .light {
-    --background: 0 0% 100%;
+    /* Page is now slightly off-white (98% L) so 100%-white cards
+       have a visible edge against the page without needing borders.
+       Standard "raised card on a desk" mental model. */
+    --background: 0 0% 98%;
     --foreground: 240 10% 8%;
 
-    --card: 0 0% 99%;
+    --card: 0 0% 100%;
     --card-foreground: 240 10% 8%;
 
     --popover: 0 0% 100%;
     --popover-foreground: 240 10% 8%;
 
-    --primary: 16 85% 50%;
+    --primary: 16 88% 46%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 240 6% 94%;
+    --secondary: 240 6% 92%;
     --secondary-foreground: 240 10% 20%;
 
-    --muted: 240 6% 94%;
-    --muted-foreground: 240 6% 40%;
+    --muted: 240 6% 92%;
+    --muted-foreground: 240 8% 34%;
 
-    --accent: 270 60% 50%;
+    --accent: 270 65% 48%;
     --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 72% 45%;
+    --destructive: 0 75% 42%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 240 6% 88%;
-    --input: 240 6% 88%;
-    --ring: 16 85% 50%;
+    /* Border 80% L on a 98% page = ~1.6:1 — visible without being
+       heavy. Was 88% L which read as nearly invisible. */
+    --border: 240 6% 80%;
+    --input: 240 6% 80%;
+    --ring: 16 88% 46%;
 
-    --sidebar-background: 0 0% 98%;
+    --sidebar-background: 0 0% 96%;
     --sidebar-foreground: 240 10% 20%;
-    --sidebar-primary: 16 85% 50%;
+    --sidebar-primary: 16 88% 46%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 6% 92%;
+    --sidebar-accent: 240 6% 90%;
     --sidebar-accent-foreground: 240 10% 8%;
-    --sidebar-border: 240 6% 88%;
-    --sidebar-ring: 16 85% 50%;
+    --sidebar-border: 240 6% 80%;
+    --sidebar-ring: 16 88% 46%;
 
-    --success: 142 70% 38%;
+    --success: 142 70% 32%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 45%;
+    --warning: 38 92% 42%;
     --warning-foreground: 0 0% 0%;
-    --glow-primary: 16 85% 50%;
-    --glow-accent: 270 60% 50%;
+    --glow-primary: 16 88% 46%;
+    --glow-accent: 270 65% 48%;
   }
 }
 
