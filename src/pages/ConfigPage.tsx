@@ -407,6 +407,15 @@ export default function ConfigPage() {
   const [tnCardMaxWidthPct, setTnCardMaxWidthPct] = useState(0.84);
   const [tnTitleFontSize, setTnTitleFontSize] = useState(52);
   const [tnUsernameFontSize, setTnUsernameFontSize] = useState(36);
+  // Border + animation knobs. Width 0 = no border. Default animations
+  // are 'fade' on both sides — matches the captions experience and is
+  // an unambiguous "this looks more polished than a hard cut" upgrade.
+  const [tnBorderColor, setTnBorderColor] = useState("#FF4500");
+  const [tnBorderWidth, setTnBorderWidth] = useState(0);
+  const [tnEntryAnimation, setTnEntryAnimation] = useState("fade");
+  const [tnEntryDuration, setTnEntryDuration] = useState(0.45);
+  const [tnExitAnimation, setTnExitAnimation] = useState("fade");
+  const [tnExitDuration, setTnExitDuration] = useState(0.35);
 
   // Default background selector (video.background_selector)
   const [videoBgSelector, setVideoBgSelector] = useState<string>("");
@@ -616,6 +625,12 @@ export default function ConfigPage() {
     setTnCardMaxWidthPct(tn.card_max_width_pct ?? 0.84);
     setTnTitleFontSize(tn.title_font_size ?? 52);
     setTnUsernameFontSize(tn.username_font_size ?? 36);
+    setTnBorderColor(tn.border_color ?? "#FF4500");
+    setTnBorderWidth(tn.border_width ?? 0);
+    setTnEntryAnimation(tn.entry_animation ?? "fade");
+    setTnEntryDuration(tn.entry_duration ?? 0.45);
+    setTnExitAnimation(tn.exit_animation ?? "fade");
+    setTnExitDuration(tn.exit_duration ?? 0.35);
 
     setVideoBgSelector(((c as any).video ?? {}).background_selector ?? "");
 
@@ -649,6 +664,8 @@ export default function ConfigPage() {
     tnUsername, tnHideStats, tnProfilePicPath,
     tnCardBgColor, tnTextColor, tnUsernameColor, tnAccentColor,
     tnCornerRadius, tnCardMaxWidthPct, tnTitleFontSize, tnUsernameFontSize,
+    tnBorderColor, tnBorderWidth,
+    tnEntryAnimation, tnEntryDuration, tnExitAnimation, tnExitDuration,
     videoBgSelector,
     capEnabled, capFontPath, capFontSize, capColor, capStrokeColor, capStrokeWidth,
     capBgEnabled, capBgColor, capBgOpacity, capPadding, capCornerRadius,
@@ -864,6 +881,12 @@ export default function ConfigPage() {
           card_max_width_pct: tnCardMaxWidthPct,
           title_font_size: tnTitleFontSize,
           username_font_size: tnUsernameFontSize,
+          border_color: tnBorderColor,
+          border_width: tnBorderWidth,
+          entry_animation: tnEntryAnimation,
+          entry_duration: tnEntryDuration,
+          exit_animation: tnExitAnimation,
+          exit_duration: tnExitDuration,
         },
       },
       {
@@ -1919,6 +1942,12 @@ export default function ConfigPage() {
             cardMaxWidthPct={tnCardMaxWidthPct}         onCardMaxWidthPctChange={setTnCardMaxWidthPct}
             titleFontSize={tnTitleFontSize}             onTitleFontSizeChange={setTnTitleFontSize}
             usernameFontSize={tnUsernameFontSize}       onUsernameFontSizeChange={setTnUsernameFontSize}
+            borderColor={tnBorderColor}                 onBorderColorChange={setTnBorderColor}
+            borderWidth={tnBorderWidth}                 onBorderWidthChange={setTnBorderWidth}
+            entryAnimation={tnEntryAnimation}           onEntryAnimationChange={setTnEntryAnimation}
+            entryDuration={tnEntryDuration}             onEntryDurationChange={setTnEntryDuration}
+            exitAnimation={tnExitAnimation}             onExitAnimationChange={setTnExitAnimation}
+            exitDuration={tnExitDuration}               onExitDurationChange={setTnExitDuration}
           />
         </Section>
         </div>

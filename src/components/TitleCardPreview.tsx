@@ -14,6 +14,15 @@ export interface TitleCardPreviewProps {
   titleFontSize: number;      // px in the real render; scaled here
   usernameFontSize: number;   // px in the real render; scaled here
   hideStats: boolean;
+  // Border. width=0 disables; color falls back to accent on the backend.
+  borderColor?: string;
+  borderWidth?: number;       // px in the real render
+  // Animations — looped on the preview canvas so the user can see what
+  // they configured without having to render a video.
+  entryAnimation?: string;
+  entryDuration?: number;
+  exitAnimation?: string;
+  exitDuration?: number;
   // Optional example title and subreddit so the preview can reflect real
   // content. Defaults to a sample AITA title.
   sampleTitle?: string;
@@ -59,6 +68,73 @@ export function TitleCardPreview(props: TitleCardPreviewProps) {
   const cardWidthPct = Math.max(0.3, Math.min(1.0, props.cardMaxWidthPct));
   const cardWidth    = W * cardWidthPct;
 
+  // ── Animation loop ────────────────────────────────────────────────
+  // The preview replays the configured entry/exit animations on a fixed
+  // 3-second cycle: enter → hold → exit → blank → repeat. We compute
+  // `phase` (0 = entry, 1 = hold, 2 = exit, 3 = gap) plus a normalized
+  // progress 0..1 within the active phase, and translate that into
+  // (translateX, translateY, opacity) for the card div. Linear time
+  // ticks via setInterval at 30 Hz — cheap, smooth enough for a tiny
+  // preview, and deterministic when the user pauses on a frame.
+  const entryAnim = props.entryAnimation ?? "fade";
+  const exitAnim  = props.exitAnimation  ?? "fade";
+  const entryD    = props.entryDuration ?? 0.45;
+  const exitD     = props.exitDuration  ?? 0.35;
+  const HOLD_S    = 1.4;
+  const GAP_S     = 0.6;
+  const cycle     = Math.max(0.05, entryD) + HOLD_S + Math.max(0.05, exitD) + GAP_S;
+  const [tCycle, setTCycle] = useState(0);
+  useEffect(() => {
+    const start = performance.now();
+    let raf = 0;
+    const tick = () => {
+      const elapsed = ((performance.now() - start) / 1000) % cycle;
+      setTCycle(elapsed);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [cycle]);
+
+  // Map cycle time → (offsetX, offsetY, opacity) using the same math as
+  // the backend animator. Offsets are in CSS px relative to the preview
+  // frame (W × H) so they match the on-screen card scale.
+  function transformAt(t: number): { tx: number; ty: number; op: number } {
+    const dIn  = Math.max(0.001, entryD);
+    const dOut = Math.max(0.001, exitD);
+    let phase: "in" | "hold" | "out" | "gap";
+    let p: number;
+    if (t < dIn) { phase = "in"; p = t / dIn; }
+    else if (t < dIn + HOLD_S) { phase = "hold"; p = 0; }
+    else if (t < dIn + HOLD_S + dOut) { phase = "out"; p = (t - dIn - HOLD_S) / dOut; }
+    else { phase = "gap"; p = 0; }
+
+    let tx = 0, ty = 0, op = 1;
+    if (phase === "in" && entryAnim !== "none") {
+      const eased = 1 - Math.pow(1 - p, 3);
+      const off = 1 - eased;
+      if (entryAnim === "slide_up"   || entryAnim === "fade_slide_up")   ty =  H * off;
+      if (entryAnim === "slide_down" || entryAnim === "fade_slide_down") ty = -H * off;
+      if (entryAnim === "slide_left")  tx =  W * off;
+      if (entryAnim === "slide_right") tx = -W * off;
+      if (entryAnim === "fade" || entryAnim === "fade_slide_up" || entryAnim === "fade_slide_down") op = eased;
+    } else if (phase === "out" && exitAnim !== "none") {
+      const eased = Math.pow(p, 3);
+      if (exitAnim === "slide_up"   || exitAnim === "fade_slide_up")   ty = -H * eased;
+      if (exitAnim === "slide_down" || exitAnim === "fade_slide_down") ty =  H * eased;
+      if (exitAnim === "slide_left")  tx = -W * eased;
+      if (exitAnim === "slide_right") tx =  W * eased;
+      if (exitAnim === "fade" || exitAnim === "fade_slide_up" || exitAnim === "fade_slide_down") op = 1 - eased;
+    } else if (phase === "gap") {
+      op = 0;
+    }
+    return { tx, ty, op };
+  }
+  const { tx, ty, op } = transformAt(tCycle);
+
+  const borderW = (props.borderWidth ?? 0) * scale;
+  const borderC = props.borderColor || props.accentColor;
+
   const handleText = (() => {
     const u = (props.username || "").trim();
     if (!u) return `r/${props.sampleSubreddit || SAMPLE_SUBREDDIT}`;
@@ -82,17 +158,24 @@ export function TitleCardPreview(props: TitleCardPreviewProps) {
           backgroundImage: "linear-gradient(135deg, #1c1c28, #2a2338)",
         }}
       >
-        {/* Card — vertically centered */}
+        {/* Card — vertically centered + animated. The wrapping div applies
+            the slide/fade so the inner card keeps stable internal layout
+            (avatar/title/etc. don't flicker as transforms change). */}
         <div
-          className="absolute left-1/2 -translate-x-1/2"
+          className="absolute left-1/2"
           style={{
             top: "50%",
-            transform: "translate(-50%, -50%)",
+            transform: `translate(calc(-50% + ${tx}px), calc(-50% + ${ty}px))`,
+            opacity: op,
             width:  cardWidth,
             background: props.cardBgColor,
             borderRadius: props.cornerRadius * scale,
             padding: innerPad,
             boxShadow: "0 4px 24px rgba(0,0,0,0.4)",
+            border: borderW > 0 ? `${borderW}px solid ${borderC}` : undefined,
+            // Don't animate the transform with CSS — we drive it on rAF,
+            // which is already 60fps. CSS transitions on top would lag.
+            transition: "none",
           }}
         >
           {/* Header: avatar + handle */}

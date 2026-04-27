@@ -497,6 +497,14 @@ class VideoGenerator:
         pic_path = (cfg.get('profile_pic_path') or '').strip()
         if pic_path and not os.path.isabs(pic_path):
             pic_path = os.path.join(PROJECT_ROOT, pic_path)
+        # Entry/exit animations are applied to the title-card ImageClip in
+        # compose_video. Allowed values:
+        #   none, fade, slide_up, slide_down, slide_left, slide_right,
+        #   fade_slide_up, fade_slide_down, zoom_in (entry only),
+        #   zoom_out (exit only)
+        # Anything unrecognized falls back to 'none'.
+        entry = (cfg.get('entry_animation') or 'fade').strip().lower()
+        exit_ = (cfg.get('exit_animation')  or 'fade').strip().lower()
         return {
             'profile_pic_path':   pic_path,
             'username':           (cfg.get('username') or '').strip(),
@@ -509,6 +517,17 @@ class VideoGenerator:
             'card_max_width_pct': max(0.3, min(1.0, _num(cfg.get('card_max_width_pct'), 0.84))),
             'title_font_size':    int(_num(cfg.get('title_font_size'),  52)),
             'username_font_size': int(_num(cfg.get('username_font_size'), 36)),
+            # Border — width 0 disables. Color falls back to accent so a
+            # subtle outline matches the rest of the card by default.
+            'border_color':       _hex(cfg.get('border_color'),      '#FF4500'),
+            'border_width':       max(0, int(_num(cfg.get('border_width'), 0))),
+            # Animation — same shape as captions.animation. Durations are
+            # clamped at render time to <= 40% of the title segment so a
+            # short title still gets a (proportionally faster) animation.
+            'entry_animation':    entry,
+            'entry_duration':     max(0.0, _num(cfg.get('entry_duration'), 0.45)),
+            'exit_animation':     exit_,
+            'exit_duration':      max(0.0, _num(cfg.get('exit_duration'),  0.35)),
         }
 
     def _caption_params(self, cfg: dict) -> dict:
@@ -925,6 +944,76 @@ class VideoGenerator:
                 out.append({"text": c_text, "duration": dur,
                             "words": c_words, "active_index": j})
         return out
+
+    def _animate_title_card(self, clip, dur: float):
+        """
+        Apply entry + exit animations to a full-frame title-card ImageClip.
+
+        The clip is the same width/height as the output frame and lives at
+        position (0, 0) — that means slide animations move the entire
+        canvas (which is mostly transparent), and the visible card translates
+        with it. Cubic ease-out on entry, cubic ease-in on exit so motion
+        feels weighted instead of linear.
+
+        Both phases are capped at 40% of the segment duration so a 1-second
+        title doesn't end up animating the whole time — the user still
+        gets to read it.
+        """
+        tn = getattr(self, 'thumbnail', None) or {}
+        entry = (tn.get('entry_animation') or 'none').strip().lower()
+        exit_ = (tn.get('exit_animation')  or 'none').strip().lower()
+        if (entry == 'none' and exit_ == 'none') or dur <= 0:
+            return clip
+
+        cap = max(0.05, dur * 0.4)
+        d_in  = min(float(tn.get('entry_duration', 0.45) or 0.0), cap) if entry != 'none' else 0.0
+        d_out = min(float(tn.get('exit_duration',  0.35) or 0.0), cap) if exit_ != 'none' else 0.0
+        if d_in <= 0 and d_out <= 0:
+            return clip
+
+        # Fade is implemented via crossfade — composes cleanly with slide
+        # since position and opacity are independent in MoviePy.
+        if entry in ('fade', 'fade_slide_up', 'fade_slide_down') and d_in > 0:
+            clip = clip.crossfadein(d_in)
+        if exit_ in ('fade', 'fade_slide_up', 'fade_slide_down') and d_out > 0:
+            clip = clip.crossfadeout(d_out)
+
+        # Translation. The slide direction is read from whichever of the
+        # entry/exit animations requested motion; the lambda has to handle
+        # both phases so we capture both into closure.
+        W, H = self.width, self.height
+        def _entry_offset(p):
+            # p in [0,1], 0=fully off-screen, 1=settled
+            eased = 1.0 - (1.0 - p) ** 3   # ease-out cubic
+            off = 1.0 - eased              # 1 at start, 0 at end
+            if entry == 'slide_up'   or entry == 'fade_slide_up':   return (0,  H * off)
+            if entry == 'slide_down' or entry == 'fade_slide_down': return (0, -H * off)
+            if entry == 'slide_left':  return ( W * off, 0)
+            if entry == 'slide_right': return (-W * off, 0)
+            return (0, 0)
+
+        def _exit_offset(p):
+            # p in [0,1], 0=settled, 1=fully off-screen
+            eased = p ** 3                  # ease-in cubic
+            if exit_ == 'slide_up'   or exit_ == 'fade_slide_up':   return (0, -H * eased)
+            if exit_ == 'slide_down' or exit_ == 'fade_slide_down': return (0,  H * eased)
+            if exit_ == 'slide_left':  return (-W * eased, 0)
+            if exit_ == 'slide_right': return ( W * eased, 0)
+            return (0, 0)
+
+        has_motion = any(a in ('slide_up','slide_down','slide_left','slide_right',
+                               'fade_slide_up','fade_slide_down')
+                         for a in (entry, exit_))
+        if has_motion:
+            def pos(t, _D=dur, _din=d_in, _dout=d_out):
+                if _din > 0 and t < _din:
+                    return _entry_offset(t / _din)
+                if _dout > 0 and t > _D - _dout:
+                    return _exit_offset((t - (_D - _dout)) / _dout)
+                return (0, 0)
+            clip = clip.set_position(pos)
+
+        return clip
 
     def _animate_clip(self, clip, chunk_dur: float):
         """
@@ -1595,9 +1684,11 @@ class VideoGenerator:
             # Title-role segments: show the title card full-frame, no captions.
             if segment.get('segment_role') == 'title' and self._title_card_path:
                 tc = (ImageClip(self._title_card_path)
-                      .set_start(current_time)
                       .set_duration(segment_duration)
                       .set_position((0, 0)))
+                # Apply entry/exit animation BEFORE set_start so the
+                # position lambda's t is segment-local (0..segment_duration).
+                tc = self._animate_title_card(tc, segment_duration).set_start(current_time)
                 title_card_clips.append(tc)
                 current_time += segment_duration
                 continue
@@ -2053,7 +2144,17 @@ class VideoGenerator:
             corner_rad  = int(tn.get('corner_radius', 30))
 
             card_rect = [(card_x, card_y), (card_x + card_w, card_y + card_h)]
-            draw.rounded_rectangle(card_rect, radius=corner_rad, fill=card_fill)
+            # Optional border: draw inside the same rounded rect via the
+            # outline= argument so the corner radius matches exactly.
+            border_w   = int(tn.get('border_width', 0) or 0)
+            if border_w > 0:
+                border_rgba = _hex_to_rgba(tn.get('border_color', '#FF4500'), 255)
+                draw.rounded_rectangle(
+                    card_rect, radius=corner_rad,
+                    fill=card_fill, outline=border_rgba, width=border_w,
+                )
+            else:
+                draw.rounded_rectangle(card_rect, radius=corner_rad, fill=card_fill)
 
             # 5. Profile icon (circular) + display handle.
             #    If a user profile pic is configured, paste it as the icon —

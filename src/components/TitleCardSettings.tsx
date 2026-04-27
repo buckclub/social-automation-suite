@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ColorInput } from "@/components/ColorInput";
 import { TitleCardPreview } from "@/components/TitleCardPreview";
 import { api } from "@/lib/api";
@@ -36,7 +37,50 @@ interface Props {
   onTitleFontSizeChange: (v: number) => void;
   usernameFontSize: number;
   onUsernameFontSizeChange: (v: number) => void;
+
+  // Border (0 width = no border). Falls back to accent in the renderer
+  // so a fresh project gets a usable default the moment width > 0.
+  borderColor: string;
+  onBorderColorChange: (v: string) => void;
+  borderWidth: number;
+  onBorderWidthChange: (v: number) => void;
+
+  // Entry / exit animations. Both default to 'fade' to match the
+  // captions experience — set to 'none' to disable.
+  entryAnimation: string;
+  onEntryAnimationChange: (v: string) => void;
+  entryDuration: number;
+  onEntryDurationChange: (v: number) => void;
+  exitAnimation: string;
+  onExitAnimationChange: (v: string) => void;
+  exitDuration: number;
+  onExitDurationChange: (v: number) => void;
 }
+
+// Animation options shared by entry/exit. Slide directions are named from
+// the user's POV: "slide up" enters from below moving up. "Zoom" is
+// implemented as fade-only here (full PIL reframe would need a smaller
+// canvas) — we omit it from the menu rather than ship a misleading name.
+const ENTRY_ANIMATIONS = [
+  { v: "none",            label: "None" },
+  { v: "fade",            label: "Fade in" },
+  { v: "slide_up",        label: "Slide up (from below)" },
+  { v: "slide_down",      label: "Slide down (from above)" },
+  { v: "slide_left",      label: "Slide in from right" },
+  { v: "slide_right",     label: "Slide in from left" },
+  { v: "fade_slide_up",   label: "Fade + slide up" },
+  { v: "fade_slide_down", label: "Fade + slide down" },
+];
+const EXIT_ANIMATIONS = [
+  { v: "none",            label: "None" },
+  { v: "fade",            label: "Fade out" },
+  { v: "slide_up",        label: "Slide up (off-top)" },
+  { v: "slide_down",      label: "Slide down (off-bottom)" },
+  { v: "slide_left",      label: "Slide off left" },
+  { v: "slide_right",     label: "Slide off right" },
+  { v: "fade_slide_up",   label: "Fade + slide up" },
+  { v: "fade_slide_down", label: "Fade + slide down" },
+];
 
 /**
  * Title-card customization panel with a live mini-preview (à la CaptionsPreview).
@@ -203,6 +247,95 @@ export function TitleCardSettings(props: Props) {
           </div>
           <Switch checked={props.hideStats} onCheckedChange={props.onHideStatsChange} />
         </div>
+
+        {/* Border — 0 width hides it. Color falls back to accent on the
+            backend if the user never picks one. */}
+        <div className="space-y-2 pt-2 border-t border-border">
+          <Label className="text-xs">Border</Label>
+          <div className="grid grid-cols-2 gap-3">
+            <ColorInput
+              label="Border color"
+              value={props.borderColor}
+              onChange={props.onBorderColorChange}
+            />
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-xs">
+                <Label className="text-[11px]">Border width</Label>
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  {props.borderWidth}px {props.borderWidth === 0 && "(off)"}
+                </span>
+              </div>
+              <Slider
+                value={[props.borderWidth]}
+                onValueChange={([v]) => props.onBorderWidthChange(v)}
+                min={0} max={16} step={1}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Entry + exit animations. Two parallel rows so the user can
+            mix-and-match (e.g. slide in, fade out). */}
+        <div className="space-y-2 pt-2 border-t border-border">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">Entry animation</Label>
+            <span className="font-mono text-[10px] text-muted-foreground">
+              {props.entryDuration.toFixed(2)}s
+            </span>
+          </div>
+          <div className="grid grid-cols-[1fr_auto] gap-2 items-center">
+            <Select value={props.entryAnimation} onValueChange={props.onEntryAnimationChange}>
+              <SelectTrigger className="h-8 text-xs bg-secondary border-border">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ENTRY_ANIMATIONS.map((a) => (
+                  <SelectItem key={a.v} value={a.v}>{a.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <div className="w-32">
+              <Slider
+                value={[Math.round(props.entryDuration * 100)]}
+                onValueChange={([v]) => props.onEntryDurationChange(v / 100)}
+                min={0} max={150} step={5}
+                disabled={props.entryAnimation === "none"}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <Label className="text-xs">Exit animation</Label>
+            <span className="font-mono text-[10px] text-muted-foreground">
+              {props.exitDuration.toFixed(2)}s
+            </span>
+          </div>
+          <div className="grid grid-cols-[1fr_auto] gap-2 items-center">
+            <Select value={props.exitAnimation} onValueChange={props.onExitAnimationChange}>
+              <SelectTrigger className="h-8 text-xs bg-secondary border-border">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EXIT_ANIMATIONS.map((a) => (
+                  <SelectItem key={a.v} value={a.v}>{a.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <div className="w-32">
+              <Slider
+                value={[Math.round(props.exitDuration * 100)]}
+                onValueChange={([v]) => props.onExitDurationChange(v / 100)}
+                min={0} max={150} step={5}
+                disabled={props.exitAnimation === "none"}
+              />
+            </div>
+          </div>
+          <p className="text-[10px] text-muted-foreground leading-snug">
+            Both phases are auto-capped at 40% of the title segment so a
+            short title still gets the full animation, just proportionally
+            faster.
+          </p>
+        </div>
       </div>
 
       {/* Right column: live preview */}
@@ -219,6 +352,12 @@ export function TitleCardSettings(props: Props) {
           titleFontSize={props.titleFontSize}
           usernameFontSize={props.usernameFontSize}
           hideStats={props.hideStats}
+          borderColor={props.borderColor}
+          borderWidth={props.borderWidth}
+          entryAnimation={props.entryAnimation}
+          entryDuration={props.entryDuration}
+          exitAnimation={props.exitAnimation}
+          exitDuration={props.exitDuration}
         />
       </div>
     </div>
