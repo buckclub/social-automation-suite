@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   Search, RefreshCw, Loader2, Play, Filter, ArrowUpDown, ExternalLink,
   CheckCircle2, XCircle, AlertTriangle, Flame, TrendingUp, Clock, Star,
-  Trophy, Sparkles, Save, X, ListOrdered,
+  Trophy, Sparkles, Save, X, ListOrdered, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -113,6 +113,33 @@ export default function PostsPage() {
   const [f, setF] = useState<FilterPreset>(EMPTY_PRESET);
   const update = <K extends keyof FilterPreset>(k: K, v: FilterPreset[K]) =>
     setF((prev) => ({ ...prev, [k]: v }));
+
+  // The advanced-filter panel is collapsed by default. Most users touch
+  // 0–2 of these per session; the always-visible toolbar already covers
+  // the common path (search + sort + eligible-only + dedupe). The badge
+  // shows how many constraints are currently active so it's still
+  // obvious why the result count looks weird.
+  const [showFilters, setShowFilters] = useState(false);
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (f.excludeKeywords.trim()) n++;
+    if (f.mustContain.trim()) n++;
+    if (f.subredditDeny.trim()) n++;
+    if (f.minScore) n++;
+    if (f.minComments) n++;
+    if (f.minViralPerHr) n++;
+    if (f.maxDurationS) n++;
+    if (f.minAiScore) n++;
+    if (f.minAiHookStrength) n++;
+    if (f.minAiPayoff) n++;
+    if (f.aiEmotions.trim()) n++;
+    if (f.aiModes.trim()) n++;
+    if (f.aiAudience.trim()) n++;
+    if (!f.aiGenderMale || !f.aiGenderFemale || !f.aiGenderUnknown) n++;
+    if (f.requireAiScored) n++;
+    if (f.hideContentWarnings) n++;
+    return n;
+  }, [f]);
 
   // Filter presets
   const [presets, setPresets] = useState<FilterPreset[]>(loadPresets());
@@ -375,9 +402,38 @@ export default function PostsPage() {
           Score with AI ({Math.min(filtered.length, 40)})
         </Button>
         <AiScoreCacheHint />
+
+        <div className="flex-1" />
+
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-muted-foreground">Hide dupes</label>
+          <Switch checked={f.dedupeWarn} onCheckedChange={(v) => update("dedupeWarn", v)} />
+        </div>
+
+        <Button
+          size="sm"
+          variant={showFilters ? "default" : "outline"}
+          onClick={() => setShowFilters((v) => !v)}
+          className="h-7 px-2 text-xs gap-1"
+          title="Show advanced + AI filters and presets"
+        >
+          <Filter className="h-3 w-3" />
+          Filters
+          {activeFilterCount > 0 && (
+            <Badge variant="secondary" className="h-4 px-1 text-[10px] ml-0.5">
+              {activeFilterCount}
+            </Badge>
+          )}
+          {showFilters
+            ? <ChevronUp className="h-3 w-3" />
+            : <ChevronDown className="h-3 w-3" />}
+        </Button>
       </div>
 
-      {/* Advanced filters + presets */}
+      {/* Advanced filters + presets — collapsed by default to keep the
+          toolbar compact. Active-filter count badge above tells the user
+          how much is hidden. */}
+      {showFilters && (
       <div className="rounded-md border border-border bg-card/50 p-3 space-y-3">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Preset</span>
@@ -540,13 +596,8 @@ export default function PostsPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 text-[11px]">
-          <label className="flex items-center gap-2 text-muted-foreground">
-            <Switch checked={f.dedupeWarn} onCheckedChange={(v) => update("dedupeWarn", v)} />
-            Hide near-duplicates of used posts
-          </label>
-        </div>
       </div>
+      )}
 
       {isError && (
         <p className="text-sm text-destructive text-center py-4">{(error as Error)?.message}</p>
