@@ -15,6 +15,8 @@ import { StatusBar } from "@/components/StatusBar";
 import { SocialCopyQueueChip } from "@/components/SocialCopyQueueChip";
 import { GenerateWithAIDialog } from "@/components/GenerateWithAIDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { NotificationCenter } from "@/components/NotificationCenter";
+import { BookOpen } from "lucide-react";
 import { BrandProvider } from "@/contexts/BrandContext";
 import { BrandSwitcher } from "@/components/BrandSwitcher";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
@@ -236,7 +238,22 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
               at typical laptop widths. */}
           <div className="flex items-center gap-1.5">
             <GenerateWithAIDialog />
+            <NotificationCenter />
             <ThemeToggle />
+
+            {/* Guide — drives users to /guide for the in-app reference. */}
+            <NavLink
+              to="/guide"
+              title="Guide"
+              className={({ isActive }) =>
+                cn(
+                  "hidden lg:flex h-8 w-8 items-center justify-center rounded-md border border-border bg-secondary/60 hover:bg-secondary transition-colors",
+                  isActive ? "text-primary border-primary/40" : "text-muted-foreground hover:text-foreground",
+                )
+              }
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+            </NavLink>
 
             {/* Command palette — icon-only, the kbd shortcut is the
                 actual learning surface; the "Jump to…" wording was

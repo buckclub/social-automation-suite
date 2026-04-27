@@ -81,6 +81,7 @@ const CalendarPage       = lazy(() => import("./pages/CalendarPage"));
 const CommentReplierPage = lazy(() => import("./pages/CommentReplierPage"));
 const DialoguePage       = lazy(() => import("./pages/DialoguePage"));
 const FirstRunPage       = lazy(() => import("./pages/FirstRunPage"));
+const GuidePage          = lazy(() => import("./pages/GuidePage"));
 
 const queryClient = new QueryClient();
 
@@ -128,6 +129,7 @@ function AppRoutes() {
         <Route path="/comments" element={<CommentReplierPage />} />
         <Route path="/dialogue" element={<DialoguePage />} />
         <Route path="/config" element={<ConfigPage />} />
+        <Route path="/guide" element={<GuidePage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </Suspense>

@@ -13,6 +13,8 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { useDiscoverPosts } from "@/hooks/use-api";
+import { useFirstTimeTip } from "@/hooks/use-first-time-tip";
+import { HelpHint } from "@/components/HelpHint";
 import { GenerateFromUrlDialog } from "@/components/GenerateFromUrlDialog";
 import { GenerateFromCustomDialog } from "@/components/GenerateFromCustomDialog";
 import { CommentSelectionDialog } from "@/components/CommentSelectionDialog";
@@ -103,6 +105,16 @@ function tokens(s: string): string[] {
 }
 
 export default function PostsPage() {
+  // First-time tip — explains the 'AI' sort + Score-with-AI dependency,
+  // which is consistently the first thing new users get confused by.
+  useFirstTimeTip({
+    id: "posts-page-score-with-ai",
+    title: "Tip: AI sort needs scoring first",
+    description:
+      "Click 'Score with AI' before sorting by AI — otherwise the AI sort returns posts in arbitrary order. Scores are cached, so you only pay for it once per post.",
+    delayMs: 800,
+  });
+
   const [redditSort, setRedditSort] = useState<RedditSort>("hot");
   const { data, refetch, isFetching, isError, error } = useDiscoverPosts(redditSort);
   const [selectedPost, setSelectedPost] = useState<RedditPost | null>(null);
@@ -476,7 +488,15 @@ export default function PostsPage() {
               placeholder="askreddit, funny" className="h-7 text-[11px] bg-secondary border-border" />
           </div>
           <div className="space-y-0.5">
-            <label className="text-[10px] text-muted-foreground">Min AI score (0–100)</label>
+            <label className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+              Min AI score (0–100)
+              <HelpHint>
+                The model's short-form virality estimate. Run{" "}
+                <strong>Score with AI</strong> first to populate scores —
+                this filter only does anything once posts have scores attached.
+                Scores are cached per-post so re-runs are free.
+              </HelpHint>
+            </label>
             <Input type="number" min={0} max={100} value={f.minAiScore || ""}
               onChange={(e) => update("minAiScore", +e.target.value || 0)}
               placeholder="0" className="h-7 text-[11px] bg-secondary border-border" />
@@ -494,7 +514,15 @@ export default function PostsPage() {
               placeholder="0" className="h-7 text-[11px] bg-secondary border-border" />
           </div>
           <div className="space-y-0.5">
-            <label className="text-[10px] text-muted-foreground">Min viral (▲/hr)</label>
+            <label className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+              Min viral (▲/hr)
+              <HelpHint>
+                Upvotes per hour since the post was created. Better than raw
+                score for catching posts blowing up <em>now</em> — a 6-month-old
+                post with 50k upvotes scores low here. Set to 50–100 to focus
+                on actively-trending content.
+              </HelpHint>
+            </label>
             <Input type="number" min={0} value={f.minViralPerHr || ""}
               onChange={(e) => update("minViralPerHr", +e.target.value || 0)}
               placeholder="0" className="h-7 text-[11px] bg-secondary border-border" />

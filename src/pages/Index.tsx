@@ -6,10 +6,27 @@ import { RenderHistoryChart } from "@/components/RenderHistoryChart";
 import { CostTrackerPanel } from "@/components/CostTrackerPanel";
 import { DailyIdeasPanel } from "@/components/DailyIdeasPanel";
 import { QueuePanel } from "@/components/QueuePanel";
+import { QuickStartChecklist } from "@/components/QuickStartChecklist";
+import { useFirstTimeTip } from "@/hooks/use-first-time-tip";
 
 export default function Index() {
+  // First-time dashboard tip — only fires once per browser. Points the
+  // user at the Guide page in case the QuickStartChecklist isn't enough.
+  useFirstTimeTip({
+    id: "dashboard-welcome",
+    title: "Welcome 👋",
+    description:
+      "The bell icon top-right shows render results, and there's a guide at /guide if you get stuck.",
+    delayMs: 1200,
+  });
+
   return (
     <div className="space-y-6">
+      {/* Quick-start onboarding card — auto-hides once everything is
+          configured or the user dismisses it. Renders nothing on a
+          fresh load until config has hydrated, so no flash. */}
+      <QuickStartChecklist />
+
       {/* Stats + 30-day bar chart in one panel */}
       <RenderHistoryChart />
 
