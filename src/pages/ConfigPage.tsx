@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   Settings2, Save, Loader2, Plus, X, RotateCcw,
@@ -429,11 +430,24 @@ export default function ConfigPage() {
 
   const [initialLoaded, setInitialLoaded] = useState(false);
   type TabId = "general" | "formatting" | "tts" | "video" | "captions" | "ai" | "publishing" | "output";
-  // Honor ?tab=X in the URL so the command palette can deep-link into a section.
-  const urlTabRaw = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("tab") : null;
+  // Honor ?tab=X in the URL so the command palette + quick-start checklist
+  // can deep-link into a section. Use react-router's useSearchParams
+  // (NOT window.location.search) — under HashRouter the actual query
+  // string lives inside the hash fragment, so `window.location.search`
+  // is always empty and the deep-link silently fell back to 'general'.
+  const [searchParams] = useSearchParams();
   const validTabs: TabId[] = ["general", "formatting", "tts", "video", "captions", "ai", "publishing", "output"];
+  const urlTabRaw = searchParams.get("tab");
   const initialTab = (urlTabRaw && (validTabs as string[]).includes(urlTabRaw) ? urlTabRaw : "general") as TabId;
   const [activeTab, setActiveTab] = useState<TabId>(initialTab);
+  // Re-sync if the URL changes while ConfigPage is already mounted —
+  // e.g. user clicks a different checklist item without leaving the page.
+  useEffect(() => {
+    if (urlTabRaw && (validTabs as string[]).includes(urlTabRaw) && urlTabRaw !== activeTab) {
+      setActiveTab(urlTabRaw as TabId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlTabRaw]);
   // Sidebar collapse — persisted so the state doesn't jump on refresh.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try { return localStorage.getItem("rtr_config_sidebar_collapsed") === "1"; } catch { return false; }
