@@ -448,7 +448,7 @@ export default function ConfigPage() {
     { id: "tts",        label: "Text-to-Speech", icon: <Mic className="h-4 w-4" /> },
     { id: "video",      label: "Video",         icon: <Film className="h-4 w-4" /> },
     { id: "captions",   label: "Captions",      icon: <Type className="h-4 w-4" /> },
-    { id: "ai",         label: "AI Hooks",      icon: <Sparkles className="h-4 w-4" /> },
+    { id: "ai",         label: "AI Model",      icon: <Sparkles className="h-4 w-4" /> },
     { id: "publishing", label: "Publishing",    icon: <Youtube className="h-4 w-4" /> },
     { id: "output",     label: "Output & Discord", icon: <FolderOutput className="h-4 w-4" /> },
   ];
@@ -2365,15 +2365,24 @@ export default function ConfigPage() {
         </div>
 
         <div className={activeTab === "ai" ? "space-y-5" : "hidden"}>
-        {/* AI Hooks */}
-        <Section title="AI Hooks" icon={<Sparkles className="h-4 w-4 text-primary" />}>
+        {/* AI Provider — controls the LLM that powers every AI feature in
+            the app (story generation, virality scoring, social copy, hooks,
+            thumbnail text, hashtag analysis, etc). The two "Hook" toggles
+            further down are individual feature switches that live under
+            this provider; they're the reason this tab used to be called
+            "AI Hooks" — but that name made it look like a tab about one
+            small feature instead of the master AI config. */}
+        <Section title="AI Provider" icon={<Sparkles className="h-4 w-4 text-primary" />}>
           <div className="rounded-md bg-secondary/50 border border-border p-3">
             <p className="text-[10px] text-muted-foreground leading-relaxed">
-              <strong className="text-foreground">How it works:</strong> AI generates a 3-4 second attention-grabbing hook prepended to the video narration, plus curiosity-driven thumbnail text — all without spoiling the story.
+              <strong className="text-foreground">This section configures the language model used by every AI feature</strong> — story generation, virality scoring, social copy, captions/hashtags, comment replies, niche finder, plus the two optional features below (intro hooks + thumbnail text). Pick a provider, drop in the key (or URL for Ollama), click Test, save.
             </p>
           </div>
           <div className="flex items-center justify-between">
-            <label className="text-xs text-muted-foreground">Enable AI Hooks</label>
+            <div>
+              <label className="text-xs">Enable AI</label>
+              <p className="text-[10px] text-muted-foreground mt-0.5">Master switch. Off = AI features fall back to non-AI paths where possible.</p>
+            </div>
             <Switch checked={geminiEnabled} onCheckedChange={setGeminiEnabled} />
           </div>
           {geminiEnabled && (
@@ -2533,22 +2542,34 @@ export default function ConfigPage() {
                   </p>
                 </div>
               )}
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="text-xs text-muted-foreground">Generate Video Hook</label>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">3-4s spoken intro prepended to the story</p>
-                </div>
-                <Switch checked={geminiHook} onCheckedChange={setGeminiHook} />
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="text-xs text-muted-foreground">Generate Thumbnail Text</label>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">Eye-catching overlay text for thumbnails</p>
-                </div>
-                <Switch checked={geminiThumbnail} onCheckedChange={setGeminiThumbnail} />
-              </div>
-
               <Separator />
+
+              {/* Two optional add-ons that bolt onto every Reddit render.
+                  Grouped under their own heading so it's obvious these
+                  are extra features, not required setup. */}
+              <div className="space-y-2 rounded-md border border-border/60 bg-secondary/20 p-3">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-3 w-3 text-primary" />
+                  <Label className="text-[11px] font-semibold">Optional AI add-ons for Reddit renders</Label>
+                </div>
+                <p className="text-[10px] text-muted-foreground leading-snug">
+                  These run as part of every Reddit pipeline. Turn off to save tokens — neither is required for a video to render.
+                </p>
+                <div className="flex items-center justify-between pt-1">
+                  <div>
+                    <label className="text-xs">Intro hook</label>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">3–4s spoken hook prepended to the story (without spoiling it)</p>
+                  </div>
+                  <Switch checked={geminiHook} onCheckedChange={setGeminiHook} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs">Thumbnail text</label>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">Curiosity-gap overlay text for the video thumbnail</p>
+                  </div>
+                  <Switch checked={geminiThumbnail} onCheckedChange={setGeminiThumbnail} />
+                </div>
+              </div>
 
               <TestAiButton
                 provider={geminiProvider}
