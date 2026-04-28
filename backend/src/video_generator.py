@@ -2682,14 +2682,24 @@ class VideoGenerator:
                 except Exception as e:
                     print(f"⚠️  Could not probe background duration: {e}. Defaulting to loop from start.")
 
-                scale_filter = f"scale='iw*max({w}/iw\\,{h}/ih)':'ih*max({w}/iw\\,{h}/ih)',crop={w}:{h}"
+                # Force 30 fps on the prep encode. Without this the temp
+                # background keeps the source's native rate (often 24/25),
+                # which makes the overlay filter sample our 30-fps title-card
+                # animation at 24 Hz and then -r 30 duplicates frames into a
+                # 3:2-pulldown judder pattern. Snapping to 30 here makes the
+                # whole pipeline run at one consistent rate.
+                scale_filter = (
+                    f"scale='iw*max({w}/iw\\,{h}/ih)':'ih*max({w}/iw\\,{h}/ih)',"
+                    f"crop={w}:{h},fps=30"
+                )
 
                 bg_cmd = [ffmpeg_exe, '-y']
                 if start_time > 0:
                     bg_cmd.extend(['-ss', str(start_time)])
                 if enable_loop:
                     bg_cmd.extend(['-stream_loop', '-1'])
-                bg_cmd.extend(['-i', bg_path, '-vf', scale_filter, '-t', str(total_duration), '-an'])
+                bg_cmd.extend(['-i', bg_path, '-vf', scale_filter, '-r', '30',
+                               '-fps_mode', 'cfr', '-t', str(total_duration), '-an'])
 
                 if self.hw_accel == 'nvenc':
                     bg_cmd.extend(['-c:v', 'h264_nvenc', '-rc', 'constqp', '-qp', '26', '-b:v', '0', '-preset', 'p2'])
@@ -2766,12 +2776,20 @@ class VideoGenerator:
                 '-i', temp_bg_path,
                 '-f', 'concat', '-safe', '0', '-i', concat_path,
                 '-i', temp_audio_path,
-                '-filter_complex', '[0:v][1:v]overlay=0:0[outv]',
+                # The concat demuxer reads images with per-frame `duration`
+                # directives, which produces a VFR stream. Resample it to 30
+                # fps BEFORE overlay so each title-card animation frame lands
+                # on its own output frame. Without this fps filter the
+                # overlay inherits the background's framerate and any
+                # mismatch with our 30-fps animation manifests as judder.
+                '-filter_complex',
+                '[0:v]fps=30[bgv];[1:v]fps=30[ovr];[bgv][ovr]overlay=0:0[outv]',
                 '-map', '[outv]', '-map', '2:a',
                 '-c:v', v_codec,
                 '-c:a', 'aac',
                 '-pix_fmt', 'yuv420p',
-                '-r', '30'
+                '-r', '30',
+                '-fps_mode', 'cfr',
             ]
 
             if not (tail_text and tail_duration and tail_duration > 0):
