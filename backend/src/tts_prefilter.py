@@ -106,7 +106,8 @@ def _age_gender_sub(m: re.Match, num_first: bool) -> str:
 def apply_rules(text: str, *,
                 expand_age_gender: bool = True,
                 expand_tldr: bool = True,
-                expand_acronyms: bool = True) -> str:
+                expand_acronyms: bool = True,
+                collapse_word_dupes: bool = True) -> str:
     """Return text with deterministic pre-TTS substitutions applied."""
     if not text:
         return text
@@ -138,6 +139,9 @@ def apply_rules(text: str, *,
             # Only replace when the token appears as a standalone word.
             pattern = r"(?<!\w)" + re.escape(acronym) + r"(?!\w)"
             out = re.sub(pattern, expansion, out)
+
+    if collapse_word_dupes:
+        out = collapse_duplicate_words(out)
 
     return out
 
@@ -253,6 +257,74 @@ def remove_redundant_openers(body: str, title: str, *,
     return "\n\n".join(cleaned_paragraphs)
 
 
+# Function words / short connectives that are *never* legitimately repeated
+# back-to-back in English. Keep this list conservative — "had had", "that
+# that", "is is" can all be valid in real prose, so we don't include them.
+# These are the ones that always indicate a typo when doubled.
+_NEVER_DOUBLED = {
+    "and", "but", "or", "so", "the", "a", "an",
+    "of", "to", "in", "on", "at", "for", "with",
+    "then", "than", "from", "by", "as", "if",
+    "i", "you", "he", "she", "we", "they", "it",
+    "my", "your", "his", "her", "our", "their",
+}
+
+_WORD_RE = re.compile(r"[A-Za-z']+|[^A-Za-z'\s]+|\s+")
+
+
+def collapse_duplicate_words(text: str) -> str:
+    """
+    Collapse erroneous adjacent duplicate words like "and and", "the the",
+    "I I". Conservative: only collapses repeats of function words / pronouns
+    that are never legitimately doubled, plus any 3+ identical-word runs
+    (which are always typos regardless of the word).
+
+    Punctuation between repeats blocks the collapse — "...and. And he..." is
+    a valid sentence boundary, not a typo.
+    """
+    if not text:
+        return text
+    tokens = _WORD_RE.findall(text)
+    out: list[str] = []
+    # Walk tokens and collapse runs of an identical word separated only by
+    # whitespace tokens. Track the last *word* token and how many times it
+    # has appeared in a row so we can drop everything from the second
+    # repeat onward.
+    last_word_lower: str | None = None
+    last_word_run: int = 0
+    pending_ws: list[str] = []          # whitespace seen since last word
+    for tok in tokens:
+        if tok.isspace():
+            pending_ws.append(tok)
+            continue
+        if re.match(r"[A-Za-z']+$", tok):
+            low = tok.lower()
+            if last_word_lower is not None and low == last_word_lower:
+                # Repeat detected. Drop it (and the whitespace between)
+                # if it's a function word OR we've already seen the word
+                # twice in a row (3+ identical = always erroneous).
+                if low in _NEVER_DOUBLED or last_word_run >= 2:
+                    last_word_run += 1
+                    pending_ws = []  # discard the whitespace we held back
+                    continue
+            # Not a collapse case → flush
+            out.extend(pending_ws)
+            pending_ws = []
+            out.append(tok)
+            last_word_lower = low
+            last_word_run = 1
+        else:
+            # Punctuation / symbol token → flush and reset the run so
+            # "and. And" doesn't get collapsed.
+            out.extend(pending_ws)
+            pending_ws = []
+            out.append(tok)
+            last_word_lower = None
+            last_word_run = 0
+    out.extend(pending_ws)
+    return "".join(out)
+
+
 def dedupe_adjacent_lines(text: str, *, similarity_threshold: float = 0.92) -> str:
     """
     Collapse consecutive duplicate (or near-duplicate) lines anywhere in
@@ -277,11 +349,14 @@ def dedupe_adjacent_lines(text: str, *, similarity_threshold: float = 0.92) -> s
 
 def clean_redundant(body: str, title: str, *,
                     strip_title_echo: bool = True,
-                    strip_adjacent_dupes: bool = True) -> str:
-    """Convenience: apply both redundancy cleaners in the right order."""
+                    strip_adjacent_dupes: bool = True,
+                    collapse_word_dupes: bool = True) -> str:
+    """Convenience: apply all redundancy cleaners in the right order."""
     out = body
     if strip_title_echo:
         out = remove_redundant_openers(out, title)
     if strip_adjacent_dupes:
         out = dedupe_adjacent_lines(out)
+    if collapse_word_dupes:
+        out = collapse_duplicate_words(out)
     return out

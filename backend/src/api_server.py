@@ -4546,6 +4546,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                             expand_age_gender=bool(pref_cfg.get("expand_age_gender", True)),
                             expand_tldr=bool(pref_cfg.get("expand_tldr", True)),
                             expand_acronyms=bool(pref_cfg.get("expand_acronyms", True)),
+                            collapse_word_dupes=bool(pref_cfg.get("collapse_word_dupes", True)),
                         )
                         title = _prefilter(title, **opts)
                         post_body = _prefilter(post_body, **opts)
@@ -4563,6 +4564,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                                 post_body, title,
                                 strip_title_echo=True,
                                 strip_adjacent_dupes=bool(pref_cfg.get("strip_adjacent_dupes", True)),
+                                collapse_word_dupes=bool(pref_cfg.get("collapse_word_dupes", True)),
                             )
                             dropped = orig_lines - post_body.count("\n")
                             if dropped > 0:
@@ -4623,6 +4625,7 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                                 post_body, title,
                                 strip_title_echo=True,
                                 strip_adjacent_dupes=bool(pref_cfg.get("strip_adjacent_dupes", True)),
+                                collapse_word_dupes=bool(pref_cfg.get("collapse_word_dupes", True)),
                             )
                     except Exception:
                         pass

@@ -1890,9 +1890,10 @@ class VideoGenerator:
             card_img = Image.open(self._title_card_path).convert("RGBA")
             if card_img.size != (self.width, self.height):
                 card_img = card_img.resize((self.width, self.height), Image.LANCZOS)
-            canvas = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
-            canvas.alpha_composite(card_img, (0, 0))
-            # Also paint the watermark so branding is visible during the title.
+
+            # Pre-render the watermark once — it's static across the segment.
+            wm_img = None
+            wm_pos = (0, 0)
             if branding and branding.strip():
                 brand_path = self.create_text_image(
                     branding.strip(),
@@ -1901,15 +1902,122 @@ class VideoGenerator:
                     use_bg_box=True, bg_color='black',
                     bg_opacity=120, padding=12,
                 )
-                brand_img = Image.open(brand_path).convert("RGBA")
-                bw, bh = brand_img.size
-                canvas.alpha_composite(brand_img, (self.width - bw - 20, self.height - bh - 20))
+                wm_img = Image.open(brand_path).convert("RGBA")
+                bw, bh = wm_img.size
+                wm_pos = (self.width - bw - 20, self.height - bh - 20)
                 try: os.remove(brand_path)
                 except: pass
-            tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-            canvas.save(tmp.name)
-            tmp.close()
-            return [(tmp.name, duration)]
+
+            # Resolve animation params. Same math as _animate_title_card so
+            # the FFmpeg engine matches the moviepy engine and the live preview.
+            tn = getattr(self, 'thumbnail', None) or {}
+            entry = (tn.get('entry_animation') or 'none').strip().lower()
+            exit_ = (tn.get('exit_animation')  or 'none').strip().lower()
+            cap   = max(0.05, duration * 0.4)
+            d_in  = min(float(tn.get('entry_duration', 0.45) or 0.0), cap) if entry != 'none' else 0.0
+            d_out = min(float(tn.get('exit_duration',  0.35) or 0.0), cap) if exit_ != 'none' else 0.0
+            d_in  = max(0.0, d_in)
+            d_out = max(0.0, d_out)
+            # Guard against entry+exit > duration on very short title segments.
+            if d_in + d_out > duration:
+                scale = duration / (d_in + d_out)
+                d_in  *= scale
+                d_out *= scale
+            d_hold = max(0.0, duration - d_in - d_out)
+
+            W, H = self.width, self.height
+            def _xform(t: float):
+                tx_ = ty_ = 0
+                op_ = 1.0
+                if d_in > 0 and t < d_in:
+                    p = t / d_in
+                    eased = 1.0 - (1.0 - p) ** 3
+                    off = 1.0 - eased
+                    if entry in ('slide_up', 'fade_slide_up'):     ty_ =  int(H * off)
+                    elif entry in ('slide_down', 'fade_slide_down'): ty_ = -int(H * off)
+                    elif entry == 'slide_left':  tx_ =  int(W * off)
+                    elif entry == 'slide_right': tx_ = -int(W * off)
+                    if entry in ('fade', 'fade_slide_up', 'fade_slide_down'):
+                        op_ = eased
+                elif d_out > 0 and t > duration - d_out:
+                    p = (t - (duration - d_out)) / d_out
+                    eased = p ** 3
+                    if exit_ in ('slide_up', 'fade_slide_up'):     ty_ = -int(H * eased)
+                    elif exit_ in ('slide_down', 'fade_slide_down'): ty_ =  int(H * eased)
+                    elif exit_ == 'slide_left':  tx_ = -int(W * eased)
+                    elif exit_ == 'slide_right': tx_ =  int(W * eased)
+                    if exit_ in ('fade', 'fade_slide_up', 'fade_slide_down'):
+                        op_ = 1.0 - eased
+                return tx_, ty_, op_
+
+            def _render_frame(tx_: int, ty_: int, op_: float) -> str:
+                canvas = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+                src = card_img
+                if op_ < 1.0:
+                    a = card_img.split()[3].point(lambda v, _o=op_: int(v * _o))
+                    src = card_img.copy()
+                    src.putalpha(a)
+                # Image.paste accepts negative coords and clips off-canvas
+                # pixels — use it (not alpha_composite, which requires the
+                # source rect to fit) so slide animations work.
+                canvas.paste(src, (tx_, ty_), src)
+                if wm_img is not None:
+                    canvas.alpha_composite(wm_img, wm_pos)
+                tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                canvas.save(tmp.name)
+                tmp.close()
+                return tmp.name
+
+            # Static fast-path: no animation requested.
+            if d_in <= 0 and d_out <= 0:
+                return [(_render_frame(0, 0, 1.0), duration)]
+
+            # Frame rate must match the output video's -r so each input PNG
+            # aligns 1:1 with an output frame. Otherwise FFmpeg re-samples
+            # and drops/duplicates frames irregularly, producing jitter that
+            # looks "choppy" even though the math is right. The output is
+            # currently locked at 30 fps (see the `-r 30` flag in the FFmpeg
+            # cmd) so we use the same here.
+            FPS = 30
+            FRAME_DUR = 1.0 / FPS
+            frames: list[tuple[str, float]] = []
+
+            if d_in > 0:
+                n_in = max(2, int(round(d_in * FPS)))
+                # Snap d_in to an integer number of output frames so the
+                # entry phase ends exactly on a frame boundary.
+                actual_d_in = n_in * FRAME_DUR
+                for k in range(n_in):
+                    # Sample at the frame's start time (0, 1/FPS, 2/FPS, ...)
+                    # so the first frame is the fully-off-screen position
+                    # and motion progresses one output-frame at a time.
+                    t = k * FRAME_DUR
+                    tx_, ty_, op_ = _xform(t)
+                    frames.append((_render_frame(tx_, ty_, op_), FRAME_DUR))
+            else:
+                actual_d_in = 0.0
+
+            if d_out > 0:
+                n_out = max(2, int(round(d_out * FPS)))
+                actual_d_out = n_out * FRAME_DUR
+            else:
+                n_out = 0
+                actual_d_out = 0.0
+
+            actual_hold = max(0.0, duration - actual_d_in - actual_d_out)
+            if actual_hold > 0:
+                # Single frame for the hold phase — the transform is constant
+                # so concat's "hold last frame" semantics are perfect here.
+                tx_, ty_, op_ = _xform(actual_d_in + actual_hold / 2.0)
+                frames.append((_render_frame(tx_, ty_, op_), actual_hold))
+
+            if n_out > 0:
+                start_t = actual_d_in + actual_hold
+                for k in range(n_out):
+                    t = start_t + k * FRAME_DUR
+                    tx_, ty_, op_ = _xform(t)
+                    frames.append((_render_frame(tx_, ty_, op_), FRAME_DUR))
+            return frames
 
         captions_on = self.captions['enabled']
         if captions_on:
