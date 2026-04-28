@@ -1,5 +1,5 @@
 """
-Dev-loop supervisor for Reddit-to-Reels.
+Dev-loop supervisor for Social Automation Suite.
 
 Runs run_server.py as a child *in its own Windows process group* so Ctrl+C
 in this console only reaches the supervisor. The supervisor then:
@@ -70,7 +70,7 @@ def main() -> None:
         print(f"Warning: venv python not at {VENV_PY}. Falling back to {sys.executable}.")
 
     print("")
-    print("Reddit-to-Reels dev loop")
+    print("Social Automation Suite dev loop")
     print("  Ctrl+C     -> restart server")
     print("  Ctrl+C x2  -> exit (within 2 seconds)")
     print("")
