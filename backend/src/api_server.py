@@ -823,6 +823,10 @@ async def _queue_worker():
                         _set_step("ai_generate", "done", "Auto-resume — skipped")
                         _set_step("fetch", "done", f"Auto-resume: {title_for_resume[:60]}")
                         _set_step("format", "done", "Using existing formatted text")
+                        # script_review is a no-op on resume — script
+                        # already went through review (or wasn't enabled)
+                        # the first time, and we have cached audio.
+                        _set_step("script_review", "done", "Skipped on resume")
                         _set_step("tts", "done", f"Using {len(tl)} cached audio segments")
                         pipeline_state["is_running"] = True
                         pipeline_state["error"] = None
@@ -3920,6 +3924,60 @@ async def cancel_pipeline():
     return {"success": True}
 
 
+# ── Script Review endpoints ────────────────────────────────────────
+# The pipeline pauses between Format and TTS when
+# config.pipeline.script_review_enabled is true. The frontend polls /
+# subscribes to know when a review is awaiting; the operator edits and
+# POSTs their decision back. See backend/src/script_review.py for the
+# state machine.
+
+@app.get("/api/pipeline/script-review/{post_id}")
+async def get_script_review(post_id: str):
+    """Return the pending script payload for a post, or 404 if no
+    review is awaiting. The UI fetches this when it sees the
+    `script_review` step in 'running' state."""
+    import script_review as _sr
+    payload = _sr.read_pending(PROJECT_ROOT, post_id)
+    if payload is None:
+        raise HTTPException(404, "No pending script review for this post")
+    return payload
+
+
+@app.post("/api/pipeline/script-review/{post_id}/approve")
+async def approve_script_review(post_id: str, req: dict):
+    """Operator approves the script (with optional edits). Body shape:
+       { "title": str, "post_body": str, "comments": [{author, body}] }
+    Empty fields fall back to the original text on the backend."""
+    import script_review as _sr
+    title = str(req.get("title") or "")
+    post_body = str(req.get("post_body") or "")
+    comments_in = req.get("comments") or []
+    if not isinstance(comments_in, list):
+        raise HTTPException(400, "'comments' must be a list")
+    ok = _sr.submit_decision(
+        PROJECT_ROOT, post_id,
+        approved=True,
+        title=title, post_body=post_body, comments=comments_in,
+    )
+    if not ok:
+        raise HTTPException(409, "No script review awaiting for this post")
+    _log(f"Script review approved for {post_id}")
+    return {"success": True}
+
+
+@app.post("/api/pipeline/script-review/{post_id}/cancel")
+async def cancel_script_review(post_id: str):
+    """Operator aborts the pipeline at the review stage. The pipeline
+    sets pipeline_state['error'] and exits cleanly — no half-rendered
+    audio left around."""
+    import script_review as _sr
+    ok = _sr.submit_decision(PROJECT_ROOT, post_id, approved=False)
+    if not ok:
+        raise HTTPException(409, "No script review awaiting for this post")
+    _log(f"Script review cancelled for {post_id}")
+    return {"success": True}
+
+
 @app.post("/api/pipeline/resume-video")
 async def resume_video_from_audio(req: dict = {}):
     """Resume video generation from an existing post that has audio but no video."""
@@ -4042,6 +4100,7 @@ async def resume_video_from_audio(req: dict = {}):
     _set_step("ai_generate", "done", "Resumed — skipped")
     _set_step("fetch", "done", f"Resumed: {title[:60]}")
     _set_step("format", "done", "Using existing formatted text")
+    _set_step("script_review", "done", "Skipped on resume")
     _set_step("tts", "done", f"Using {len(timeline)} existing audio segments")
 
     pipeline_state["is_running"] = True
@@ -4629,6 +4688,66 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                             )
                     except Exception:
                         pass
+
+                # ── Optional Script Review pause ─────────────────
+                # Inserted between preprocessing and TTS so the operator
+                # can edit OP typos / awkward phrasing before paying for
+                # voice generation. Off by default (config.pipeline.
+                # script_review_enabled) — when off the pipeline runs
+                # straight through with no perceptible delay.
+                try:
+                    import script_review as _sr
+                    if _sr.is_enabled(config):
+                        _set_step("script_review", "running",
+                                  "Awaiting operator approval — open the Script Review dialog.")
+                        _log(
+                            "Script review: pausing pipeline. Edit script in the UI, "
+                            "then click Approve to continue (or Cancel to abort)."
+                        )
+                        _sr.begin_review(PROJECT_ROOT, post_id, title, post_body, comments)
+                        # 30-minute defensive cap so a forgotten review
+                        # doesn't tie up the queue forever.
+                        try:
+                            decision = await _sr.await_decision(post_id, timeout_s=30 * 60)
+                        except asyncio.TimeoutError:
+                            decision = _sr.ReviewDecision(False, "", "", [])
+                            _log("Script review timed out (30m) — aborting.")
+
+                        if not decision.approved:
+                            _set_step("script_review", "error",
+                                      "Cancelled at script review.")
+                            _set_step("tts", "error", "Pipeline aborted before TTS.")
+                            pipeline_state["error"] = "Cancelled at script review"
+                            pipeline_state["is_running"] = False
+                            pipeline_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                            _sr.cleanup(PROJECT_ROOT, post_id)
+                            return
+
+                        # Swap the in-memory variables with the operator's
+                        # edits. Empty edited fields mean "didn't touch
+                        # this part" — keep the pre-review value rather
+                        # than overwrite with empty.
+                        if decision.title.strip():
+                            title = decision.title
+                        if decision.post_body.strip():
+                            post_body = decision.post_body
+                        if decision.comments:
+                            comments = decision.comments
+                        _set_step("script_review", "done",
+                                  "Script approved — continuing to TTS.")
+                        _log(
+                            f"Script approved (title: {len(title)} chars, "
+                            f"body: {len(post_body)} chars, comments: {len(comments)})"
+                        )
+                    else:
+                        _set_step("script_review", "done", "Disabled (skipped)")
+                except Exception as _sre:
+                    # Review machinery is best-effort — never let a bug
+                    # in the optional gate kill an otherwise-fine render.
+                    _log(f"Script review skipped (non-fatal error): {_sre}")
+                    _set_step("script_review", "done", "Skipped due to error")
+
+                _check_cancelled()
 
                 # Initial sub-steps (will be replaced with real-time progress)
                 _set_step("tts", "running", f"Calculating segments · provider: {provider}", [
@@ -5423,6 +5542,14 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                 _log(f"Discord error: {e}")
 
         # ── Done ─────────────────────────────────────────────────────
+        # Tidy up any leftover script_review.json — best-effort, the
+        # state file is harmless if it lingers but tidy is nice.
+        try:
+            import script_review as _sr
+            _sr.cleanup(PROJECT_ROOT, post_id)
+        except Exception:
+            pass
+
         elapsed = time.time() - start_time
         stats["videos_today"] += 1
         stats["total_runs"] += 1

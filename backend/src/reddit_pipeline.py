@@ -62,6 +62,26 @@ class FormatStoryStep(PipelineStep):
         pass
 
 
+class ScriptReviewStep(PipelineStep):
+    """Optional human-edit gate between Format and TTS.
+
+    Pauses the pipeline after preprocessing (prefilter + ollama
+    normalize) so the operator can correct OP typos / awkward phrasing
+    before paid TTS gets generated. Off by default — flips on via
+    config.pipeline.script_review_enabled. Skipped entirely when
+    disabled, so existing flows keep their straight-through speed."""
+    id = "script_review"
+    title = "Script Review"
+
+    def applicable(self, ctx: PipelineContext) -> bool:
+        pipe_cfg = (ctx.get("config") or {}).get("pipeline") or {}
+        return bool(pipe_cfg.get("script_review_enabled"))
+
+    async def run(self, ctx: PipelineContext, progress) -> None:
+        # Delegated: handled inside _run_pipeline_async between format and TTS.
+        pass
+
+
 class TTSStep(PipelineStep):
     id = "tts"
     title = "Generate TTS Audio"
@@ -112,6 +132,7 @@ REDDIT_PIPELINE = Pipeline([
     AIGenerateStep(),
     FetchPostStep(),
     FormatStoryStep(),
+    ScriptReviewStep(),
     TTSStep(),
     VideoRenderStep(),
     ThumbnailStep(),

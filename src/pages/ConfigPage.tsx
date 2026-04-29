@@ -345,6 +345,9 @@ export default function ConfigPage() {
   // the safe default.
   const [skipThumbnail, setSkipThumbnail] = useState(false);
   const [skipNotify, setSkipNotify] = useState(false);
+  // Optional human-edit gate between Format and TTS — when enabled the
+  // pipeline pauses for operator approval before paid TTS runs.
+  const [scriptReviewEnabled, setScriptReviewEnabled] = useState(false);
 
   // AI Hooks
   const [geminiEnabled, setGeminiEnabled] = useState(false);
@@ -597,6 +600,7 @@ export default function ConfigPage() {
     const disabled: string[] = Array.isArray(pipe.disabled_steps) ? pipe.disabled_steps : [];
     setSkipThumbnail(disabled.includes("thumbnail"));
     setSkipNotify(disabled.includes("notify"));
+    setScriptReviewEnabled(Boolean(pipe.script_review_enabled));
 
     const g = (c as any).gemini ?? {};
     setGeminiEnabled(g.enabled ?? false);
@@ -669,7 +673,7 @@ export default function ConfigPage() {
     brollEnabled, brollPexelsKey, brollMaxPerMin,
     postsDir, usedPostsFile,
     discordEnabled, webhookUrl, uploadMedia,
-    skipThumbnail, skipNotify,
+    skipThumbnail, skipNotify, scriptReviewEnabled,
     geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
     geminiModel, geminiHook, geminiThumbnail, geminiModels, openrouterModels,
     ollamaUrl, ollamaModels, nvidiaNimModels,
@@ -704,7 +708,7 @@ export default function ConfigPage() {
       brollEnabled, brollPexelsKey, brollMaxPerMin,
       postsDir, usedPostsFile,
       discordEnabled, webhookUrl, uploadMedia,
-      skipThumbnail, skipNotify,
+      skipThumbnail, skipNotify, scriptReviewEnabled,
       geminiEnabled, geminiProvider, geminiApiKey, openrouterApiKey, nvidiaNimApiKey,
       geminiModel, geminiHook, geminiThumbnail, geminiModels, openrouterModels,
       ollamaUrl, ollamaModels, nvidiaNimModels, featureModels, youtubeApiKey,
@@ -850,6 +854,7 @@ export default function ConfigPage() {
           // Build the disabled list from inverted toggles. Empty array
           // when neither is checked — backend treats missing/empty
           // identically to "everything enabled."
+          script_review_enabled: scriptReviewEnabled,
           disabled_steps: [
             ...(skipThumbnail ? ["thumbnail"] : []),
             ...(skipNotify ? ["notify"] : []),
@@ -2725,6 +2730,19 @@ export default function ConfigPage() {
                 </p>
               </div>
               <Switch checked={skipNotify} onCheckedChange={setSkipNotify} />
+            </div>
+            <div className="flex items-center justify-between pt-1 border-t border-border/40">
+              <div>
+                <label className="text-xs">Script review before TTS</label>
+                <p className="text-[10px] text-muted-foreground/70 leading-snug">
+                  Pauses the pipeline between Format and TTS so you can fix
+                  OP typos / awkward phrasing before paying for voice
+                  generation. A modal opens automatically; 30-min timeout
+                  on each pause so a forgotten review doesn't tie up the
+                  queue.
+                </p>
+              </div>
+              <Switch checked={scriptReviewEnabled} onCheckedChange={setScriptReviewEnabled} />
             </div>
           </Section>
 

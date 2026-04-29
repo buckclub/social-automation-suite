@@ -1,15 +1,18 @@
-import { Search, FileText, Mic, Film, Send, XCircle, Sparkles, Image } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Search, FileText, Mic, Film, Send, XCircle, Sparkles, Image, Pencil } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PipelineStep } from "./PipelineStep";
 import { usePipelineStatus, useRunPipeline, useResetPipeline, useCancelPipeline } from "@/hooks/use-api";
 import { useToast } from "@/hooks/use-toast";
 import type { StepStatus } from "./PipelineStep";
+import { ScriptReviewDialog } from "./ScriptReviewDialog";
 
 const STEP_ICONS: Record<string, React.ReactNode> = {
   ai_generate: <Sparkles className="h-5 w-5" />,
   fetch: <Search className="h-5 w-5" />,
   format: <FileText className="h-5 w-5" />,
+  script_review: <Pencil className="h-5 w-5" />,
   tts: <Mic className="h-5 w-5" />,
   video: <Film className="h-5 w-5" />,
   thumbnail: <Image className="h-5 w-5" />,
@@ -20,6 +23,7 @@ const STEP_DESCRIPTIONS: Record<string, string> = {
   ai_generate: "Generate content using AI provider",
   fetch: "Scan subreddits and find a post matching filters",
   format: "Clean and structure the story for narration",
+  script_review: "Manual edit pass before paid TTS runs",
   tts: "Convert story text to speech with chosen voice",
   video: "Compose video with captions over background footage",
   thumbnail: "Generate Reddit-style thumbnails for each part",
@@ -37,6 +41,29 @@ export function PipelinePanel() {
   const isRunning = pipeline?.is_running ?? false;
   const allDone = steps.length > 0 && steps.every((s) => s.status === "done");
   const hasError = pipeline?.error != null;
+
+  // Awaiting-review detection — when the script_review step flips to
+  // 'running' the backend is blocked on an asyncio.Event waiting for
+  // the operator to approve. Auto-open the dialog the first time we
+  // see it; the operator can close + reopen via the button below if
+  // they need to glance at something else first.
+  const reviewStep = steps.find((s) => s.id === "script_review");
+  const awaitingReview = reviewStep?.status === "running";
+  const currentPostId = pipeline?.current_post?.id ?? null;
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [autoOpenedFor, setAutoOpenedFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (awaitingReview && currentPostId && autoOpenedFor !== currentPostId) {
+      setReviewOpen(true);
+      setAutoOpenedFor(currentPostId);
+    }
+    if (!awaitingReview) {
+      // Reset the auto-open guard once the pipeline moves past review
+      // so a second run for the same post (after the file is cleaned
+      // up) re-opens correctly.
+      if (autoOpenedFor) setAutoOpenedFor(null);
+    }
+  }, [awaitingReview, currentPostId, autoOpenedFor]);
 
   const handleCancel = () => {
     cancelMutation.mutate(undefined, {
@@ -89,6 +116,27 @@ export function PipelinePanel() {
           <p className="text-xs text-destructive mt-2 mb-2 font-mono">{pipeline.error}</p>
         )}
 
+        {/* Review-awaiting banner — gives the operator a way back into
+            the dialog if they dismissed it without deciding. */}
+        {awaitingReview && currentPostId && !reviewOpen && (
+          <div className="mt-2 mb-2 rounded-md border border-primary/40 bg-primary/5 p-2 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <Pencil className="h-3.5 w-3.5 text-primary shrink-0" />
+              <span className="text-[11px] truncate">
+                Script awaiting review — pipeline paused before TTS
+              </span>
+            </div>
+            <Button
+              size="sm"
+              variant="default"
+              className="h-7 px-2 text-[11px] gap-1"
+              onClick={() => setReviewOpen(true)}
+            >
+              Open editor
+            </Button>
+          </div>
+        )}
+
         <div className="flex gap-2 mt-2">
           <Button
             onClick={() => runMutation.mutate(undefined)}
@@ -115,6 +163,11 @@ export function PipelinePanel() {
             every page). Removed from this panel to avoid duplication;
             this card is for the Reddit-fetch + render pipeline only. */}
       </CardContent>
+      <ScriptReviewDialog
+        postId={currentPostId}
+        open={reviewOpen && awaitingReview}
+        onClose={() => setReviewOpen(false)}
+      />
     </Card>
   );
 }

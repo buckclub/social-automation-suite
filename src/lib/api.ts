@@ -832,6 +832,31 @@ export const api = {
   cancelPipeline: () =>
     request<{ success: boolean }>("/api/pipeline/cancel", { method: "POST" }),
 
+  // Script review (optional pause between Format and TTS).
+  // Returns 404 when no review is awaiting — callers should treat that
+  // as 'not in review' rather than an error.
+  getScriptReview: (postId: string) =>
+    request<{
+      status: "pending" | "approved" | "cancelled";
+      title: string;
+      post_body: string;
+      comments: { author: string; body: string }[];
+      created_at: string;
+    }>(`/api/pipeline/script-review/${encodeURIComponent(postId)}`),
+  approveScriptReview: (postId: string, body: {
+    title: string; post_body: string;
+    comments: { author: string; body: string }[];
+  }) =>
+    request<{ success: boolean }>(
+      `/api/pipeline/script-review/${encodeURIComponent(postId)}/approve`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  cancelScriptReview: (postId: string) =>
+    request<{ success: boolean }>(
+      `/api/pipeline/script-review/${encodeURIComponent(postId)}/cancel`,
+      { method: "POST" },
+    ),
+
   // Custom content pipeline
   runPipelineCustom: (params: {
     title: string; content: string; format_mode: string;
