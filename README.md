@@ -135,7 +135,7 @@ A 30-commit polish pass on top of the feature set above. Grouped by what changed
 
 - **Three-act story structure baked into the prompts** — the AI writer now explicitly hits *setup → inciting incident → escalation → CLIMAX → resolution*, with a self-critique pass that audits the timeline + structure + craft before returning JSON. Banned anti-patterns include literal meta-labels in the body (`Stakes:`, `The closer hit me…`), AITA/TIFU title prefixes, hack-tier filler (`viral`, `epic`, `insane`), unearned emotional shifts, and movie-villain revenge plots.
 - **Variant scorer with explicit caps** — every candidate gets a `score` block: overall 0-100, hook strength, payoff strength, **structure** (penalises stacked half-reveals), **coherence** (catches plot holes / impossible knowledge / unearned shifts). Belt-and-suspenders Python clamp drives `score = min(score, 35/50/65)` based on the lower of structure/coherence so weak local-model self-grading can't smuggle slop past the gate.
-- **Per-feature AI model overrides** — `config.gemini.feature_models.<feature>` (story_generation / scoring / social_copy / hashtag_analysis / comment_reply / niche_finder / dialogue) lets you pay flagship rates only on the calls that benefit. Surfaced as a section in Config → AI Hooks; legacy `gemini.scoring_model` field still honored.
+- **Per-feature AI model overrides** — `config.gemini.feature_models.<feature>` (story_generation / scoring / social_copy / hashtag_analysis / comment_reply / niche_finder / dialogue) lets you pay flagship rates only on the calls that benefit. Surfaced as a section in Config → AI Model; legacy `gemini.scoring_model` field still honored.
 - **Custom niches** — drop additional content niches into `config.ai_content_generation.custom_niches` (same shape as the built-ins: `name` / `subs` / `themes` per id). They appear in the niche grid with a 🏷️ tag glyph next to the built-in entries.
 - **Animated loading sequence** — Generate-with-AI shows step-cycling progress (drafting candidate 1/N, proofreading, structure audit, scoring, comparing, retrying) instead of a static spinner; clamps at the last step rather than looping so a stuck request looks honestly stuck.
 - **Title card vs TTS title** — Reddit posts with abbreviations like "Boyfriend (32M)" now render the original "(32M)" on the visual title card while the narration still says "thirty-two, male" (the prefilter already expanded it for natural speech).
@@ -167,6 +167,54 @@ A 30-commit polish pass on top of the feature set above. Grouped by what changed
 - **Replaced `date-fns` with a 30-line custom formatter** — saved ~70 KB of bundle for one function (`formatDistanceToNow`).
 - **`brandsById` Map memo** on Calendar + CommentReplier — was `brands.find()` inside a `.map()` per row, O(N×M) on every paint.
 - **Lazy-loaded routes** — every page is a separate chunk loaded on demand (5–50 KB each).
+
+
+### Latest pass — onboarding, operator-edit gate, render polish
+
+A second polish pass focused on first-five-minutes UX, mid-pipeline operator control, and a couple of long-standing render papercuts.
+
+**Operator-edit gate (Script Review)**
+
+- **Optional pause between Format and TTS** — toggle `config.pipeline.script_review_enabled` and the pipeline halts after preprocessing (prefilter + Ollama normalize) so you can fix OP typos / awkward phrasing / weird normalization artifacts before paying for voice generation. A modal pops up automatically with editable textareas for the title, body, and each comment, plus per-field char counters and a rough spoken-minute estimate. **Approve & continue** ships the edits to TTS; **Cancel render** aborts cleanly with no half-written audio.
+- **'Write a hook' button** — one-click rewrite of the title via your configured AI model into a single punchy spoken-hook sentence (Reddit prefixes like `AITA` / `[Update]` stripped). An **Undo rewrite** button appears next to it for one-click revert; manual edits clear the undo target so it only ever reverts the most recent AI action.
+- **Per-run skip on Full Redo** — the dialog gets a "Skip script review for this run" toggle (only visible when the global flag is on) so unattended overnight redos don't pause waiting for human input. Step status reads "Skipped per-run (Full Redo override)" so you can see why it didn't fire.
+- **Global modal mount + dashboard banner** — the review dialog auto-opens regardless of which page you're on when the pipeline pauses (originally it only worked from the dashboard). The dashboard's Pipeline panel still gets an inline "Open editor" banner for the contextual case.
+- **30-min defensive timeout** — a forgotten review won't tie up the queue forever. Wrapped in try/except so any bug in the optional gate falls through to "skipped due to error" rather than killing an otherwise-fine render.
+
+**Title-card visual upgrade**
+
+- **Configurable border** — `config.thumbnail.border_color` + `border_width` (0–16px, 0 = off / existing renders unchanged). Drawn on the same rounded rect as the card fill so the corner radius matches exactly.
+- **Entry + exit animations** — independent dropdowns: `none` / `fade` / `slide_up` / `slide_down` / `slide_left` / `slide_right` / `fade_slide_up` / `fade_slide_down`. Cubic ease-out on entry, ease-in on exit; both phases auto-capped at 40% of the title segment. Live preview on the Config → Title Card panel uses the same easing math as the backend so what you configure is what you ship. Defaults to `fade` on both sides — clear upgrade over the previous hard cut.
+- **Animation no longer judders** — both engines now force 30 fps end-to-end. The MoviePy path was already fine; the FFmpeg path's background re-encode used to inherit the source video's native framerate (often 24/25), and the overlay filter inherited that too — so even with `-r 30` on output the animation was being sampled at 24/25 Hz and 3:2-pulldowned into a stutter. Background re-encode now applies `fps=30 + -fps_mode cfr`, the FFmpeg engine renders per-frame title-card PNGs with translate+opacity baked in at 1/30s frame durations, and the final composite explicitly resamples both inputs to 30 fps before overlay.
+
+**Onboarding surface (5-piece bundle)**
+
+- **Quick-Start checklist on the dashboard** — auto-derives status from config + stats (AI configured, TTS, brand, first render, optional YouTube). Each row deep-links to the right Config tab; card auto-hides on full completion or "Hide forever". No manual checkbox state to maintain.
+- **In-app Guide page (`/guide`)** — six expandable sections (first video, AI providers, brands, post-filter explanations, voice/TTS, troubleshooting) written as plain prose, not a config-schema dump. Linked from the checklist + a `BookOpen` header icon. Includes a "Reset tips" button that wipes the seen-set so first-time toasts fire again.
+- **Notification center** — `Bell` icon in the header with unread badge. Subscribes to `render.complete` via the existing SSE bus and persists to localStorage so refreshes don't lose state. Cross-tab dedupe via a 3-second signature window so multiple open tabs don't multiply notifications. Click any row to navigate; mark-read / clear-all controls; max 30 retained.
+- **First-time tips** — `useFirstTimeTip(id, title, description)` hook fires a one-shot toast per browser, ever. Two shipped: dashboard welcome (points at `/guide`) and Posts page (explains the Score-with-AI / AI-sort dependency). One-line addition per page.
+- **Contextual help popovers** — `<HelpHint>{children}</HelpHint>` primitive that renders a `(?)` icon → popover with a paragraph of plain-prose explanation. Wired onto **Min viral (▲/hr)** and **Min AI score** in Posts (the two filter labels new users most reliably squint at). Reusable; sprinkle in wherever a question keeps coming up.
+
+**Pre-TTS quality**
+
+- **Pre-TTS proofreader** — expanded the Ollama normalization prompt with concrete examples for context-driven wrong-word typos (`all kids of` → `all kinds of`, `defiantly` → `definitely`, etc.) so the model catches them instead of normalizing to a confidently-wrong narration. Plus a deterministic doubled-word collapse (`and and`, `the the`, `I I`) that runs before the LLM call so an obvious typo never wastes an API request.
+- **Silent video-failure detection** — when both render attempts return `None` (rather than raising), the pipeline now preserves the audio + timeline to `videos/proj_<post_id>/`, raises a recoverable `video_silent_failure` diagnostic, and auto-enqueues a `kind: "resume"` job that runs the video step ONLY against the cached audio (no TTS re-spend). Was previously silently inserting an `audio_only` row with no error and forcing the user to manually click Resume.
+
+**Operator UX polish**
+
+- **Theme contrast audit** — both dark and light modes had layers that were ~1% L apart and effectively invisible (cards on background, borders on cards). Re-tuned: dark goes `bg 6 → card 11 → secondary 16 → border 24`; light goes `bg 98 → card 100 → secondary 92 → border 80`. Every layer now has a clear lightness relationship with its neighbours.
+- **Post Discovery filters collapsed** — the filter section had grown to 8 numeric + 5 text + 3 narrator + 2 switches all visible at once; pushed the post grid below the fold. Now hidden behind a `Filters` toggle in the toolbar with an active-count badge so it's obvious how many constraints are silently narrowing the list. Hide-near-duplicates promoted up to the always-visible toolbar.
+- **AI Hooks tab renamed `AI Model`** — the tab + section were both named after the smallest feature inside them (intro hooks), which made new users think they were configuring just the hooks rather than the master AI provider. Tab is now **AI Model**, master toggle is **Enable AI** with a one-line explanation of what features it powers, and the two intro-hook / thumbnail-text feature toggles are visually subordinate as "Optional AI add-ons" below the Test button.
+- **Stale-chunk error recovery after deploy** — a tab loaded before a rebuild used to fail with `TypeError: error loading dynamically imported module` when navigating to a lazy route whose hashed filename had changed. Two-prong fix: proactive `vite:preloadError` window listener auto-reloads once per session via a `sessionStorage` guard; reactive `RouteErrorBoundary` detects the same shape and shows a friendly "A new version was deployed — Refresh now" card instead of a blank page.
+- **HashRouter `?tab=X` deep-links** — under HashRouter the query string lives inside the hash fragment, so `window.location.search` is always empty. Switched the Config page's tab parser to react-router's `useSearchParams`, plus an effect that re-syncs `activeTab` when the URL changes mid-session so clicking a different checklist row already on the Config page moves to the right tab.
+- **Dropdown desc text contrast** — Library + Engage header dropdowns hardcoded their per-row descriptions to `text-muted-foreground` — fine on idle, near-invisible on the saturated purple hover/active background. Replaced with `opacity-70` so the desc inherits whatever color the parent currently uses.
+- **Console rebrand + loopback bind** — `dev_supervisor.py` banner now reads "Social Automation Suite dev loop" (was upstream's "Reddit-to-Reels"); `run_server.py` binds to `127.0.0.1` instead of `0.0.0.0` so uvicorn prints a clickable URL on Windows.
+
+**Bug fixes worth flagging**
+
+- **`python-multipart` missing from `backend/requirements.txt`** — FastAPI raises at app-construction time when an `UploadFile` / `Form()` endpoint is registered without it. The profile-pic-upload endpoint uses `UploadFile`, so a fresh install crashed on import.
+
+---
 
 
 
@@ -207,7 +255,7 @@ Copy `config.json.example` to `config.json` on first run. All new keys have defa
 "video": {                      // new:
   "background_selector": ""     // "" = random across all, "folder/sub" = folder random, "folder/clip.mp4" = exact file
 },
-"thumbnail": {                  // title-card branding — fully live-previewable in Config → Video
+"thumbnail": {                  // title-card branding — fully live-previewable in Config → Title Card
   "profile_pic_path":   "",     // set via the uploader — masked into a circle in the render
   "username":           "",     // "@yourchannel" shown next to the avatar
   "hide_stats":         true,   // default true: drops the fake ♡ / ⤴ bottom bar
@@ -218,7 +266,14 @@ Copy `config.json.example` to `config.json` on first run. All new keys have defa
   "corner_radius":      30,
   "card_max_width_pct": 0.84,
   "title_font_size":    52,
-  "username_font_size": 36
+  "username_font_size": 36,
+  // New: optional border + entry/exit animations.
+  "border_color":       "#FF4500",   // only renders when border_width > 0
+  "border_width":       0,           // 0–16 px; 0 = no border (default)
+  "entry_animation":    "fade",      // none | fade | slide_{up,down,left,right} | fade_slide_{up,down}
+  "entry_duration":     0.45,        // seconds; auto-capped at 40% of segment
+  "exit_animation":     "fade",
+  "exit_duration":      0.35
 },
 "publishing": {
   "youtube": {
@@ -231,13 +286,18 @@ Copy `config.json.example` to `config.json` on first run. All new keys have defa
 // Skip optional render steps to save wall time + tokens. Affects
 // every render globally. UI: Config → Output → Pipeline Steps.
 "pipeline": {
-  "disabled_steps": []          // ["thumbnail", "notify"] to skip both
+  "disabled_steps": [],         // ["thumbnail", "notify"] to skip both
+  // Optional human-edit gate between Format and TTS — pause the
+  // pipeline so you can fix OP typos before paid TTS runs. Modal
+  // pops up automatically; 30-min timeout per pause. Per-run
+  // override available on the Full Redo dialog.
+  "script_review_enabled": false
 },
 
 // Per-feature AI model overrides. Empty string = use the global
 // gemini.model. Override only the calls you want on a cheaper /
 // different model (e.g. cheap scoring, flagship story generation).
-// UI: Config → AI Hooks → "Per-feature model overrides".
+// UI: Config → AI Model → "Per-feature model overrides".
 "gemini": {
   // …existing fields…
   "feature_models": {
