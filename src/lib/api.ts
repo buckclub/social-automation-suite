@@ -822,6 +822,10 @@ export const api = {
     narrator_gender?: "auto" | "male" | "female";
     voice_override?: string;
     fresh?: boolean;
+    // Per-run override of config.pipeline.script_review_enabled.
+    // True forces the review pause to be bypassed for this run only;
+    // useful for unattended Full Redos when the global flag is on.
+    skip_script_review?: boolean;
   }) =>
     request<{ started: boolean; queued?: boolean; post_id?: string; queue_item?: unknown }>(
       "/api/pipeline/run",

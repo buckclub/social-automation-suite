@@ -851,6 +851,7 @@ async def _queue_worker():
                     voice_override=params.get("voice_override"),
                     background_override=params.get("background_override"),
                     auto_retry=bool(params.get("auto_retry")),
+                    skip_script_review=bool(params.get("skip_script_review")),
                 )
                 err_out = pipeline_state.get("error")
 
@@ -2408,6 +2409,10 @@ async def run_pipeline(req: dict = {}):
     narrator_gender  = req.get("narrator_gender")  # "auto" | "male" | "female" | None
     voice_override   = req.get("voice_override")
     fresh            = bool(req.get("fresh"))  # true = wipe existing project data first
+    # Per-run override of config.pipeline.script_review_enabled. Lets
+    # FullRedoDialog opt out of the review pause for unattended redos
+    # without touching the global toggle.
+    skip_script_review = bool(req.get("skip_script_review"))
 
     # If the pipeline is already running, auto-enqueue instead of
     # rejecting with 409. This way users clicking "render" on multiple
@@ -2427,6 +2432,7 @@ async def run_pipeline(req: dict = {}):
                 "narrator_gender": narrator_gender if narrator_gender != "auto" else None,
                 "voice_override": voice_override,
                 "fresh": fresh,
+                "skip_script_review": skip_script_review,
             },
         )
         _log(f"Pipeline busy — queued post {post_id} ({item['queue_id'][:8]})")
@@ -2523,6 +2529,7 @@ async def run_pipeline(req: dict = {}):
         max_comment_chars=max_comment_chars,
         narrator_gender=narrator_gender,
         voice_override=voice_override,
+        skip_script_review=skip_script_review,
     ))
     return {"started": True}
 
@@ -4358,7 +4365,7 @@ def _check_cancelled():
         raise Exception("Pipeline cancelled by user")
 
 
-async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_comments: Optional[List[int]] = None, max_comment_chars: int = 0, narrator_gender: Optional[str] = None, voice_override: Optional[str] = None, background_override: Optional[str] = None, captions_preset: Optional[str] = None, auto_retry: bool = False):
+async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_comments: Optional[List[int]] = None, max_comment_chars: int = 0, narrator_gender: Optional[str] = None, voice_override: Optional[str] = None, background_override: Optional[str] = None, captions_preset: Optional[str] = None, auto_retry: bool = False, skip_script_review: bool = False):
     # `auto_retry` is set when the queue worker pulls a row that we
     # ourselves enqueued after a transient failure. Captured into a
     # local at the top so the failure handler below can see it via
@@ -4697,7 +4704,10 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                 # straight through with no perceptible delay.
                 try:
                     import script_review as _sr
-                    if _sr.is_enabled(config):
+                    # Per-run override beats the global config flag — a
+                    # FullRedo with skip_script_review=True bypasses the
+                    # pause even when the global flag is on.
+                    if _sr.is_enabled(config) and not skip_script_review:
                         _set_step("script_review", "running",
                                   "Awaiting operator approval — open the Script Review dialog.")
                         _log(
@@ -4739,6 +4749,9 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                             f"Script approved (title: {len(title)} chars, "
                             f"body: {len(post_body)} chars, comments: {len(comments)})"
                         )
+                    elif skip_script_review and _sr.is_enabled(config):
+                        _set_step("script_review", "done",
+                                  "Skipped per-run (Full Redo override)")
                     else:
                         _set_step("script_review", "done", "Disabled (skipped)")
                 except Exception as _sre:

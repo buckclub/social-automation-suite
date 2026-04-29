@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, RefreshCcw, AlertTriangle, Mic } from "lucide-react";
+import { Loader2, RefreshCcw, AlertTriangle, Mic, Pencil } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { useRunPipeline, useElevenLabsVoices, useTtsProviders, useConfig } from "@/hooks/use-api";
 import { ELEVENLABS_LIBRARY } from "@/components/ElevenLabsLibraryPresets";
@@ -35,12 +36,18 @@ export function FullRedoDialog({ postId, title, open, onOpenChange }: Props) {
   const [voiceOverride, setVoiceOverride] = useState<string>("");  // empty = use config default
   const [detectedGender, setDetectedGender] = useState<"male" | "female" | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Per-run override for the script-review pause. Only meaningful when
+  // the global flag is on — read from config so we can hide the toggle
+  // entirely on installs that haven't enabled review.
+  const scriptReviewGlobalOn = Boolean((config as any)?.pipeline?.script_review_enabled);
+  const [skipScriptReview, setSkipScriptReview] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setNarratorMode("auto");
     setVoiceOverride("");
     setConfirmOpen(false);
+    setSkipScriptReview(false);
     api.getNarratorGender(postId).then((r) => setDetectedGender(r.detected)).catch(() => {});
   }, [open, postId]);
 
@@ -52,6 +59,9 @@ export function FullRedoDialog({ postId, title, open, onOpenChange }: Props) {
     };
     if (voiceOverride.trim()) {
       params.voice_override = voiceOverride.trim();
+    }
+    if (skipScriptReview && scriptReviewGlobalOn) {
+      params.skip_script_review = true;
     }
     runPipeline.mutate(params, {
       onSuccess: (r) => {
@@ -169,6 +179,28 @@ export function FullRedoDialog({ postId, title, open, onOpenChange }: Props) {
             </p>
           )}
         </div>
+
+        {/* Script-review override — only renders when the global flag
+            is on. Lets the operator skip the manual pause for an
+            unattended Full Redo without flipping the global toggle. */}
+        {scriptReviewGlobalOn && (
+          <div className="rounded-md border border-border bg-secondary/20 p-2.5 flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2 min-w-0">
+              <Pencil className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <Label className="text-xs">Skip script review for this run</Label>
+                <p className="text-[10px] text-muted-foreground/80 leading-snug mt-0.5">
+                  Global script-review is on. Toggle this for unattended
+                  redos so the pipeline doesn't pause waiting for an edit.
+                </p>
+              </div>
+            </div>
+            <Switch
+              checked={skipScriptReview}
+              onCheckedChange={setSkipScriptReview}
+            />
+          </div>
+        )}
 
         <DialogFooter className="flex-col sm:flex-row gap-2 pt-2">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={runPipeline.isPending}>

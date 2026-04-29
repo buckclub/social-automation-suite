@@ -88,7 +88,10 @@ export function usePipelineStatus() {
 export function useRunPipeline() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (params?: { post_id?: string; selected_comments?: number[]; max_comment_chars?: number }) =>
+    // Param shape mirrors api.runPipeline so callers (FullRedoDialog,
+    // PostsPage, etc.) can pass narrator_gender / fresh /
+    // voice_override / skip_script_review without TS gymnastics.
+    mutationFn: (params?: Parameters<typeof api.runPipeline>[0]) =>
       api.runPipeline(params),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["pipeline"] });
