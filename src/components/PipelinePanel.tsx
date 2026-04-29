@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { Search, FileText, Mic, Film, Send, XCircle, Sparkles, Image, Pencil } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -6,7 +5,7 @@ import { PipelineStep } from "./PipelineStep";
 import { usePipelineStatus, useRunPipeline, useResetPipeline, useCancelPipeline } from "@/hooks/use-api";
 import { useToast } from "@/hooks/use-toast";
 import type { StepStatus } from "./PipelineStep";
-import { ScriptReviewDialog } from "./ScriptReviewDialog";
+import { OPEN_REVIEW_EVENT } from "./ScriptReviewWatcher";
 
 const STEP_ICONS: Record<string, React.ReactNode> = {
   ai_generate: <Sparkles className="h-5 w-5" />,
@@ -42,28 +41,15 @@ export function PipelinePanel() {
   const allDone = steps.length > 0 && steps.every((s) => s.status === "done");
   const hasError = pipeline?.error != null;
 
-  // Awaiting-review detection — when the script_review step flips to
-  // 'running' the backend is blocked on an asyncio.Event waiting for
-  // the operator to approve. Auto-open the dialog the first time we
-  // see it; the operator can close + reopen via the button below if
-  // they need to glance at something else first.
+  // Awaiting-review banner state. The actual modal is owned by
+  // ScriptReviewWatcher (mounted in AppLayout, so it works from any
+  // route). The banner here is a dashboard-local affordance for users
+  // who dismissed the modal and want to reopen it without leaving the
+  // pipeline view; clicking it dispatches a custom event the global
+  // watcher picks up.
   const reviewStep = steps.find((s) => s.id === "script_review");
   const awaitingReview = reviewStep?.status === "running";
   const currentPostId = pipeline?.current_post?.id ?? null;
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [autoOpenedFor, setAutoOpenedFor] = useState<string | null>(null);
-  useEffect(() => {
-    if (awaitingReview && currentPostId && autoOpenedFor !== currentPostId) {
-      setReviewOpen(true);
-      setAutoOpenedFor(currentPostId);
-    }
-    if (!awaitingReview) {
-      // Reset the auto-open guard once the pipeline moves past review
-      // so a second run for the same post (after the file is cleaned
-      // up) re-opens correctly.
-      if (autoOpenedFor) setAutoOpenedFor(null);
-    }
-  }, [awaitingReview, currentPostId, autoOpenedFor]);
 
   const handleCancel = () => {
     cancelMutation.mutate(undefined, {
@@ -117,8 +103,10 @@ export function PipelinePanel() {
         )}
 
         {/* Review-awaiting banner — gives the operator a way back into
-            the dialog if they dismissed it without deciding. */}
-        {awaitingReview && currentPostId && !reviewOpen && (
+            the dialog if they dismissed it without deciding. The
+            global watcher in AppLayout owns the actual modal state;
+            we just dispatch an event when the operator clicks here. */}
+        {awaitingReview && currentPostId && (
           <div className="mt-2 mb-2 rounded-md border border-primary/40 bg-primary/5 p-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
               <Pencil className="h-3.5 w-3.5 text-primary shrink-0" />
@@ -130,7 +118,7 @@ export function PipelinePanel() {
               size="sm"
               variant="default"
               className="h-7 px-2 text-[11px] gap-1"
-              onClick={() => setReviewOpen(true)}
+              onClick={() => window.dispatchEvent(new Event(OPEN_REVIEW_EVENT))}
             >
               Open editor
             </Button>
@@ -163,11 +151,6 @@ export function PipelinePanel() {
             every page). Removed from this panel to avoid duplication;
             this card is for the Reddit-fetch + render pipeline only. */}
       </CardContent>
-      <ScriptReviewDialog
-        postId={currentPostId}
-        open={reviewOpen && awaitingReview}
-        onClose={() => setReviewOpen(false)}
-      />
     </Card>
   );
 }

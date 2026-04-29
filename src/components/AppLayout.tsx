@@ -16,6 +16,7 @@ import { SocialCopyQueueChip } from "@/components/SocialCopyQueueChip";
 import { GenerateWithAIDialog } from "@/components/GenerateWithAIDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NotificationCenter } from "@/components/NotificationCenter";
+import { ScriptReviewWatcher } from "@/components/ScriptReviewWatcher";
 import { BookOpen } from "lucide-react";
 import { BrandProvider } from "@/contexts/BrandContext";
 import { BrandSwitcher } from "@/components/BrandSwitcher";
@@ -329,6 +330,12 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
             blanks the whole app instead of showing the error inline. */}
         <RouteErrorBoundary key={pathname}>{children}</RouteErrorBoundary>
       </main>
+
+      {/* Global watcher — pops the script-review dialog on any route
+          when the pipeline pauses. Has to live above route content,
+          not inside it, otherwise navigating away unmounts the
+          listener. */}
+      <ScriptReviewWatcher />
       <div className="fixed bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent" />
     </div>
   );
