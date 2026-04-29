@@ -3972,6 +3972,52 @@ async def approve_script_review(post_id: str, req: dict):
     return {"success": True}
 
 
+@app.post("/api/pipeline/script-review/{post_id}/rewrite-title")
+async def rewrite_script_review_title(post_id: str, req: dict):
+    """Rewrite the current title as a viral spoken hook. Body shape:
+       { "title": str, "post_body": str (optional, for context) }
+    Returns { "title": <rewritten> }. The frontend decides whether to
+    apply the change — we don't touch script_review.json here, so the
+    operator can preview multiple rewrites and accept the one they like.
+
+    Honors the same AI provider config as the rest of the app
+    (config.gemini.provider / api_key / ollama_url / model)."""
+    title = str(req.get("title") or "").strip()
+    if not title:
+        raise HTTPException(400, "title is required")
+    post_body = str(req.get("post_body") or "")
+
+    cfg = _load_config()
+    g = (cfg.get("gemini") or {})
+    if not g.get("enabled", False):
+        raise HTTPException(400, "AI is disabled — enable it in Config → AI Model.")
+
+    provider = (g.get("provider") or "gemini").strip()
+    model = (g.get("model") or "").strip()
+    ollama_url = (g.get("ollama_url") or "").strip()
+    if provider == "openrouter":
+        api_key = g.get("openrouter_api_key") or ""
+    elif provider == "nvidia_nim":
+        api_key = g.get("nvidia_nim_api_key") or ""
+    elif provider == "ollama":
+        api_key = ""  # Ollama doesn't take an API key
+    else:
+        api_key = g.get("api_key") or ""
+
+    try:
+        from gemini_hooks import rewrite_title_as_hook
+        rewritten = await asyncio.to_thread(
+            rewrite_title_as_hook,
+            provider, api_key, title, post_body, model, ollama_url,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"AI rewrite failed: {e}")
+
+    if not rewritten:
+        raise HTTPException(502, "AI returned no rewrite — check provider config / quota.")
+    return {"title": rewritten}
+
+
 @app.post("/api/pipeline/script-review/{post_id}/cancel")
 async def cancel_script_review(post_id: str):
     """Operator aborts the pipeline at the review stage. The pipeline

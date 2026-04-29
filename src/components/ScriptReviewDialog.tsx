@@ -17,7 +17,7 @@
  *     double-click doesn't fire two PUTs.
  */
 import { useEffect, useState } from "react";
-import { Loader2, Check, XCircle, AlertTriangle, FileText } from "lucide-react";
+import { Loader2, Check, XCircle, AlertTriangle, FileText, Sparkles, Undo2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -45,6 +45,13 @@ export function ScriptReviewDialog({ postId, open, onClose }: Props) {
   const [title, setTitle] = useState("");
   const [postBody, setPostBody] = useState("");
   const [comments, setComments] = useState<Comment[]>([]);
+
+  // Title rewrite state — `prevTitle` holds whatever was in the field
+  // RIGHT BEFORE we clobbered it with an AI rewrite, so the operator
+  // can undo with one click. Cleared on manual edits so undo only ever
+  // reverts the most recent AI action, not earlier manual typing.
+  const [rewriting, setRewriting] = useState(false);
+  const [prevTitle, setPrevTitle] = useState<string | null>(null);
 
   // Fetch only on (postId change while open). Closing + reopening for
   // the same post should NOT clobber edits — operators sometimes scroll
@@ -74,6 +81,43 @@ export function ScriptReviewDialog({ postId, open, onClose }: Props) {
 
   const updateComment = (i: number, body: string) =>
     setComments((cs) => cs.map((c, idx) => (idx === i ? { ...c, body } : c)));
+
+  const rewriteTitle = async () => {
+    if (!postId || rewriting || !title.trim()) return;
+    setRewriting(true);
+    try {
+      const r = await api.rewriteScriptReviewTitle(postId, {
+        title, post_body: postBody,
+      });
+      if (r.title && r.title.trim() && r.title !== title) {
+        setPrevTitle(title);
+        setTitle(r.title);
+        toast({
+          title: "Title rewritten",
+          description: "Click 'Undo rewrite' if you don't like it.",
+        });
+      } else {
+        toast({
+          title: "No change",
+          description: "AI returned the same title — try editing it manually first.",
+        });
+      }
+    } catch (e: any) {
+      toast({
+        title: "Rewrite failed",
+        description: e?.message || "Check AI provider config in Config → AI Model.",
+        variant: "destructive",
+      });
+    } finally {
+      setRewriting(false);
+    }
+  };
+
+  const undoRewrite = () => {
+    if (prevTitle === null) return;
+    setTitle(prevTitle);
+    setPrevTitle(null);
+  };
 
   const approve = async () => {
     if (!postId || submitting) return;
@@ -168,10 +212,47 @@ export function ScriptReviewDialog({ postId, open, onClose }: Props) {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs">Title</Label>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <Label className="text-xs">Title</Label>
+                <div className="flex items-center gap-1">
+                  {prevTitle !== null && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={undoRewrite}
+                      className="h-6 px-2 text-[10px] gap-1 text-muted-foreground hover:text-foreground"
+                      title={`Revert to: "${prevTitle.slice(0, 40)}${prevTitle.length > 40 ? "…" : ""}"`}
+                    >
+                      <Undo2 className="h-3 w-3" />
+                      Undo rewrite
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={rewriteTitle}
+                    disabled={rewriting || !title.trim()}
+                    className="h-6 px-2 text-[10px] gap-1"
+                    title="Rewrite the title as a viral spoken hook using your configured AI model"
+                  >
+                    {rewriting
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : <Sparkles className="h-3 w-3 text-primary" />}
+                    Write a hook
+                  </Button>
+                </div>
+              </div>
               <Textarea
                 value={title}
-                onChange={(e) => setTitle(e.target.value)}
+                onChange={(e) => {
+                  setTitle(e.target.value);
+                  // Manual edit invalidates the undo target — only the
+                  // MOST RECENT AI action should be undoable, otherwise
+                  // 'Undo rewrite' would feel inconsistent.
+                  if (prevTitle !== null) setPrevTitle(null);
+                }}
                 rows={2}
                 className="text-sm bg-secondary border-border resize-y"
               />

@@ -860,6 +860,13 @@ export const api = {
       `/api/pipeline/script-review/${encodeURIComponent(postId)}/cancel`,
       { method: "POST" },
     ),
+  // Rewrite the current title as a viral spoken hook. Returns the
+  // proposed rewrite — frontend chooses whether to apply.
+  rewriteScriptReviewTitle: (postId: string, body: { title: string; post_body?: string }) =>
+    request<{ title: string }>(
+      `/api/pipeline/script-review/${encodeURIComponent(postId)}/rewrite-title`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
 
   // Custom content pipeline
   runPipelineCustom: (params: {

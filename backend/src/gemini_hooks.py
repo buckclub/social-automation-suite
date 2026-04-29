@@ -47,6 +47,18 @@ Rules:
 - Do NOT use hashtags or emojis.
 - Output ONLY the thumbnail text, nothing else."""
 
+TITLE_REWRITE_SYSTEM_PROMPT = """You are a viral short-form video scriptwriter rewriting Reddit post titles into spoken hooks.
+
+Goal: rewrite the given title so it works as the FIRST sentence the narrator speaks, designed to make a TikTok/Reels/Shorts viewer STOP scrolling within the first two seconds.
+
+Rules:
+- Output a SINGLE sentence (one or two short clauses), speakable in roughly 3 seconds.
+- Tease the most dramatic / shocking / emotional element of the story WITHOUT spoiling the resolution.
+- Use direct, punchy, conversational language — second-person ("you") or rhetorical questions are fine.
+- No hashtags, no emojis, no stage directions, no quote marks around the output.
+- Do NOT include "AITA", "TIFU", "[Update]", or other Reddit prefixes — strip them.
+- Output ONLY the rewritten title, nothing else. No preamble, no explanation."""
+
 # ── Default models per provider ──────────────────────────────────────
 
 GEMINI_MODELS = [
@@ -400,6 +412,41 @@ def generate_hook(provider: str, api_key: str, title: str, body: str, comments_t
     if result:
         result = result.strip('"\'')
         print(f"✨ AI hook: \"{result}\"")
+    return result
+
+
+def rewrite_title_as_hook(provider: str, api_key: str, title: str, body: str,
+                          model: str = "gemini-2.0-flash", ollama_url: str = "") -> Optional[str]:
+    """
+    Rewrite a Reddit post title into a viral spoken-hook version of
+    itself. Used by the Script Review dialog's "Write a hook" button —
+    operator clicks, AI returns a punchier first-sentence, operator can
+    accept (replaces title) or reject (keeps original) in the UI.
+
+    Returns the rewritten title (no surrounding quotes) or None on
+    failure. Body is included so the model has enough story context to
+    pick the right tease — without it, the rewrite tends to drift into
+    generic clickbait.
+    """
+    ctx = f"Original title: {title}\n\n"
+    if body and body.strip():
+        # 1500 chars is enough for the model to grasp the arc; longer
+        # bodies waste tokens on filler the rewrite won't reference.
+        ctx += f"Story body (for context, do not narrate this — just rewrite the title):\n{body[:1500]}\n"
+    prompt = f"Rewrite this Reddit title as a 3-second spoken hook:\n\n{ctx}"
+
+    result = _call_ai(provider, api_key, prompt, TITLE_REWRITE_SYSTEM_PROMPT, model, ollama_url)
+    if result:
+        # Trim quotes the model likes to wrap things in, and any
+        # leading/trailing whitespace.
+        result = result.strip().strip('"\'').strip()
+        # Defensive: some models prepend "Hook:" / "Title:" labels even
+        # when told not to. Strip a single leading "<single-word>:" if
+        # present (no space in the head means it's a label, not a clause).
+        head, sep, tail = result.partition(":")
+        if sep and " " not in head and len(head) <= 16:
+            result = tail.strip()
+        print(f"✨ AI title rewrite: \"{result}\"")
     return result
 
 
