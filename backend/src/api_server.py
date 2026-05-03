@@ -4552,6 +4552,19 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
             author = formatter.summary.get("author", "Anonymous")
             post_subreddit = formatter.summary.get("subreddit", "")
             post_score = int(formatter.summary.get("score", 0) or 0)
+            # Snapshot the original title for the visual title card +
+            # thumbnail before any TTS-prefilter mangling. The prefilter
+            # downstream rewrites `title` for natural narration ("(32M)"
+            # → "thirty-two, male"); display_title preserves the
+            # readable form for the on-screen card. Defined here at the
+            # top of the function so every later code path that calls
+            # generate_video / generate_thumbnail has it in scope —
+            # missing this assignment used to NameError at the video
+            # step, which the outer try/except masked by routing every
+            # render through the auto-resume path (which re-read the
+            # title from disk and silently dropped any in-memory edits
+            # like Script Review's).
+            display_title = title
             _set_step("format", "done", "Story & Q&A text formatted")
             _log("Story formatted (story_mode.txt + qa_mode.txt)")
         except Exception as e:
@@ -4785,6 +4798,15 @@ async def _run_pipeline_async(specific_post_id: Optional[str] = None, selected_c
                         # than overwrite with empty.
                         if decision.title.strip():
                             title = decision.title
+                            # Also update display_title (the variable the
+                            # video's title card + thumbnail render
+                            # reads) — without this, only the TTS
+                            # narration would reflect the edit and the
+                            # on-screen card would still show the
+                            # original Reddit title. User-reported
+                            # symptom: "audio used my text but the title
+                            # card didn't."
+                            display_title = decision.title
                         if decision.post_body.strip():
                             post_body = decision.post_body
                         if decision.comments:
