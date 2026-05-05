@@ -4,6 +4,7 @@ import {
   Search, RefreshCw, Loader2, Play, Filter, ArrowUpDown, ExternalLink,
   CheckCircle2, XCircle, AlertTriangle, Flame, TrendingUp, Clock, Star,
   Trophy, Sparkles, Save, X, ListOrdered, ChevronDown, ChevronUp,
+  ArrowUp, ArrowDown, MessageSquare, ArrowBigUp,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -118,7 +119,29 @@ export default function PostsPage() {
   const [redditSort, setRedditSort] = useState<RedditSort>("hot");
   const { data, refetch, isFetching, isError, error } = useDiscoverPosts(redditSort);
   const [selectedPost, setSelectedPost] = useState<RedditPost | null>(null);
+  // Sort key + direction. Direction is per-key so flipping back and
+  // forth between metrics doesn't lose your last "asc/desc" choice. We
+  // default each metric to its 'most-useful' direction (highest score
+  // first, newest first for age) so the first click on a new key
+  // doesn't surprise the user with a backwards list.
   const [sortBy, setSortBy] = useState<"score" | "comments" | "age" | "viral" | "ai">("score");
+  const [sortDirByKey, setSortDirByKey] = useState<Record<string, "desc" | "asc">>({
+    score: "desc",     // highest upvotes first
+    comments: "desc",  // most-discussed first
+    age: "asc",        // newest first (smaller hours = newer)
+    viral: "desc",     // hottest velocity first
+    ai: "desc",        // best AI score first
+  });
+  const sortDir = sortDirByKey[sortBy] || "desc";
+  const flipSortDir = () =>
+    setSortDirByKey((m) => ({ ...m, [sortBy]: m[sortBy] === "desc" ? "asc" : "desc" }));
+  // Click a sort key: select it (preserves last direction). Click the
+  // already-selected key: flip the direction. This is the standard
+  // table-header behavior every spreadsheet user already knows.
+  const pickSort = (s: typeof sortBy) => {
+    if (s === sortBy) flipSortDir();
+    else setSortBy(s);
+  };
   const { toast } = useToast();
 
   // Filter state (flat so a preset can replace it wholesale)
@@ -254,13 +277,21 @@ export default function PostsPage() {
         return true;
       })
       .sort((a, b) => {
-        if (sortBy === "score") return b.score - a.score;
-        if (sortBy === "comments") return b.num_comments - a.num_comments;
-        if (sortBy === "viral") return (b.viral_score ?? 0) - (a.viral_score ?? 0);
-        if (sortBy === "ai") return (aiScores[b.id]?.score ?? 0) - (aiScores[a.id]?.score ?? 0);
-        return a.age_hours - b.age_hours;
+        // Pull the comparison value for the active sort key. We compute
+        // both sides in the same direction (b - a = descending) and then
+        // flip the sign at the end if the user picked ascending. Stable
+        // tiebreaker on upvotes so two posts with the same AI score (or
+        // both zero) don't reshuffle on every render.
+        let cmp: number;
+        if (sortBy === "score")         cmp = b.score - a.score;
+        else if (sortBy === "comments") cmp = b.num_comments - a.num_comments;
+        else if (sortBy === "viral")    cmp = (b.viral_score ?? 0) - (a.viral_score ?? 0);
+        else if (sortBy === "ai")       cmp = (aiScores[b.id]?.score ?? 0) - (aiScores[a.id]?.score ?? 0);
+        else /* age */                  cmp = a.age_hours - b.age_hours;  // asc = newest first
+        if (cmp === 0) cmp = b.score - a.score;        // tiebreaker
+        return sortDir === "asc" ? -cmp : cmp;
       });
-  }, [posts, f, aiScores, sortBy]);
+  }, [posts, f, aiScores, sortBy, sortDir]);
 
   const eligible = posts.filter((p) => p.meets_filters && !p.already_used).length;
 
@@ -387,20 +418,40 @@ export default function PostsPage() {
           <label className="text-xs text-muted-foreground">Eligible only</label>
           <Switch checked={f.eligibleOnly} onCheckedChange={(v) => update("eligibleOnly", v)} />
         </div>
+        {/* Sort cluster — labeled clearly so it's obviously a sort
+            control. Click a key to pick it; click again to flip
+            direction. Arrow icon on the active button shows current
+            direction so the click→flip behavior is discoverable. */}
         <div className="flex items-center gap-1.5">
-          <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
-          {(["score", "comments", "age", "viral", "ai"] as const).map((s) => (
-            <Button
-              key={s}
-              size="sm"
-              variant={sortBy === s ? "default" : "outline"}
-              onClick={() => setSortBy(s)}
-              className="h-7 px-2 text-xs capitalize"
-              title={s === "ai" ? "AI virality score — run 'Score with AI' first" : undefined}
-            >
-              {s}
-            </Button>
-          ))}
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
+            Sort by
+          </span>
+          {([
+            { id: "score",    label: "Likes",    icon: ArrowBigUp,    title: "Reddit upvote count" },
+            { id: "comments", label: "Comments", icon: MessageSquare, title: "Number of comments" },
+            { id: "viral",    label: "Viral",    icon: TrendingUp,    title: "Upvotes per hour since posted" },
+            { id: "age",      label: "Age",      icon: Clock,         title: "Hours since posted" },
+            { id: "ai",       label: "AI Score", icon: Sparkles,      title: "AI virality score — run 'Score with AI' first to populate" },
+          ] as const).map((s) => {
+            const active = sortBy === s.id;
+            const Icon = s.icon;
+            return (
+              <Button
+                key={s.id}
+                size="sm"
+                variant={active ? "default" : "outline"}
+                onClick={() => pickSort(s.id)}
+                className="h-7 px-2 text-xs gap-1"
+                title={`${s.title}${active ? ` — click again to flip direction` : ""}`}
+              >
+                <Icon className="h-3 w-3" />
+                {s.label}
+                {active && (sortDir === "desc"
+                  ? <ArrowDown className="h-3 w-3" />
+                  : <ArrowUp className="h-3 w-3" />)}
+              </Button>
+            );
+          })}
         </div>
         <Button
           size="sm"
