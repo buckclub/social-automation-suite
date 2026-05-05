@@ -2066,6 +2066,241 @@ async def rendered_clip_stream(project_id: str, proposal_id: str):
     raise HTTPException(404, "Rendered clip not found")
 
 
+# ── Storyboard endpoints ──────────────────────────────────────────
+# CRUD + clip upload + render for the operator-driven Storyboard
+# composer. See backend/src/storyboard_projects.py for the data model
+# and storyboard_pipeline.py for the renderer.
+
+@app.get("/api/storyboard/templates")
+async def list_storyboard_templates():
+    from storyboard_projects import list_templates
+    return {"templates": list_templates()}
+
+
+@app.get("/api/storyboard/projects")
+async def list_storyboard_projects():
+    from storyboard_projects import load_registry
+    return {"projects": load_registry(PROJECT_ROOT)}
+
+
+@app.post("/api/storyboard/projects")
+async def create_storyboard_project(req: dict):
+    from storyboard_projects import create_project, TEMPLATES
+    name = (req.get("name") or "").strip()
+    template = (req.get("template") or "blank").strip()
+    if template not in TEMPLATES:
+        raise HTTPException(400, f"Unknown template: {template}")
+    brand_id = (req.get("brand_id") or None)
+    proj = create_project(PROJECT_ROOT, name=name, template=template, brand_id=brand_id)
+    return proj
+
+
+@app.get("/api/storyboard/projects/{project_id}")
+async def get_storyboard_project(project_id: str):
+    from storyboard_projects import load_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Not found")
+    return proj
+
+
+@app.patch("/api/storyboard/projects/{project_id}")
+async def patch_storyboard_project(project_id: str, req: dict):
+    """Edit the project's name, scene list, brand, or template tag.
+    Whitelist enforced inside update_project so internal status fields
+    can't be poked from the UI."""
+    from storyboard_projects import update_project
+    proj = update_project(PROJECT_ROOT, project_id, req)
+    if not proj:
+        raise HTTPException(404, "Not found")
+    return proj
+
+
+@app.delete("/api/storyboard/projects/{project_id}")
+async def delete_storyboard_project(project_id: str):
+    from storyboard_projects import delete_project
+    if not delete_project(PROJECT_ROOT, project_id):
+        raise HTTPException(404, "Not found")
+    return {"deleted": True}
+
+
+@app.post("/api/storyboard/projects/{project_id}/scenes/{scene_id}/clip")
+async def upload_storyboard_clip(project_id: str, scene_id: str,
+                                 file: UploadFile = File(...)):
+    """Upload an mp4 (or mov/webm/etc.) and attach it to a scene. The
+    file streams to a temp path, gets duration-probed, then atomically
+    moved into the project's clips dir via attach_clip()."""
+    from storyboard_projects import load_project, attach_clip
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    if not any(s.get("id") == scene_id for s in (proj.get("scenes") or [])):
+        raise HTTPException(404, "Scene not found")
+
+    fn = os.path.basename(file.filename or "")
+    ext = os.path.splitext(fn)[1].lower() or ".mp4"
+    if ext not in (".mp4", ".mov", ".mkv", ".webm", ".avi"):
+        raise HTTPException(400, "Unsupported video format — mp4 / mov / mkv / webm / avi")
+
+    # Stream to a temp file, then attach. We don't write directly into
+    # the destination because attach_clip() handles the rename + replace
+    # of any prior clip.
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+    try:
+        size = 0
+        while True:
+            chunk = await file.read(1 << 20)  # 1 MB
+            if not chunk:
+                break
+            tmp.write(chunk)
+            size += len(chunk)
+        tmp.close()
+
+        from storyboard_pipeline import _probe_duration
+        dur = _probe_duration(tmp.name)
+        proj = attach_clip(
+            PROJECT_ROOT, project_id, scene_id,
+            src_path=tmp.name, original_filename=fn or "clip.mp4",
+            duration_s=dur,
+        )
+        if not proj:
+            raise HTTPException(500, "Failed to attach clip — project may have been deleted mid-upload.")
+        return proj
+    except HTTPException:
+        # Best-effort tempfile cleanup if the move never happened.
+        try: os.remove(tmp.name)
+        except Exception: pass
+        raise
+    except Exception as e:
+        try: os.remove(tmp.name)
+        except Exception: pass
+        raise HTTPException(500, f"Upload failed: {e}")
+
+
+@app.delete("/api/storyboard/projects/{project_id}/scenes/{scene_id}/clip")
+async def detach_storyboard_clip(project_id: str, scene_id: str):
+    from storyboard_projects import detach_clip
+    proj = detach_clip(PROJECT_ROOT, project_id, scene_id)
+    if not proj:
+        raise HTTPException(404, "Project or scene not found")
+    return proj
+
+
+@app.get("/api/storyboard/projects/{project_id}/scenes/{scene_id}/clip")
+async def stream_storyboard_clip(project_id: str, scene_id: str):
+    """Stream the scene's clip back to the editor for preview."""
+    from fastapi.responses import FileResponse
+    from storyboard_projects import load_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    scene = next((s for s in (proj.get("scenes") or []) if s.get("id") == scene_id), None)
+    if not scene or not scene.get("clip_path") or not os.path.isfile(scene["clip_path"]):
+        raise HTTPException(404, "Clip not found")
+    return FileResponse(scene["clip_path"], media_type="video/mp4")
+
+
+@app.get("/api/storyboard/projects/{project_id}/renders/{render_id}")
+async def stream_storyboard_render(project_id: str, render_id: str):
+    """Stream a finished storyboard render."""
+    from fastapi.responses import FileResponse
+    from storyboard_projects import load_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Not found")
+    for r in (proj.get("render_history") or []):
+        if r.get("id") == render_id:
+            vp = r.get("video_path")
+            if vp and os.path.isfile(vp):
+                return FileResponse(vp, media_type="video/mp4")
+    raise HTTPException(404, "Render not found")
+
+
+@app.post("/api/storyboard/projects/{project_id}/render")
+async def render_storyboard_project_endpoint(project_id: str):
+    """Kick off a render. Same global pipeline lock as the Reddit
+    pipeline — one render at a time. Returns immediately; progress
+    flows through the existing pipeline_state SSE stream."""
+    if pipeline_state["is_running"]:
+        raise HTTPException(409, "Pipeline busy — wait for the current render to finish.")
+
+    from storyboard_projects import load_project, save_project
+    proj = load_project(PROJECT_ROOT, project_id)
+    if not proj:
+        raise HTTPException(404, "Not found")
+
+    # Reset pipeline_state to use storyboard's step set so the existing
+    # PipelinePanel UI shows the right progression.
+    from storyboard_pipeline import STORYBOARD_STEPS
+    pipeline_state["steps"] = [dict(s) for s in STORYBOARD_STEPS]
+    pipeline_state["is_running"] = True
+    pipeline_state["error"] = None
+    pipeline_state["current_post"] = {
+        "id": project_id,
+        "title": proj.get("name") or "Storyboard",
+        "subreddit": "",
+        "score": 0,
+    }
+    pipeline_state["started_at"] = datetime.now(timezone.utc).isoformat()
+    pipeline_state["completed_at"] = None
+
+    proj["status"] = "rendering"
+    proj["status_detail"] = "Render starting…"
+    save_project(PROJECT_ROOT, proj)
+
+    asyncio.create_task(_run_storyboard_async(project_id, proj))
+    return {"started": True}
+
+
+async def _run_storyboard_async(project_id: str, proj: dict):
+    """Storyboard render coroutine. Uses the same _set_step / _log /
+    _check_cancelled callbacks as the Reddit pipeline so live progress
+    + cancellation work without a second event plumbing."""
+    global _cancel_requested
+    _cancel_requested = False
+    config = _load_config()
+    err: Optional[str] = None
+    try:
+        from storyboard_pipeline import render_storyboard
+        from storyboard_projects import save_project as _save_proj
+        out = await render_storyboard(
+            project_root=PROJECT_ROOT,
+            project_id=project_id,
+            project=proj,
+            config=config,
+            log=_log,
+            set_step=_set_step,
+            cancel_check=_check_cancelled,
+        )
+        if not out:
+            err = proj.get("status_detail") or "Render produced no output."
+            proj["status"] = "failed"
+            proj["status_detail"] = err
+            _save_proj(PROJECT_ROOT, proj)
+    except Exception as e:
+        err = str(e)
+        try:
+            from storyboard_projects import save_project as _save_proj
+            proj["status"] = "failed"
+            proj["status_detail"] = f"Render error: {err[:200]}"
+            _save_proj(PROJECT_ROOT, proj)
+        except Exception:
+            pass
+        _log(f"Storyboard render error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        pipeline_state["is_running"] = False
+        pipeline_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+        if err:
+            pipeline_state["error"] = err
+            for step in pipeline_state["steps"]:
+                if step["status"] == "running":
+                    step["status"] = "error"
+                    step["detail"] = err[:120]
+
+
 @app.get("/api/render-history")
 async def render_history_endpoint(days: int = 30):
     """30/60/90-day render history for the Dashboard chart."""

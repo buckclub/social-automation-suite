@@ -399,6 +399,59 @@ export interface FullConfig {
   [key: string]: unknown;
 }
 
+// ── Storyboard types (operator-supplied clips + narration) ─────────
+
+export type StoryboardFitPolicy = "auto" | "trim" | "loop" | "hold" | "stretch";
+
+export interface StoryboardScene {
+  id: string;                       // "s1", "s2", ...
+  narration: string;                // empty = silent scene
+  clip_path: string | null;         // backend absolute path; UI fetches via clip URL
+  clip_filename: string | null;
+  clip_duration_s: number | null;
+  voice_override: string | null;
+  fit_policy: StoryboardFitPolicy;
+}
+
+export interface StoryboardRenderEntry {
+  id: string;
+  video_path: string;
+  thumbnail_path: string | null;
+  created_at: string;
+  render_time_s: number;
+  duration_s: number;
+  scene_count: number;
+}
+
+export interface StoryboardProject {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  brand_id: string | null;
+  template: string;
+  scenes: StoryboardScene[];
+  render_history: StoryboardRenderEntry[];
+  status: "draft" | "rendering" | "ready" | "failed";
+  status_detail: string;
+  error: string | null;
+}
+
+export interface StoryboardSummary {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  brand_id: string | null;
+  template: string;
+  scene_count: number;
+  approx_duration_s: number;
+  first_clip_path: string | null;
+  render_count: number;
+  status: StoryboardProject["status"];
+  status_detail: string;
+}
+
 // ── API Functions ───────────────────────────────────────────────────
 
 export const api = {
@@ -858,6 +911,73 @@ export const api = {
   cancelScriptReview: (postId: string) =>
     request<{ success: boolean }>(
       `/api/pipeline/script-review/${encodeURIComponent(postId)}/cancel`,
+      { method: "POST" },
+    ),
+
+  // ── Storyboard projects (operator-supplied clips + narration) ───
+  // The shape returned by GET project / PATCH / etc. is the full
+  // project.json dict from backend/src/storyboard_projects.py.
+
+  listStoryboardTemplates: () =>
+    request<{ templates: { id: string; name: string; description: string }[] }>(
+      "/api/storyboard/templates",
+    ),
+
+  listStoryboardProjects: () =>
+    request<{ projects: StoryboardSummary[] }>("/api/storyboard/projects"),
+
+  createStoryboardProject: (body: { name?: string; template?: string; brand_id?: string | null }) =>
+    request<StoryboardProject>("/api/storyboard/projects", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  getStoryboardProject: (id: string) =>
+    request<StoryboardProject>(`/api/storyboard/projects/${encodeURIComponent(id)}`),
+
+  patchStoryboardProject: (id: string, patch: Partial<Pick<StoryboardProject,
+    "name" | "scenes" | "brand_id" | "template">>) =>
+    request<StoryboardProject>(`/api/storyboard/projects/${encodeURIComponent(id)}`, {
+      method: "PATCH", body: JSON.stringify(patch),
+    }),
+
+  deleteStoryboardProject: (id: string) =>
+    request<{ deleted: boolean }>(`/api/storyboard/projects/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
+  // Direct fetch (not via `request`) because the JSON Content-Type
+  // header `request` adds would clobber multipart/form-data's boundary.
+  uploadStoryboardClip: (id: string, sceneId: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return fetch(
+      `${API_BASE}/api/storyboard/projects/${encodeURIComponent(id)}/scenes/${encodeURIComponent(sceneId)}/clip`,
+      { method: "POST", body: fd },
+    ).then(async (r) => {
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: r.statusText }));
+        throw new Error(err.detail || `Upload failed (${r.status})`);
+      }
+      return r.json() as Promise<StoryboardProject>;
+    });
+  },
+
+  detachStoryboardClip: (id: string, sceneId: string) =>
+    request<StoryboardProject>(
+      `/api/storyboard/projects/${encodeURIComponent(id)}/scenes/${encodeURIComponent(sceneId)}/clip`,
+      { method: "DELETE" },
+    ),
+
+  // URL-only helper for video preview <video src="..."> — request()
+  // would deserialize the binary mp4 body which we don't want here.
+  storyboardClipUrl: (id: string, sceneId: string) =>
+    `${API_BASE}/api/storyboard/projects/${encodeURIComponent(id)}/scenes/${encodeURIComponent(sceneId)}/clip`,
+  storyboardRenderUrl: (id: string, renderId: string) =>
+    `${API_BASE}/api/storyboard/projects/${encodeURIComponent(id)}/renders/${encodeURIComponent(renderId)}`,
+
+  renderStoryboard: (id: string) =>
+    request<{ started: boolean }>(
+      `/api/storyboard/projects/${encodeURIComponent(id)}/render`,
       { method: "POST" },
     ),
   // Rewrite the current title as a viral spoken hook. Returns the

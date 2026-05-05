@@ -82,6 +82,8 @@ const CommentReplierPage = lazy(() => import("./pages/CommentReplierPage"));
 const DialoguePage       = lazy(() => import("./pages/DialoguePage"));
 const FirstRunPage       = lazy(() => import("./pages/FirstRunPage"));
 const GuidePage          = lazy(() => import("./pages/GuidePage"));
+const StoryboardPage     = lazy(() => import("./pages/StoryboardPage"));
+const StoryboardProjectPage = lazy(() => import("./pages/StoryboardProjectPage"));
 
 const queryClient = new QueryClient();
 
@@ -130,6 +132,8 @@ function AppRoutes() {
         <Route path="/dialogue" element={<DialoguePage />} />
         <Route path="/config" element={<ConfigPage />} />
         <Route path="/guide" element={<GuidePage />} />
+        <Route path="/storyboard" element={<StoryboardPage />} />
+        <Route path="/storyboard/:id" element={<StoryboardProjectPage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </Suspense>

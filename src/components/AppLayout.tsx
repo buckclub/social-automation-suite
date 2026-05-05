@@ -66,6 +66,7 @@ const createGroups: {
     items: [
       { to: "/posts",         label: "Reddit Stories", icon: Newspaper, desc: "Browse + queue Reddit threads" },
       { to: "/clips",         label: "Clip Maker",     icon: Scissors,  desc: "Long-form → Shorts" },
+      { to: "/storyboard",    label: "Storyboard",     icon: Layers,    desc: "Compose AI-generated clips with narration" },
       { to: "/custom-script", label: "Custom Script",  icon: FileText,  desc: "Paste your own narration" },
       { to: "/avatar-reels",  label: "PNG-tuber",      icon: UserIcon,  desc: "Animated character overlay" },
       { to: "/dialogue",      label: "Dialogue Mode",  icon: UsersIcon, desc: "Two-character back-and-forth" },
